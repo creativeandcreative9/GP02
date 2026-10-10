@@ -40,7 +40,8 @@ GP02/
   - 出力は `tools/preview/out/`（Gitには含めない）
 - 速度の測定: `dotnet run --project tools/bench/Bench -c Release`
 - Unity でのコンパイルと EditMode テスト（Docker）: `tools/unity/run-tests.sh`
-  - 環境変数 `UNITY_LICENSE_B64`（Unity のライセンスファイル Unity_lic.ulf を base64 にしたもの）が必要。クラウド環境の設定の Network secrets（または環境変数）に登録する
+  - Unity のライセンスが必要。環境変数 `UNITY_LICENSES_ZIP_B64`（Windows の `%LOCALAPPDATA%\Unity\licenses` の中身を zip→base64）または `UNITY_LICENSE_B64`（従来の Unity_lic.ulf を base64）。クラウド環境の設定に登録する
+  - Personal ライセンスがクラウドで通るかは試験中（PCに結びついている可能性がある）
   - イメージは `mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-3`（Docker Hub は匿名の取得上限にかかるためミラーを使う）
   - 結果は `tools/unity/out/`。2回目以降は `unity/Library` が残るので速い
 - `.meta` の作成: `python3 tools/unity/generate_meta.py`

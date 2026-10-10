@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Docker の Unity（Linux）で unity/ のプロジェクトをコンパイルし、EditMode テストを実行する。
 #
-# 必要なもの:
-#   環境変数 UNITY_LICENSE_B64 … Unity のライセンスファイル（Unity_lic.ulf）を base64 にしたもの
-#     （そのままの内容を UNITY_LICENSE に入れてもよい）
+# 必要なもの（どちらか）:
+#   環境変数 UNITY_LICENSES_ZIP_B64 … Windows の %LOCALAPPDATA%\Unity\licenses の中身を zip にして base64 にしたもの
+#     （新しい Unity Hub の方式。Linux 版の Unity は ~/.config/unity3d/Unity/licenses から読む）
+#   環境変数 UNITY_LICENSE_B64 … 従来のライセンスファイル（Unity_lic.ulf）を base64 にしたもの
 #
 # 出力（Gitには含めない）:
 #   tools/unity/out/editmode.xml … テスト結果
@@ -16,12 +17,18 @@ REPO="$(pwd)"
 IMAGE="${GP02_UNITY_IMAGE:-mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-3}"
 OUT="$REPO/tools/unity/out"
 
-if [ -n "${UNITY_LICENSE_B64:-}" ]; then
+LICENSE=""
+LICENSES_DIR="$OUT/licenses"
+rm -rf "$LICENSES_DIR"
+mkdir -p "$LICENSES_DIR"
+if [ -n "${UNITY_LICENSES_ZIP_B64:-}" ]; then
+  printf '%s' "$UNITY_LICENSES_ZIP_B64" | base64 -d > "$OUT/licenses.zip"
+  python3 -I -m zipfile -e "$OUT/licenses.zip" "$LICENSES_DIR"
+  rm -f "$OUT/licenses.zip"
+elif [ -n "${UNITY_LICENSE_B64:-}" ]; then
   LICENSE="$(printf '%s' "$UNITY_LICENSE_B64" | base64 -d)"
-elif [ -n "${UNITY_LICENSE:-}" ]; then
-  LICENSE="$UNITY_LICENSE"
 else
-  echo "Unity のライセンスがありません。環境変数 UNITY_LICENSE_B64 を設定してください。" >&2
+  echo "Unity のライセンスがありません。環境変数 UNITY_LICENSES_ZIP_B64 か UNITY_LICENSE_B64 を設定してください。" >&2
   exit 2
 fi
 
@@ -35,7 +42,7 @@ fi
 docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE"
 
 mkdir -p "$OUT"
-rm -f "$OUT/editmode.xml" "$OUT/unity.log"
+rm -f "$OUT/editmode.xml" "$OUT/unity.log" "$OUT/licensing-client.log"
 
 status=0
 docker run --rm \
@@ -43,14 +50,27 @@ docker run --rm \
   -v "$REPO:/repo" \
   "$IMAGE" \
   bash -c '
-    mkdir -p ~/.local/share/unity3d/Unity
-    printf "%s" "$GP02_LICENSE" > ~/.local/share/unity3d/Unity/Unity_lic.ulf
+    mkdir -p ~/.local/share/unity3d/Unity ~/.config/unity3d/Unity/licenses
+    if [ -n "$GP02_LICENSE" ]; then
+      printf "%s" "$GP02_LICENSE" > ~/.local/share/unity3d/Unity/Unity_lic.ulf
+    fi
+    cp -r /repo/tools/unity/out/licenses/. ~/.config/unity3d/Unity/licenses/
     unity-editor -batchmode -nographics \
       -projectPath /repo/unity \
       -runTests -testPlatform EditMode \
       -testResults /repo/tools/unity/out/editmode.xml \
       -logFile /repo/tools/unity/out/unity.log
+    code=$?
+    # ライセンスまわりの調査用に、ライセンス管理のログも残す
+    cp ~/.config/unity3d/Unity/Unity.Licensing.Client.log /repo/tools/unity/out/licensing-client.log 2>/dev/null
+    exit $code
   ' || status=$?
+
+# ライセンスの写しは残さない
+rm -rf "$LICENSES_DIR"
+
+echo "---- ライセンス ----"
+grep -hE "License is not active|No valid Unity Editor license|Successfully (activated|resolved)|HasEntitlements" "$OUT/unity.log" 2>/dev/null | sort -u | head -5 || true
 
 echo "---- コンパイルエラー ----"
 grep -E "error CS[0-9]+" "$OUT/unity.log" 2>/dev/null | sort -u || echo "なし"
