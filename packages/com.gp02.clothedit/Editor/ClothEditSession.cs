@@ -19,7 +19,6 @@ namespace GP02.EditorTools
     /// </summary>
     public sealed class ClothEditSession : IDisposable
     {
-        const int MaxUndoDepth = 20;
         const string ShapeNamePrefix = "GP02_";
         const string MeshSuffix = "_GP02";
 
@@ -35,9 +34,10 @@ namespace GP02.EditorTools
         readonly NVector3[] _welded;
         readonly NVector3[] _toposRest;
         readonly int[] _vertexToWelded;
-        readonly List<NVector3[]> _undoStack = new List<NVector3[]>();
+        readonly float[] _createdWeights;         // セッション作成時のシェイプキーの重み（保存の取り消しを見つけるため）
         readonly Mesh _previewMesh;
         readonly Material[] _materials;
+        NVector3[] _stateWork;
         NVector3[] _deltaVerticesWork;
         NVector3[] _deltaNormalsWork;
         bool _previewDirty = true;
@@ -48,7 +48,6 @@ namespace GP02.EditorTools
         float _grabRadius;
         NVector3 _grabPointStart;
         NVector3 _grabParticleStart;
-        bool _grabPushedUndo;
 
         int _pinnedCount;
 
@@ -67,7 +66,6 @@ namespace GP02.EditorTools
 
         public int PinnedCount => _pinnedCount;
         public bool IsGrabbing => _grabParticle >= 0;
-        public int UndoCount => _undoStack.Count;
 
         /// <summary>対象のレンダラーが消されていないか。</summary>
         public bool IsTargetAlive => _renderer != null;
@@ -78,6 +76,7 @@ namespace GP02.EditorTools
             _renderer = renderer;
             _sourceMesh = GetMesh(renderer);
             if (_sourceMesh == null) throw new ArgumentException("メッシュがありません。MeshFilter か SkinnedMeshRenderer のメッシュを確認してください。", nameof(renderer));
+            _createdWeights = ReadBlendShapeWeights(renderer);
 
             var timer = Stopwatch.StartNew();
             Vector3[] baseVertices = _sourceMesh.vertices;
@@ -112,6 +111,30 @@ namespace GP02.EditorTools
             _materials = renderer.sharedMaterials;
 
             renderer.forceRenderingOff = true;
+        }
+
+        static float[] ReadBlendShapeWeights(Renderer renderer)
+        {
+            if (!(renderer is SkinnedMeshRenderer skinned) || skinned.sharedMesh == null) return new float[0];
+            var weights = new float[skinned.sharedMesh.blendShapeCount];
+            for (int k = 0; k < weights.Length; k++) weights[k] = skinned.GetBlendShapeWeight(k);
+            return weights;
+        }
+
+        /// <summary>
+        /// レンダラーのメッシュとシェイプキーの重みが、セッションを作ったときのままか。
+        /// 保存のあとに Ctrl+Z で保存そのもの（メッシュの差し替え・重み）を戻すと、false になる。
+        /// </summary>
+        public bool IsTargetUnchanged()
+        {
+            if (!IsTargetAlive || GetMesh(_renderer) != _sourceMesh) return false;
+            float[] now = ReadBlendShapeWeights(_renderer);
+            if (now.Length != _createdWeights.Length) return false;
+            for (int k = 0; k < now.Length; k++)
+            {
+                if (now[k] != _createdWeights[k]) return false;
+            }
+            return true;
         }
 
         static Mesh GetMesh(Renderer renderer)
@@ -298,7 +321,7 @@ namespace GP02.EditorTools
         }
 
         /// <summary>
-        /// 指定点の近くの粒子をつまむ。つまむ前の粒子の位置を、元に戻す用に記録する。
+        /// 指定点の近くの粒子をつまむ。元に戻す用の記録は、呼び出し側（ウィンドウ）が Unity の Undo で取る。
         /// </summary>
         /// <param name="brushRadius">つまむ範囲（メッシュに沿った距離、メートル）</param>
         public bool BeginGrab(Vector3 worldPoint, float brushRadius)
@@ -309,8 +332,6 @@ namespace GP02.EditorTools
             int particle = _solver.FindNearestParticle(point);
             if (particle < 0) return false;
 
-            PushUndo();
-            _grabPushedUndo = true;
             _grabParticle = particle;
             _grabRadius = brushRadius;
             _grabPointStart = point;
@@ -328,55 +349,81 @@ namespace GP02.EditorTools
             _solver.Grab(_grabParticle, _grabParticleStart + (cursor - _grabPointStart), _grabRadius);
         }
 
-        /// <summary>つまみを外す。動かさずに離しただけなら、元に戻す用の記録は取り消す。</summary>
+        /// <summary>つまみを外す。</summary>
         public void Release()
         {
-            if (_grabParticle >= 0 && _grabPushedUndo && _undoStack.Count > 0 && PositionsEqual(_undoStack[_undoStack.Count - 1]))
-            {
-                _undoStack.RemoveAt(_undoStack.Count - 1);
-            }
-            _grabPushedUndo = false;
             _grabParticle = -1;
             _solver.Release();
         }
 
-        bool PositionsEqual(NVector3[] snapshot)
-        {
-            ReadOnlySpan<NVector3> now = _solver.Positions;
-            for (int i = 0; i < snapshot.Length; i++)
-            {
-                if (snapshot[i] != now[i]) return false;
-            }
-            return true;
-        }
-
-        void PushUndo()
-        {
-            _undoStack.Add(_solver.Positions.ToArray());
-            if (_undoStack.Count > MaxUndoDepth) _undoStack.RemoveAt(0);
-        }
-
-        /// <summary>直前のストロークの前の粒子位置に戻す。戻すものが無ければ false。</summary>
-        public bool Undo()
-        {
-            if (_undoStack.Count == 0) return false;
-            NVector3[] snapshot = _undoStack[_undoStack.Count - 1];
-            _undoStack.RemoveAt(_undoStack.Count - 1);
-            _grabParticle = -1;
-            _grabPushedUndo = false;
-            _solver.SetPositions(snapshot);
-            UpdateCurrentShape();
-            return true;
-        }
-
-        /// <summary>元の形に戻す（ピンは保持）。直前の形は Undo で戻せる。</summary>
+        /// <summary>元の形に戻す（ピンは保持）。</summary>
         public void ResetAll()
         {
-            PushUndo();
             _grabParticle = -1;
-            _grabPushedUndo = false;
             _solver.ResetToRest();
             UpdateCurrentShape();
+        }
+
+        /// <summary>今の粒子の位置とピンを state に書く（Unity の Undo の記録先）。</summary>
+        public void WriteState(ClothEditState state)
+        {
+            if (state == null) throw new ArgumentNullException(nameof(state));
+            int count = ParticleCount;
+            if (state.Positions == null || state.Positions.Length != count * 3) state.Positions = new float[count * 3];
+            if (state.Pinned == null || state.Pinned.Length != count) state.Pinned = new bool[count];
+
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            float[] destination = state.Positions;
+            for (int i = 0; i < count; i++)
+            {
+                destination[i * 3] = positions[i].X;
+                destination[i * 3 + 1] = positions[i].Y;
+                destination[i * 3 + 2] = positions[i].Z;
+                state.Pinned[i] = _solver.IsPinned(i);
+            }
+        }
+
+        /// <summary>
+        /// state の内容（粒子の位置とピン）をソルバーに反映する。つまみは外れる。
+        /// 粒子数が合わない（古いセッションの記録など）ときは何もせず false。
+        /// </summary>
+        public bool ReadState(ClothEditState state)
+        {
+            if (state == null || state.Positions == null || state.Pinned == null) return false;
+            int count = ParticleCount;
+            if (state.Positions.Length != count * 3 || state.Pinned.Length != count) return false;
+
+            if (_stateWork == null) _stateWork = new NVector3[count];
+            float[] source = state.Positions;
+            for (int i = 0; i < count; i++) _stateWork[i] = new NVector3(source[i * 3], source[i * 3 + 1], source[i * 3 + 2]);
+
+            _grabParticle = -1;
+            _solver.SetPositions(_stateWork);
+            _pinnedCount = 0;
+            for (int i = 0; i < count; i++)
+            {
+                _solver.SetPinned(i, state.Pinned[i]);
+                if (state.Pinned[i]) _pinnedCount++;
+            }
+            UpdateCurrentShape();
+            return true;
+        }
+
+        /// <summary>今の粒子の位置とピンが、state に書いてある内容と完全に同じか（動かさずに終わった操作を見分けるため）。</summary>
+        public bool MatchesState(ClothEditState state)
+        {
+            int count = ParticleCount;
+            if (state == null || state.Positions == null || state.Pinned == null) return false;
+            if (state.Positions.Length != count * 3 || state.Pinned.Length != count) return false;
+
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            float[] stored = state.Positions;
+            for (int i = 0; i < count; i++)
+            {
+                if (stored[i * 3] != positions[i].X || stored[i * 3 + 1] != positions[i].Y || stored[i * 3 + 2] != positions[i].Z) return false;
+                if (state.Pinned[i] != _solver.IsPinned(i)) return false;
+            }
+            return true;
         }
 
         /// <summary>現在位置がワールド座標で radius 以内の粒子を、ピン留め（または解除）する。変えた粒子の数を返す。</summary>
@@ -410,6 +457,38 @@ namespace GP02.EditorTools
                 if (!_solver.IsPinned(i)) continue;
                 if (seen++ % stride == 0) result.Add(new Vector3(positions[i].X, positions[i].Y, positions[i].Z));
             }
+        }
+
+        /// <summary>
+        /// 位置が worldPositions のどれかから radius 以内にある粒子をピン留めする（セッションを作り直したときにピンを引き継ぐ用）。
+        /// 新しくピン留めした粒子の数を返す。全粒子×全位置の総当たりを避けるため、粒子を格子に入れて探す。
+        /// </summary>
+        public int PinNear(IReadOnlyList<Vector3> worldPositions, float radius)
+        {
+            if (worldPositions == null || worldPositions.Count == 0 || radius <= 0f) return 0;
+
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            var grid = new PointGrid(radius);
+            for (int i = 0; i < positions.Length; i++) grid.Add(i, positions[i]);
+
+            float radiusSq = radius * radius;
+            var candidates = new List<int>();
+            int added = 0;
+            for (int k = 0; k < worldPositions.Count; k++)
+            {
+                Vector3 w = worldPositions[k];
+                var point = new NVector3(w.x, w.y, w.z);
+                grid.Query(point, radius, candidates);
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    int i = candidates[c];
+                    if (_solver.IsPinned(i) || NVector3.DistanceSquared(positions[i], point) > radiusSq) continue;
+                    _solver.SetPinned(i, true);
+                    _pinnedCount++;
+                    added++;
+                }
+            }
+            return added;
         }
 
         /// <summary>

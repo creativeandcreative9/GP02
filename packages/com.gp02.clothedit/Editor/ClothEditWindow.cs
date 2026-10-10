@@ -28,6 +28,10 @@ namespace GP02.EditorTools
         [SerializeField] string _shapeName = "";
 
         ClothEditSession _session;
+        ClothEditState _state;          // Unity の Undo の記録先（セッションごとに作る）
+        bool _opOpen;                   // 変更の記録を取り始めて、まだ書き込んでいない
+        int _opGroup;
+        bool _ignoreUndoCallback;
         bool _dragging;
         bool _settling;
         double _settleStart;
@@ -56,6 +60,7 @@ namespace GP02.EditorTools
             SceneView.duringSceneGui += OnSceneGUI;
             EditorApplication.update += OnUpdate;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            Undo.undoRedoPerformed += OnUndoRedoPerformed;
         }
 
         void OnDisable()
@@ -64,6 +69,7 @@ namespace GP02.EditorTools
             SceneView.duringSceneGui -= OnSceneGUI;
             EditorApplication.update -= OnUpdate;
             EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            Undo.undoRedoPerformed -= OnUndoRedoPerformed;
             EndEdit();
         }
 
@@ -92,7 +98,8 @@ namespace GP02.EditorTools
             return false;
         }
 
-        void StartEdit()
+        /// <param name="carriedPins">引き継ぐピンのワールド位置（保存後や Undo による作り直しのとき）</param>
+        void StartEdit(IReadOnlyList<Vector3> carriedPins = null)
         {
             EndEdit();
             try
@@ -113,6 +120,14 @@ namespace GP02.EditorTools
             }
 
             _session.Solver.InfluenceRadius = _influenceCentimeters * 0.01f;
+            if (carriedPins != null && carriedPins.Count > 0)
+            {
+                int pinned = _session.PinNear(carriedPins, _session.Cloth.Spacing * 0.75f);
+                Debug.Log($"[GP02] ピン {carriedPins.Count} 点から {pinned} 粒子を引き継ぎました。");
+            }
+            // 作り直した直後の形が、Undo の戻り先の基準になる
+            _state = ClothEditState.Create();
+            _session.WriteState(_state);
             _shapeName = _session.SuggestShapeName();
             _lastStretch = 0f;
             _hasHover = false;
@@ -126,6 +141,13 @@ namespace GP02.EditorTools
             _dragging = false;
             _settling = false;
             _hasHover = false;
+            _opOpen = false;
+            if (_state != null)
+            {
+                Undo.ClearUndo(_state);
+                DestroyImmediate(_state);
+                _state = null;
+            }
             if (_session == null) return;
             _session.Dispose();
             _session = null;
@@ -139,6 +161,68 @@ namespace GP02.EditorTools
             _dragging = false;
             _settling = false;
             if (_session != null && _session.IsGrabbing) _session.Release();
+            CommitOperation();
+        }
+
+        // 変更の直前に呼ぶ。RecordObject は配列の要素ごとに差分を作り、粒子が数万あると遅いので Complete を使う
+        void BeginOperation(string name)
+        {
+            // 前の操作と同じ Undo のグループにならないように区切る
+            Undo.IncrementCurrentGroup();
+            _opGroup = Undo.GetCurrentGroup();
+            Undo.RegisterCompleteObjectUndo(_state, name);
+            _opOpen = true;
+        }
+
+        // 変更が終わったら呼ぶ。何も変わっていなければ、積んだ記録を取り消す（空の Undo を残さない）
+        void CommitOperation()
+        {
+            if (!_opOpen) return;
+            _opOpen = false;
+            if (_session == null || _state == null) return;
+
+            if (_session.MatchesState(_state))
+            {
+                _ignoreUndoCallback = true;
+                try { Undo.RevertAllDownToGroup(_opGroup); }
+                finally { _ignoreUndoCallback = false; }
+                return;
+            }
+            _session.WriteState(_state);
+            Undo.IncrementCurrentGroup();
+        }
+
+        // Ctrl+Z / Ctrl+Y、メニューの Edit > Undo、ボタンのどれでもここに来る
+        void OnUndoRedoPerformed()
+        {
+            if (_session == null || _ignoreUndoCallback) return;
+
+            // 仕上げ中・ドラッグ中なら止める。書き込まない記録は、Undo がすでに戻している
+            _dragging = false;
+            _settling = false;
+            _opOpen = false;
+            if (_session.IsGrabbing) _session.Release();
+
+            if (!_session.IsTargetUnchanged())
+            {
+                // 保存そのもの（メッシュの差し替えやシェイプキーの重み）が戻された。今のレンダラーで作り直す
+                RebuildSession();
+                return;
+            }
+
+            if (_session.ReadState(_state)) AfterShapeChanged();
+        }
+
+        void RebuildSession()
+        {
+            if (_target == null || !IsEditable(_target))
+            {
+                EndEdit();
+                return;
+            }
+            var pins = new List<Vector3>();
+            _session.GetPinnedPositions(pins);
+            StartEdit(pins);
         }
 
         void OnGUI()
@@ -196,22 +280,28 @@ namespace GP02.EditorTools
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
-                using (new EditorGUI.DisabledScope(_session.UndoCount == 0))
-                {
-                    if (GUILayout.Button("1つ戻す"))
-                    {
-                        FinishStroke();
-                        _session.Undo();
-                        AfterShapeChanged();
-                    }
-                }
-                if (GUILayout.Button("すべて元に戻す"))
+                if (GUILayout.Button("1つ戻す"))
                 {
                     FinishStroke();
-                    _session.ResetAll();
-                    AfterShapeChanged();
+                    Undo.PerformUndo();
+                    GUIUtility.ExitGUI();   // Undo の結果でセッションが作り直されることがあるので、この描画は打ち切る
+                }
+                if (GUILayout.Button("やり直す"))
+                {
+                    FinishStroke();
+                    Undo.PerformRedo();
+                    GUIUtility.ExitGUI();
                 }
             }
+            if (GUILayout.Button("すべて元に戻す"))
+            {
+                FinishStroke();
+                BeginOperation("GP02 すべて元に戻す");
+                _session.ResetAll();
+                CommitOperation();
+                AfterShapeChanged();
+            }
+            EditorGUILayout.LabelField("Ctrl+Z / Ctrl+Y で戻す・やり直す", EditorStyles.miniLabel);
 
             EditorGUILayout.Space();
             _shapeName = EditorGUILayout.TextField("シェイプキーの名前", _shapeName);
@@ -254,8 +344,12 @@ namespace GP02.EditorTools
 
             Debug.Log($"[GP02] シェイプキー「{name}」を {AssetDatabase.GetAssetPath(saved)} に保存しました。");
             EditorGUIUtility.PingObject(saved);
-            // シェイプキー込みの形が新しい基準になるので、作り直す
-            StartEdit();
+            // 保存の Undo（メッシュの差し替えなど）が、次の編集と同じグループにならないようにする
+            Undo.IncrementCurrentGroup();
+            // シェイプキー込みの形が新しい基準になるので、作り直す。ピンは位置で引き継ぐ
+            var pins = new List<Vector3>();
+            _session.GetPinnedPositions(pins);
+            StartEdit(pins);
         }
 
         void OnUpdate()
@@ -277,6 +371,7 @@ namespace GP02.EditorTools
             {
                 _session.Release();
                 _settling = false;
+                CommitOperation();
             }
 
             SceneView.RepaintAll();
@@ -361,6 +456,7 @@ namespace GP02.EditorTools
                     FinishStroke();
                     if (_session.BeginGrab(_hoverPoint, radius))
                     {
+                        BeginOperation("GP02 つまむ");
                         // ドラッグ平面は、ヒット点を通りカメラの向きに垂直な面
                         _dragPlane = new Plane(-sceneView.camera.transform.forward, _hoverPoint);
                         _dragging = true;
@@ -368,6 +464,9 @@ namespace GP02.EditorTools
                     break;
                 case Mode.Pin:
                 case Mode.Unpin:
+                    // 押してから離すまでのドラッグを、1回の操作にまとめる
+                    FinishStroke();
+                    BeginOperation(_mode == Mode.Pin ? "GP02 ピン留め" : "GP02 ピン解除");
                     PaintPins(radius);
                     break;
             }
@@ -381,7 +480,7 @@ namespace GP02.EditorTools
                 Ray ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
                 if (_dragPlane.Raycast(ray, out float distance)) _session.DragTo(ray.GetPoint(distance));
             }
-            else if (_hasHover)
+            else if (_hasHover && _opOpen)
             {
                 PaintPins(_brushCentimeters * 0.01f);
             }
@@ -389,6 +488,11 @@ namespace GP02.EditorTools
 
         void OnRelease()
         {
+            if (_mode != Mode.Grab)
+            {
+                CommitOperation();
+                return;
+            }
             if (!_dragging) return;
             _dragging = false;
             _settling = true;

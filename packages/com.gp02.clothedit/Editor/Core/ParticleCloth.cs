@@ -57,6 +57,7 @@ namespace GP02.Core
 
             var topology = MeshTopology.Build(vertices, triangles);
             Vector3[] particles = ParticleSampler.Sample(topology, spacing, seed, out int[] particleTriangle);
+            SortSpatially(particles, particleTriangle, spacing);
             var search = new SurfaceSearch(topology);
             var all = new int[particles.Length];
             for (int i = 0; i < all.Length; i++) all[i] = i;
@@ -74,6 +75,51 @@ namespace GP02.Core
 
             var model = new ClothModel(particles, stretchPairs.ToArray(), bendPairs.ToArray());
             return new ParticleCloth(topology, model, hierarchy, spacing, particleTriangle, offsets, bindParticles, bindWeights);
+        }
+
+        /// <summary>
+        /// 空間的に近い粒子が近い番号になるよう、Z階数曲線（Morton順）で並べ替える。
+        /// サンプリング直後の番号はほぼランダムで、制約を解くときのメモリの読み書きが飛び回り、
+        /// 粒子が1万を超えるとキャッシュに収まらず急に遅くなるため。
+        /// </summary>
+        static void SortSpatially(Vector3[] particles, int[] particleTriangle, float spacing)
+        {
+            int n = particles.Length;
+            if (n < 2) return;
+            Vector3 min = particles[0];
+            for (int i = 1; i < n; i++) min = Vector3.Min(min, particles[i]);
+
+            var keys = new ulong[n];
+            var order = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 cell = (particles[i] - min) / spacing;
+                keys[i] = Spread((uint)cell.X) | (Spread((uint)cell.Y) << 1) | (Spread((uint)cell.Z) << 2);
+                order[i] = i;
+            }
+            Array.Sort(keys, order);
+
+            var sortedParticles = new Vector3[n];
+            var sortedTriangles = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                sortedParticles[i] = particles[order[i]];
+                sortedTriangles[i] = particleTriangle[order[i]];
+            }
+            Array.Copy(sortedParticles, particles, n);
+            Array.Copy(sortedTriangles, particleTriangle, n);
+        }
+
+        // 下位21ビットを、3ビットおきに並べる（Morton符号の1軸分）。21ビットあれば 1cm 間隔で約20km まで表せる
+        static ulong Spread(uint value)
+        {
+            ulong x = value & 0x1FFFFF;
+            x = (x | (x << 32)) & 0x1F00000000FFFF;
+            x = (x | (x << 16)) & 0x1F0000FF0000FF;
+            x = (x | (x << 8)) & 0x100F00F00F00F00F;
+            x = (x | (x << 4)) & 0x10C30C30C30C30C3;
+            x = (x | (x << 2)) & 0x1249249249249249;
+            return x;
         }
 
         /// <summary>

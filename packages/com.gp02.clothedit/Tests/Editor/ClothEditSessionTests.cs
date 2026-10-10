@@ -284,34 +284,292 @@ namespace GP02.Tests
             }
         }
 
-        [Test]
-        public void Undo_RestoresParticlePositions()
+        ClothEditSession NewQuadSession(string name, out MeshRenderer renderer)
         {
-            GameObject go = NewObject("UndoTarget");
+            GameObject go = NewObject(name);
             go.AddComponent<MeshFilter>().sharedMesh = CopyOfBuiltinQuad();
-            var renderer = go.AddComponent<MeshRenderer>();
+            renderer = go.AddComponent<MeshRenderer>();
+            return new ClothEditSession(renderer);
+        }
 
-            using (var session = new ClothEditSession(renderer))
+        // 中心あたりを少しつまんで動かし、離す
+        static void DragSomewhere(ClothEditSession session)
+        {
+            Assert.That(session.BeginGrab(Vector3.zero, 0.05f), Is.True);
+            session.DragTo(new Vector3(0f, 0f, -0.1f));
+            for (int i = 0; i < 10; i++) session.Solver.Solve(20);
+            session.Release();
+            session.UpdateCurrentShape();
+        }
+
+        ClothEditState NewState()
+        {
+            return Track(ClothEditState.Create());
+        }
+
+        [Test]
+        public void ReadState_RestoresPositionsPinsAndPinnedCount()
+        {
+            using (var session = NewQuadSession("StateTarget", out _))
             {
-                NVector3[] before = session.Solver.Positions.ToArray();
+                ClothEditState state = NewState();
+                Assert.That(state.hideFlags, Is.EqualTo(HideFlags.HideAndDontSave));
+                Assert.That(session.PaintPins(new Vector3(0.3f, 0f, 0f), 0.03f, true), Is.GreaterThan(0));
+                int pinnedBefore = session.PinnedCount;
+                session.WriteState(state);
+                NVector3[] positionsBefore = session.Solver.Positions.ToArray();
                 Vector3[] shapeBefore = (Vector3[])session.CurrentWorldVertices.Clone();
+                Assert.That(session.MatchesState(state), Is.True);
 
-                Assert.That(session.BeginGrab(Vector3.zero, 0.05f), Is.True);
-                session.DragTo(new Vector3(0f, 0f, -0.1f));
-                for (int i = 0; i < 10; i++) session.Solver.Solve(20);
-                session.Release();
-                session.UpdateCurrentShape();
-                Assert.That(session.Solver.Positions.ToArray(), Is.Not.EqualTo(before));
+                DragSomewhere(session);
+                session.PaintPins(Vector3.zero, 0.05f, true);
+                session.PaintPins(new Vector3(0.3f, 0f, 0f), 0.03f, false);
+                Assert.That(session.Solver.Positions.ToArray(), Is.Not.EqualTo(positionsBefore));
+                Assert.That(session.PinnedCount, Is.Not.EqualTo(pinnedBefore));
+                Assert.That(session.MatchesState(state), Is.False);
 
-                Assert.That(session.Undo(), Is.True);
+                Assert.That(session.ReadState(state), Is.True);
 
-                NVector3[] after = session.Solver.Positions.ToArray();
-                Assert.That(after, Is.EqualTo(before));
+                Assert.That(session.Solver.Positions.ToArray(), Is.EqualTo(positionsBefore));
+                Assert.That(session.PinnedCount, Is.EqualTo(pinnedBefore));
+                int counted = 0;
+                for (int i = 0; i < session.ParticleCount; i++)
+                {
+                    if (session.Solver.IsPinned(i)) counted++;
+                }
+                Assert.That(counted, Is.EqualTo(pinnedBefore));
+                Assert.That(session.MatchesState(state), Is.True);
                 for (int v = 0; v < shapeBefore.Length; v++)
                 {
                     Assert.That(Vector3.Distance(session.CurrentWorldVertices[v], shapeBefore[v]), Is.LessThan(Tolerance));
                 }
-                Assert.That(session.Undo(), Is.False);
+            }
+        }
+
+        [Test]
+        public void ReadState_ReturnsFalseAndChangesNothing_WhenParticleCountDiffers()
+        {
+            // 2倍の大きさのメッシュは、粒子の数が違う
+            GameObject bigObject = NewObject("BigTarget");
+            bigObject.transform.localScale = Vector3.one * 2f;
+            bigObject.AddComponent<MeshFilter>().sharedMesh = CopyOfBuiltinQuad();
+            var bigRenderer = bigObject.AddComponent<MeshRenderer>();
+
+            ClothEditState state = NewState();
+            using (var big = new ClothEditSession(bigRenderer))
+            {
+                big.WriteState(state);
+            }
+
+            using (var session = NewQuadSession("SmallTarget", out _))
+            {
+                Assert.That(session.ParticleCount * 3, Is.Not.EqualTo(state.Positions.Length));
+                session.PaintPins(Vector3.zero, 0.05f, true);
+                DragSomewhere(session);
+                NVector3[] positions = session.Solver.Positions.ToArray();
+                int pinned = session.PinnedCount;
+
+                Assert.That(session.ReadState(state), Is.False);
+                Assert.That(session.ReadState(NewState()), Is.False);   // 何も書いていない state
+
+                Assert.That(session.Solver.Positions.ToArray(), Is.EqualTo(positions));
+                Assert.That(session.PinnedCount, Is.EqualTo(pinned));
+            }
+        }
+
+        [Test]
+        public void UnityUndo_RevertsAndRedoesState()
+        {
+            ClothEditState state = NewState();
+            using (var session = NewQuadSession("UndoTarget", out _))
+            {
+                try
+                {
+                    session.WriteState(state);
+                    NVector3[] before = session.Solver.Positions.ToArray();
+                    Vector3[] shapeBefore = (Vector3[])session.CurrentWorldVertices.Clone();
+
+                    // ウィンドウと同じ手順：記録 → 変更 → 書き込み → 区切り
+                    Undo.IncrementCurrentGroup();
+                    Undo.RegisterCompleteObjectUndo(state, "GP02 つまむ");
+                    DragSomewhere(session);
+                    Assert.That(session.MatchesState(state), Is.False);
+                    session.WriteState(state);
+                    Undo.IncrementCurrentGroup();
+                    NVector3[] after = session.Solver.Positions.ToArray();
+                    Assert.That(after, Is.Not.EqualTo(before));
+
+                    Undo.PerformUndo();
+                    Assert.That(session.ReadState(state), Is.True);
+                    Assert.That(session.Solver.Positions.ToArray(), Is.EqualTo(before));
+                    for (int v = 0; v < shapeBefore.Length; v++)
+                    {
+                        Assert.That(Vector3.Distance(session.CurrentWorldVertices[v], shapeBefore[v]), Is.LessThan(Tolerance));
+                    }
+
+                    Undo.PerformRedo();
+                    Assert.That(session.ReadState(state), Is.True);
+                    Assert.That(session.Solver.Positions.ToArray(), Is.EqualTo(after));
+                }
+                finally
+                {
+                    Undo.ClearUndo(state);
+                }
+            }
+        }
+
+        [Test]
+        public void UnityUndo_PinPaintingIsOneUndoStep()
+        {
+            ClothEditState state = NewState();
+            using (var session = NewQuadSession("PinUndoTarget", out _))
+            {
+                try
+                {
+                    session.WriteState(state);
+                    Undo.IncrementCurrentGroup();
+                    Undo.RegisterCompleteObjectUndo(state, "GP02 ピン留め");
+                    // ドラッグ中の塗りは、記録1回にまとまる
+                    session.PaintPins(new Vector3(-0.2f, 0f, 0f), 0.03f, true);
+                    session.PaintPins(new Vector3(0f, 0f, 0f), 0.03f, true);
+                    session.PaintPins(new Vector3(0.2f, 0f, 0f), 0.03f, true);
+                    int pinned = session.PinnedCount;
+                    session.WriteState(state);
+                    Undo.IncrementCurrentGroup();
+
+                    Undo.PerformUndo();
+                    Assert.That(session.ReadState(state), Is.True);
+                    Assert.That(session.PinnedCount, Is.EqualTo(0));
+
+                    Undo.PerformRedo();
+                    Assert.That(session.ReadState(state), Is.True);
+                    Assert.That(session.PinnedCount, Is.EqualTo(pinned));
+                }
+                finally
+                {
+                    Undo.ClearUndo(state);
+                }
+            }
+        }
+
+        [Test]
+        public void UnityUndo_OperationWithoutChangeLeavesNoRecord()
+        {
+            ClothEditState state = NewState();
+            using (var session = NewQuadSession("NoChangeTarget", out _))
+            {
+                try
+                {
+                    session.WriteState(state);
+
+                    // 1つ目の操作：ピン留め
+                    Undo.IncrementCurrentGroup();
+                    Undo.RegisterCompleteObjectUndo(state, "GP02 ピン留め");
+                    session.PaintPins(Vector3.zero, 0.03f, true);
+                    session.WriteState(state);
+                    Undo.IncrementCurrentGroup();
+                    Assert.That(session.PinnedCount, Is.GreaterThan(0));
+
+                    // 2つ目の操作：記録を取ったが、何も変わらなかった（動かさずにクリックしただけ）
+                    Undo.IncrementCurrentGroup();
+                    int group = Undo.GetCurrentGroup();
+                    Undo.RegisterCompleteObjectUndo(state, "GP02 つまむ");
+                    Assert.That(session.MatchesState(state), Is.True);
+                    Undo.RevertAllDownToGroup(group);
+
+                    // 空の記録が残っていれば、ここで空の記録が戻るだけで、1つ目の操作は戻らない
+                    Undo.PerformUndo();
+                    Assert.That(session.ReadState(state), Is.True);
+                    Assert.That(session.PinnedCount, Is.EqualTo(0));
+                }
+                finally
+                {
+                    Undo.ClearUndo(state);
+                }
+            }
+        }
+
+        [Test]
+        public void ResetAll_KeepsPinsAndCanBeRestoredFromState()
+        {
+            ClothEditState state = NewState();
+            using (var session = NewQuadSession("ResetTarget", out _))
+            {
+                session.PaintPins(new Vector3(0.4f, 0f, 0f), 0.03f, true);
+                DragSomewhere(session);
+                session.WriteState(state);
+                NVector3[] dragged = session.Solver.Positions.ToArray();
+                int pinned = session.PinnedCount;
+
+                session.ResetAll();
+                Assert.That(session.Solver.Positions.ToArray(), Is.Not.EqualTo(dragged));
+                Assert.That(session.PinnedCount, Is.EqualTo(pinned));
+
+                Assert.That(session.ReadState(state), Is.True);
+                Assert.That(session.Solver.Positions.ToArray(), Is.EqualTo(dragged));
+            }
+        }
+
+        [Test]
+        public void PinNear_RestoresPinsInNewSessionOfSameMesh()
+        {
+            GameObject go = NewObject("PinCarryTarget");
+            go.AddComponent<MeshFilter>().sharedMesh = CopyOfBuiltinQuad();
+            var renderer = go.AddComponent<MeshRenderer>();
+
+            var pinPositions = new List<Vector3>();
+            int pinned;
+            using (var first = new ClothEditSession(renderer))
+            {
+                first.PaintPins(new Vector3(0.2f, 0.1f, 0f), 0.06f, true);
+                first.PaintPins(new Vector3(-0.3f, -0.2f, 0f), 0.04f, true);
+                pinned = first.PinnedCount;
+                Assert.That(pinned, Is.GreaterThan(0));
+                first.GetPinnedPositions(pinPositions);
+                Assert.That(pinPositions.Count, Is.EqualTo(pinned));
+            }
+
+            using (var second = new ClothEditSession(renderer))
+            {
+                int added = second.PinNear(pinPositions, second.Cloth.Spacing * 0.75f);
+                Assert.That(added, Is.EqualTo(pinned));
+                Assert.That(second.PinnedCount, Is.EqualTo(pinned));
+                // 位置も同じ
+                var carried = new List<Vector3>();
+                second.GetPinnedPositions(carried);
+                Assert.That(carried.Count, Is.EqualTo(pinPositions.Count));
+                for (int i = 0; i < carried.Count; i++) Assert.That(Vector3.Distance(carried[i], pinPositions[i]), Is.LessThan(Tolerance));
+
+                // 空の入力は何もしない
+                Assert.That(second.PinNear(new List<Vector3>(), 0.01f), Is.EqualTo(0));
+                Assert.That(second.PinNear(pinPositions, 0.0075f), Is.EqualTo(0));   // すでにピン留めされたものは数えない
+            }
+        }
+
+        [Test]
+        public void IsTargetUnchanged_DetectsMeshSwapAndBlendShapeWeightChange()
+        {
+            Mesh mesh = CopyOfBuiltinQuad();
+            var zeros = new Vector3[mesh.vertexCount];
+            mesh.AddBlendShapeFrame("Shape", 100f, zeros, zeros, zeros);
+            GameObject go = NewObject("UnchangedTarget");
+            var renderer = go.AddComponent<SkinnedMeshRenderer>();
+            renderer.sharedMesh = mesh;
+            renderer.SetBlendShapeWeight(0, 30f);
+
+            using (var session = new ClothEditSession(renderer))
+            {
+                Assert.That(session.IsTargetUnchanged(), Is.True);
+
+                renderer.SetBlendShapeWeight(0, 100f);
+                Assert.That(session.IsTargetUnchanged(), Is.False);
+                renderer.SetBlendShapeWeight(0, 30f);
+                Assert.That(session.IsTargetUnchanged(), Is.True);
+
+                renderer.sharedMesh = CopyOfBuiltinQuad();
+                Assert.That(session.IsTargetUnchanged(), Is.False);
+                renderer.sharedMesh = mesh;
+                Assert.That(session.IsTargetUnchanged(), Is.True);
             }
         }
 

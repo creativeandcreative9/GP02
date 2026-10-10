@@ -5,7 +5,7 @@ using System.Numerics;
 namespace GP02.Core
 {
     /// <summary>点を格子のセルに分けて、近くの点を素早く探す。</summary>
-    internal sealed class PointGrid
+    public sealed class PointGrid
     {
         readonly float _cellSize;
         readonly Dictionary<long, List<int>> _cells = new Dictionary<long, List<int>>(PairKeys.Comparer);

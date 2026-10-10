@@ -306,4 +306,31 @@ public class ClothSolverTests
 
         Assert.Equal(bottomCenter, found);
     }
+
+    // 内部では原点をずらして計算するので、置き場所によらず同じ形になることを確かめる
+    [Fact]
+    public void Result_DoesNotDependOnWherePlaced()
+    {
+        var shift = new Vector3(12.3f, -4.5f, 6.7f);
+        ProceduralMeshes.Grid(Columns, Rows, Size, Size, out var vertices, out var triangles);
+        var moved = vertices.Select(v => v + shift).ToArray();
+        var atOrigin = new ClothSolver(ClothModel.FromTriangleMesh(MeshTopology.Build(vertices, triangles)));
+        var elsewhere = new ClothSolver(ClothModel.FromTriangleMesh(MeshTopology.Build(moved, triangles)));
+        int stride = Columns + 1;
+        for (int c = 0; c <= Columns; c++)
+        {
+            atOrigin.SetPinned(Rows * stride + c, true);
+            elsewhere.SetPinned(Rows * stride + c, true);
+        }
+
+        int bottomCenter = Columns / 2;
+        Drag(atOrigin, bottomCenter, new Vector3(0f, 0.1f, 0.2f), steps: 10, iterations: 20);
+        Drag(elsewhere, bottomCenter, new Vector3(0f, 0.1f, 0.2f), steps: 10, iterations: 20);
+
+        // 座標が大きいほど float の丸め誤差が増えるので、許容誤差は少し広げる
+        for (int i = 0; i < atOrigin.Positions.Length; i++)
+        {
+            Assert.True(Vector3.Distance(atOrigin.Positions[i] + shift, elsewhere.Positions[i]) < 1e-4f, $"粒子 {i}");
+        }
+    }
 }

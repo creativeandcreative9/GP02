@@ -26,7 +26,12 @@ namespace GP02.Core
         readonly ClothHierarchy _hierarchy;
         readonly Vector3[] _levelStart;   // 粗い段を解き始めたときの位置（その段の粒子だけ使う）
         readonly MeshGraph _graph;
-        readonly Vector3[] _positions;
+        // 内部では、すべての座標が 0.5m 以上になるよう原点をずらして計算する。
+        // 座標 0 付近では、つまんだ動きが伝わるうちに値が指数的に小さくなって非正規化数になり、計算が2倍以上遅くなるため。
+        // 0.5 以上の数どうしの差は 0 か一定以上の大きさになるので、非正規化数は出ない。
+        readonly Vector3 _origin;
+        readonly Vector3[] _positions;        // 内部の座標（ワールド座標 - _origin）
+        readonly Vector3[] _worldPositions;   // 外に見せるワールド座標
         readonly bool[] _pinned;
         readonly float[] _stretchLambda;
         readonly float[] _bendLambda;
@@ -110,7 +115,13 @@ namespace GP02.Core
             int n = model.ParticleCount;
             if (hierarchy != null) _levelStart = new Vector3[n];
             _graph = new MeshGraph(n, model.StretchPairs, model.StretchRestLengths);
-            _positions = (Vector3[])model.RestPositions.Clone();
+            Vector3[] rest = model.RestPositions;
+            Vector3 min = n > 0 ? rest[0] : Vector3.Zero;
+            for (int i = 1; i < n; i++) min = Vector3.Min(min, rest[i]);
+            _origin = min - new Vector3(0.5f);
+            _positions = new Vector3[n];
+            for (int i = 0; i < n; i++) _positions[i] = rest[i] - _origin;
+            _worldPositions = (Vector3[])rest.Clone();
             _pinned = new bool[n];
             _stretchLambda = new float[model.StretchRestLengths.Length];
             _bendLambda = new float[model.BendRestLengths.Length];
@@ -127,7 +138,7 @@ namespace GP02.Core
         public ClothModel Model => _model;
 
         /// <summary>現在の粒子の位置。</summary>
-        public ReadOnlySpan<Vector3> Positions => _positions;
+        public ReadOnlySpan<Vector3> Positions => _worldPositions;
 
         /// <summary>つまんでいる範囲の中心の粒子。つまんでいなければ -1。</summary>
         public int GrabbedParticle => _grabbed;
@@ -168,7 +179,7 @@ namespace GP02.Core
             }
             _grabbed = particle;
             _brushRadius = brushRadius;
-            _grabTarget = target;
+            _grabTarget = target - _origin;
         }
 
         public void Release()
@@ -180,7 +191,7 @@ namespace GP02.Core
         /// <summary>元の形に戻す。ピン留めは保持する。</summary>
         public void ResetToRest()
         {
-            Array.Copy(_model.RestPositions, _positions, _positions.Length);
+            SetInternalPositions(_model.RestPositions);
             _grabbed = -1;
             _activeDirty = true;
         }
@@ -192,14 +203,20 @@ namespace GP02.Core
         public void SetPositions(ReadOnlySpan<Vector3> positions)
         {
             if (positions.Length != _positions.Length) throw new ArgumentException("粒子数が一致しません。", nameof(positions));
-            positions.CopyTo(_positions);
+            SetInternalPositions(positions);
             _grabbed = -1;
             _activeDirty = true;
         }
 
         public void CopyPositionsTo(Vector3[] destination)
         {
-            Array.Copy(_positions, destination, _positions.Length);
+            Array.Copy(_worldPositions, destination, _worldPositions.Length);
+        }
+
+        void SetInternalPositions(ReadOnlySpan<Vector3> world)
+        {
+            world.CopyTo(_worldPositions);
+            for (int i = 0; i < _positions.Length; i++) _positions[i] = world[i] - _origin;
         }
 
         /// <summary>指定位置に一番近い粒子を返す。</summary>
@@ -209,7 +226,7 @@ namespace GP02.Core
             float bestSq = float.MaxValue;
             for (int i = 0; i < _positions.Length; i++)
             {
-                float sq = Vector3.DistanceSquared(_positions[i], point);
+                float sq = Vector3.DistanceSquared(_worldPositions[i], point);
                 if (sq < bestSq)
                 {
                     bestSq = sq;
@@ -236,7 +253,8 @@ namespace GP02.Core
             for (int a = 0; a < _activeStretchCount; a++)
             {
                 int k = _activeStretch[a];
-                float length = Vector3.Distance(_positions[pairs[2 * k]], _positions[pairs[2 * k + 1]]);
+                // 内部の座標は原点をずらした分の丸め誤差を含むので、外に見せるワールド座標で測る
+                float length = Vector3.Distance(_worldPositions[pairs[2 * k]], _worldPositions[pairs[2 * k + 1]]);
                 max = MathF.Max(max, length / rest[k] - 1f);
             }
             return max;
@@ -341,6 +359,13 @@ namespace GP02.Core
                 }
 
                 SolveTethers();
+            }
+
+            // 動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）
+            for (int a = 0; a < _activeParticleCount; a++)
+            {
+                int i = _activeParticles[a];
+                _worldPositions[i] = _positions[i] + _origin;
             }
         }
 
