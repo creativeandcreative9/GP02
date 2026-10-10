@@ -10,8 +10,14 @@ VRChatアバター改変向けの、Unity上で動くメッシュ編集ツール
   - ソースは Unity用パッケージの中（`packages/com.gp02.clothedit/Editor/Core/`）に置き、`src/Core/Core.csproj` はそれを参照してビルドするだけ
 - **見た目の確認**
   - 計算結果をJSONに書き出し、ブラウザ（Chromium）で描画して画像・動画にする。クラウド環境で行う
-- **Unityとのつなぎ**（ブラシ操作の画面、メッシュの読み書き、BlendShapeの追加、NDMF対応）
-  - ローカルのUnity 2022.3.22f1で確認する
+- **Unityとのつなぎ**（ブラシ操作の画面、メッシュの読み書き、BlendShapeの追加）
+  - ローカルのUnity 2022.3.22f1（VRChat SDK なし）で確認する
+
+## VRChat との関係
+- VRChat 向けに作るが、**VRChat SDK も NDMF も無い素の Unity で、すべての機能が動くこと**
+- ツール本体（`GP02.Core`、`GP02.Editor`）から VRChat SDK・NDMF を参照しない
+- NDMF 連携など VRChat 向けの機能は、別の asmdef に分け、対象のパッケージが入っているときだけ有効にする（`versionDefines` と `defineConstraints` を使う）
+- 開発用の `unity/` には VRChat SDK を入れない。**VRChat 環境でのテストは最後の段階だけ**行う
 
 ## フォルダ構成
 ```
@@ -25,7 +31,7 @@ GP02/
 ├── tools/preview/                 見た目の確認（ブラウザ描画・動画化）
 ├── tools/bench/                   速度と布の伸びの測定
 ├── tools/unity/                   Unity用の補助（.meta の作成）
-└── unity/                         開発用のUnityプロジェクト（ローカルで ALCOM から作る。手順は 20261010_Unity環境の導入手順.md）
+└── unity/                         開発用のUnityプロジェクト（VRChat SDK なし。開き方は 20261010_Unity環境の導入手順.md）
 ```
 
 ## よく使うコマンド
