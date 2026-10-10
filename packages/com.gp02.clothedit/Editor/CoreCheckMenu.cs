@@ -28,14 +28,8 @@ namespace GP02.EditorTools
             }
 
             // 粒子の間隔はアバターの実寸で決めるので、オブジェクトの拡大縮小を反映する（ざっくりの確認用）
-            Vector3 scale = target.transform.lossyScale;
             Vector3[] source = mesh.vertices;
-            var vertices = new NVector3[source.Length];
-            for (int i = 0; i < source.Length; i++)
-            {
-                Vector3 v = Vector3.Scale(source[i], scale);
-                vertices[i] = new NVector3(v.x, v.y, v.z);
-            }
+            NVector3[] vertices = MeshBridge.ToNumerics(source, target.transform.lossyScale);
 
             var timer = Stopwatch.StartNew();
             ParticleCloth cloth = ParticleCloth.Build(vertices, mesh.triangles);

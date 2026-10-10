@@ -498,3 +498,4 @@ unity/.idea/
 # Packages/ の中のフォルダ（VRChat SDK、NDMF などを入れた場合）はコミットしない。
 # 開発用プロジェクトは VRChat SDK なしで動かす方針。VRChat での確認は最後の段階だけ行う
 unity/Packages/*/
+tools/unity/out/
