@@ -1,0 +1,10 @@
+{
+  "name": "com.gp02.clothedit",
+  "displayName": "GP02 Cloth Edit（仮）",
+  "version": "0.1.0",
+  "unity": "2022.3",
+  "description": "つまんで引っ張るだけで、布として自然に形が決まるメッシュ編集ツール（開発中）。",
+  "author": {
+    "name": "GP02"
+  }
+}

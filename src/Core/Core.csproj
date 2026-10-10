@@ -1,11 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    計算の中核のソースは、Unity用パッケージの中にある（ソースを1か所にするため）。
+    このプロジェクトは、クラウドで自動テストするためにそれをビルドする。
+  -->
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <LangVersion>9.0</LangVersion>
     <Nullable>disable</Nullable>
     <AssemblyName>GP02.Core</AssemblyName>
     <RootNamespace>GP02.Core</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../packages/com.gp02.clothedit/Editor/Core/**/*.cs" />
+  </ItemGroup>
 
 </Project>

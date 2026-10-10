@@ -79,7 +79,7 @@ StyleCopReport.xml
 *_p.c
 *_h.h
 *.ilk
-*.meta
+# *.meta は Unity に必須なので無視しない（GP02）
 *.obj
 *.iobj
 *.pch
@@ -202,12 +202,7 @@ PublishScripts/
 *.nupkg
 # NuGet Symbol Packages
 *.snupkg
-# The packages folder can be ignored because of Package Restore
-**/[Pp]ackages/*
-# except build/, which is used as an MSBuild target.
-!**/[Pp]ackages/build/
-# Uncomment if necessary however generally it will be regenerated when needed
-#!**/[Pp]ackages/repositories.config
+# NuGet の packages フォルダ用の設定は、Unity の Packages フォルダと衝突するので外した（GP02）
 # NuGet v3's project.json files produces more ignorable files
 *.nuget.props
 *.nuget.targets
@@ -486,3 +481,19 @@ $RECYCLE.BIN/
 # GP02
 tools/preview/out/
 node_modules/
+
+# Unity（unity/ の開発用プロジェクト）
+unity/[Ll]ibrary/
+unity/[Tt]emp/
+unity/[Oo]bj/
+unity/[Bb]uild/
+unity/[Bb]uilds/
+unity/[Ll]ogs/
+unity/[Uu]ser[Ss]ettings/
+unity/[Mm]emoryCaptures/
+unity/*.csproj
+unity/*.sln
+unity/.vs/
+unity/.idea/
+# ALCOM / VCC が vpm-manifest.json から復元するパッケージ（VRChat SDK、NDMF など）
+unity/Packages/*/
