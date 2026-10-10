@@ -5,6 +5,8 @@
 #   環境変数 UNITY_LICENSES_ZIP_B64 … Windows の %LOCALAPPDATA%\Unity\licenses の中身を zip にして base64 にしたもの
 #     （新しい Unity Hub の方式。Linux 版の Unity は ~/.config/unity3d/Unity/licenses から読む）
 #   環境変数 UNITY_LICENSE_B64 … 従来のライセンスファイル（Unity_lic.ulf）を base64 にしたもの
+#   環境変数 UNITY_EMAIL と UNITY_PASSWORD … Unity ID。コンテナの中で Personal ライセンスを有効化し、終わったら返却する
+#     （クラウド環境ではこれが一番簡単。上の2つより優先度は低い）
 #   環境変数が使えない場合は、UNITY_LICENSES_ZIP_B64 と同じ内容をファイル ~/.gp02/unity_licenses_zip.b64 に置いてもよい
 #   （クラウド環境のセットアップスクリプトで書き出す）
 #
@@ -20,6 +22,7 @@ IMAGE="${GP02_UNITY_IMAGE:-mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-
 OUT="$REPO/tools/unity/out"
 
 LICENSE=""
+USE_LOGIN=0
 LICENSES_FILE="$HOME/.gp02/unity_licenses_zip.b64"
 if [ -z "${UNITY_LICENSES_ZIP_B64:-}" ] && [ -s "$LICENSES_FILE" ]; then
   UNITY_LICENSES_ZIP_B64="$(tr -d '[:space:]' < "$LICENSES_FILE")"
@@ -33,8 +36,10 @@ if [ -n "${UNITY_LICENSES_ZIP_B64:-}" ]; then
   rm -f "$OUT/licenses.zip"
 elif [ -n "${UNITY_LICENSE_B64:-}" ]; then
   LICENSE="$(printf '%s' "$UNITY_LICENSE_B64" | base64 -d)"
+elif [ -n "${UNITY_EMAIL:-}" ] && [ -n "${UNITY_PASSWORD:-}" ]; then
+  USE_LOGIN=1
 else
-  echo "Unity のライセンスがありません。環境変数 UNITY_LICENSES_ZIP_B64 か UNITY_LICENSE_B64、またはファイル $LICENSES_FILE を用意してください。" >&2
+  echo "Unity のライセンスがありません。環境変数 UNITY_LICENSES_ZIP_B64 か UNITY_LICENSE_B64、UNITY_EMAIL と UNITY_PASSWORD、またはファイル $LICENSES_FILE を用意してください。" >&2
   exit 2
 fi
 
@@ -50,9 +55,23 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE"
 mkdir -p "$OUT"
 rm -f "$OUT/editmode.xml" "$OUT/unity.log" "$OUT/licensing-client.log"
 
+# クラウド環境では外への通信がプロキシ経由で、その証明書を信頼する必要がある。
+# コンテナからホストのプロキシ（127.0.0.1）に届くよう、ホストのネットワークを使う
+DOCKER_ARGS=()
+if [ -n "${HTTPS_PROXY:-}" ]; then
+  DOCKER_ARGS+=(--network host -e "HTTPS_PROXY=$HTTPS_PROXY" -e "https_proxy=$HTTPS_PROXY")
+fi
+CA_BUNDLE="${GP02_CA_BUNDLE:-/root/.ccr/ca-bundle.crt}"
+if [ -s "$CA_BUNDLE" ]; then
+  DOCKER_ARGS+=(-v "$CA_BUNDLE:/gp02-ca.crt:ro")
+fi
+
 status=0
 docker run --rm \
+  "${DOCKER_ARGS[@]}" \
   -e GP02_LICENSE="$LICENSE" \
+  -e GP02_USE_LOGIN="$USE_LOGIN" \
+  -e UNITY_EMAIL -e UNITY_PASSWORD \
   -v "$REPO:/repo" \
   "$IMAGE" \
   bash -c '
@@ -61,6 +80,14 @@ docker run --rm \
       printf "%s" "$GP02_LICENSE" > ~/.local/share/unity3d/Unity/Unity_lic.ulf
     fi
     cp -r /repo/tools/unity/out/licenses/. ~/.config/unity3d/Unity/licenses/
+    if [ -f /gp02-ca.crt ]; then
+      cp /gp02-ca.crt /usr/local/share/ca-certificates/gp02-proxy.crt
+      update-ca-certificates >/dev/null 2>&1
+    fi
+    LC=/opt/unity/Editor/Data/Resources/Licensing/Client/Unity.Licensing.Client
+    if [ "$GP02_USE_LOGIN" = 1 ]; then
+      $LC --activate-ulf --username "$UNITY_EMAIL" --password "$UNITY_PASSWORD" | grep -v "$UNITY_PASSWORD"
+    fi
     unity-editor -batchmode -nographics \
       -projectPath /repo/unity \
       -runTests -testPlatform EditMode \
@@ -69,6 +96,10 @@ docker run --rm \
     code=$?
     # ライセンスまわりの調査用に、ライセンス管理のログも残す
     cp ~/.config/unity3d/Unity/Unity.Licensing.Client.log /repo/tools/unity/out/licensing-client.log 2>/dev/null
+    # 使い捨てのコンテナで有効化したライセンスは、毎回返却して有効化の数を溜めない
+    if [ "$GP02_USE_LOGIN" = 1 ]; then
+      $LC --return-ulf --username "$UNITY_EMAIL" --password "$UNITY_PASSWORD" | grep -v "$UNITY_PASSWORD"
+    fi
     exit $code
   ' || status=$?
 
