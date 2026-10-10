@@ -28,7 +28,7 @@ foreach (int cells in meshCells)
 
     foreach (int iterations in iterationCounts)
     {
-        var solver = new ClothSolver(cloth.Model) { InfluenceRadius = 0.15f };
+        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { InfluenceRadius = 0.15f };
         for (int p = 0; p < cloth.Model.ParticleCount; p++)
         {
             if (cloth.Model.RestPositions[p].Y > size - cloth.Spacing) solver.SetPinned(p, true);

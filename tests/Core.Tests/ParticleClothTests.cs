@@ -146,7 +146,7 @@ public class ParticleClothTests
         // 1m四方・上端をピン留め・メッシュは 1cm 間隔（1万頂点）
         ProceduralMeshes.Grid(100, 100, 1f, 1f, out var vertices, out var triangles);
         var cloth = ParticleCloth.Build(vertices, triangles, Spacing);
-        var solver = new ClothSolver(cloth.Model) { InfluenceRadius = 0.15f };
+        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { InfluenceRadius = 0.15f };
         for (int p = 0; p < cloth.Model.ParticleCount; p++)
         {
             if (cloth.Model.RestPositions[p].Y > 1f - Spacing) solver.SetPinned(p, true);
@@ -176,5 +176,102 @@ public class ParticleClothTests
         Assert.True(p95 < 0.05f, $"伸び（95パーセンタイル）: {p95:P2}");
         // つまんだ所は、ちゃんと手前に動いている
         Assert.True(solver.Positions[center].Z > 0.08f, $"つまんだ点のZ: {solver.Positions[center].Z}");
+    }
+}
+
+public class ClothHierarchyTests
+{
+    static ParticleCloth SkirtSizedCloth()
+    {
+        // スカート1枚に近い大きさ（約0.4㎡）
+        ProceduralMeshes.Grid(100, 100, 0.63f, 0.63f, out var vertices, out var triangles);
+        return ParticleCloth.Build(vertices, triangles);
+    }
+
+    static ClothSolver PullHem(ParticleCloth cloth, ClothHierarchy? hierarchy, int iterations, int settleSolves)
+    {
+        var solver = new ClothSolver(cloth.Model, hierarchy) { InfluenceRadius = 0.15f };
+        for (int p = 0; p < cloth.Model.ParticleCount; p++)
+        {
+            if (cloth.Model.RestPositions[p].Y > 0.63f - cloth.Spacing) solver.SetPinned(p, true);
+        }
+        int center = solver.FindNearestParticle(new Vector3(0.315f, 0.3f, 0f));
+        Vector3 start = solver.Positions[center];
+        for (int f = 1; f <= 15; f++)
+        {
+            solver.Grab(center, start + new Vector3(0f, 0.02f, 0.1f) * f / 15, 0.03f);
+            solver.Solve(iterations);
+        }
+        // つまんだまま、同じ目標で解き続ける（手を止めている間の仕上げ）
+        for (int s = 0; s < settleSolves; s++) solver.Solve(iterations);
+        return solver;
+    }
+
+    static float Percentile99Stretch(ClothSolver solver)
+    {
+        var model = solver.Model;
+        var stretch = new List<float>();
+        for (int k = 0; k < model.StretchRestLengths.Length; k++)
+        {
+            float length = Vector3.Distance(solver.Positions[model.StretchPairs[2 * k]], solver.Positions[model.StretchPairs[2 * k + 1]]);
+            stretch.Add(length / model.StretchRestLengths[k] - 1f);
+        }
+        stretch.Sort();
+        return stretch[(int)((stretch.Count - 1) * 0.99f)];
+    }
+
+    [Fact]
+    public void Build_CreatesCoarserLevels()
+    {
+        var cloth = SkirtSizedCloth();
+        var hierarchy = cloth.Hierarchy;
+
+        Assert.Equal(2, hierarchy.LevelCount);
+        Assert.Equal(0.04f, hierarchy.LevelSpacing(0), 4);
+        Assert.Equal(0.02f, hierarchy.LevelSpacing(1), 4);
+        Assert.True(hierarchy.LevelParticleCount(0) < hierarchy.LevelParticleCount(1));
+        Assert.True(hierarchy.LevelParticleCount(1) < cloth.Model.ParticleCount);
+    }
+
+    [Fact]
+    public void Build_EveryParticleOutsideALevelHasParents()
+    {
+        var cloth = SkirtSizedCloth();
+        var hierarchy = cloth.Hierarchy;
+
+        for (int level = 0; level < hierarchy.LevelCount; level++)
+        {
+            int withParents = 0;
+            for (int p = 0; p < cloth.Model.ParticleCount; p++)
+            {
+                if (hierarchy.ParentCount(level, p) > 0) withParents++;
+            }
+            // この段に含まれない粒子は、すべて親を持つ
+            Assert.Equal(cloth.Model.ParticleCount - hierarchy.LevelParticleCount(level), withParents);
+        }
+    }
+
+    [Fact]
+    public void Solve_WithHierarchy_StretchesLessThanWithout()
+    {
+        var cloth = SkirtSizedCloth();
+
+        float with = Percentile99Stretch(PullHem(cloth, cloth.Hierarchy, 40, 0));
+        float without = Percentile99Stretch(PullHem(cloth, null, 40, 0));
+
+        Assert.True(with < without, $"粗い段あり: {with:P2}, なし: {without:P2}");
+    }
+
+    [Fact]
+    public void Solve_KeepsImprovingWhileHeld()
+    {
+        var cloth = SkirtSizedCloth();
+
+        float justAfterDrag = Percentile99Stretch(PullHem(cloth, cloth.Hierarchy, 40, 0));
+        float afterSettling = Percentile99Stretch(PullHem(cloth, cloth.Hierarchy, 40, 20));
+
+        // 制約どうしが矛盾しているのではなく、解き続ければ伸びは減っていく
+        Assert.True(afterSettling < justAfterDrag * 0.5f, $"直後: {justAfterDrag:P2}, 仕上げ後: {afterSettling:P2}");
+        Assert.True(afterSettling < 0.03f, $"仕上げ後: {afterSettling:P2}");
     }
 }

@@ -12,6 +12,9 @@ namespace GP02.Core
     ///
     /// 時間は進めない（重力も速度も持たない）ので、時間刻みは 1 とみなし、コンプライアンスは値をそのまま使う。
     ///
+    /// 粗い段（<see cref="ClothHierarchy"/>）を渡すと、細かい粒子の計算の前に、粗い段から順に形を決める。
+    /// 長さの補正が少ない反復で全体に行き渡るので、伸びが残りにくくなる。
+    ///
     /// つまんでいる間は、つまんだ点とつながった部品（島）だけを計算する。
     /// <see cref="ActiveMargin"/> を有限にすると、さらに周りだけに絞れるが、
     /// 外側を固定するため、大きく引っ張ると境目が伸びる（布を周りから引き寄せられないため）。
@@ -19,6 +22,8 @@ namespace GP02.Core
     public sealed class ClothSolver
     {
         readonly ClothModel _model;
+        readonly ClothHierarchy _hierarchy;
+        readonly Vector3[] _levelStart;   // 粗い段を解き始めたときの位置（その段の粒子だけ使う）
         readonly MeshGraph _graph;
         readonly Vector3[] _positions;
         readonly bool[] _pinned;
@@ -55,6 +60,9 @@ namespace GP02.Core
 
         /// <summary>伸びやすさ。0 で伸びない。</summary>
         public float StretchCompliance { get; set; } = 0f;
+
+        /// <summary>粗い段1段あたりの反復回数。</summary>
+        public int CoarseIterations { get; set; } = 10;
 
         /// <summary>曲がりやすさ。大きいほど柔らかく折れ曲がる。</summary>
         public float BendCompliance { get; set; } = 0.1f;
@@ -93,10 +101,13 @@ namespace GP02.Core
         /// <summary>直前の Solve で計算した粒子の数（ピン留めを除く）。</summary>
         public int ActiveParticleCount => _activeParticleCount;
 
-        public ClothSolver(ClothModel model)
+        /// <param name="hierarchy">粗い段。null なら細かい粒子だけで解く</param>
+        public ClothSolver(ClothModel model, ClothHierarchy hierarchy = null)
         {
             _model = model ?? throw new ArgumentNullException(nameof(model));
+            _hierarchy = hierarchy;
             int n = model.ParticleCount;
+            if (hierarchy != null) _levelStart = new Vector3[n];
             _graph = new MeshGraph(n, model.StretchPairs, model.StretchRestLengths);
             _positions = (Vector3[])model.RestPositions.Clone();
             _pinned = new bool[n];
@@ -195,7 +206,10 @@ namespace GP02.Core
             return best;
         }
 
-        /// <summary>つまんだ点を目標へ動かし、制約を指定回数だけ繰り返し解く。</summary>
+        /// <summary>
+        /// つまんだ点を目標へ動かし、制約を解く。
+        /// 粗い段があれば、先に各段を <see cref="CoarseIterations"/> 回ずつ解いてから、細かい粒子を iterations 回解く。
+        /// </summary>
         public void Solve(int iterations)
         {
             if (_pinDistancesDirty)
@@ -222,6 +236,7 @@ namespace GP02.Core
             }
 
             if (_grabbed >= 0) SpreadGrabMotion();
+            if (_hierarchy != null && iterations > 0) SolveCoarseLevels();
 
             int[] stretchPairs = _model.StretchPairs;
             float[] stretchRest = _model.StretchRestLengths;
@@ -250,6 +265,55 @@ namespace GP02.Core
 
                 SolveTethers();
             }
+        }
+
+        void SolveCoarseLevels()
+        {
+            foreach (var level in _hierarchy.Levels)
+            {
+                foreach (int m in level.Members) _levelStart[m] = _positions[m];
+
+                int[] pairs = level.StretchPairs;
+                float[] rest = level.RestLengths;
+                for (int it = 0; it < CoarseIterations; it++)
+                {
+                    for (int k = 0; k < rest.Length; k++) SolveStretchOnly(pairs[2 * k], pairs[2 * k + 1], rest[k]);
+                }
+
+                // この段の粒子の動きを、この段に含まれない粒子へ配る
+                for (int a = 0; a < _activeParticleCount; a++)
+                {
+                    int i = _activeParticles[a];
+                    if (_inverseMass[i] == 0f) continue;
+                    int end = level.BindOffsets[i + 1];
+                    int begin = level.BindOffsets[i];
+                    if (begin == end) continue;
+                    Vector3 delta = Vector3.Zero;
+                    for (int k = begin; k < end; k++)
+                    {
+                        int parent = level.BindParents[k];
+                        delta += (_positions[parent] - _levelStart[parent]) * level.BindWeights[k];
+                    }
+                    _positions[i] += delta;
+                }
+            }
+        }
+
+        // 伸びているときだけ縮める（縮んでいるのは許す）
+        void SolveStretchOnly(int i, int j, float restLength)
+        {
+            float wi = _inverseMass[i];
+            float wj = _inverseMass[j];
+            float w = wi + wj;
+            if (w == 0f) return;
+
+            Vector3 d = _positions[i] - _positions[j];
+            float length = d.Length();
+            if (length <= restLength) return;
+
+            Vector3 correction = d / length * (-(length - restLength) / w);
+            _positions[i] += wi * correction;
+            _positions[j] -= wj * correction;
         }
 
         void UpdateActiveRegion()

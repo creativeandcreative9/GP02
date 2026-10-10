@@ -56,7 +56,7 @@ Console.WriteLine($"書き出し: {output}");
 
 static ClothSolver CreateSolver(ParticleCloth cloth)
 {
-    var solver = new ClothSolver(cloth.Model) { InfluenceRadius = 0.2f };
+    var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { InfluenceRadius = 0.2f };
     // 曲げの硬さを試すとき用: GP02_BEND=0.05 ./run.sh
     string? bend = Environment.GetEnvironmentVariable("GP02_BEND");
     if (bend != null) solver.BendCompliance = float.Parse(bend, CultureInfo.InvariantCulture);
