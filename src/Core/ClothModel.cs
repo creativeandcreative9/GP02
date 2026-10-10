@@ -67,10 +67,10 @@ namespace GP02.Core
             }
 
             // 辺 → その辺を持つ三角形の、向かいの頂点
-            var edgeOpposite = new Dictionary<long, int>();
+            var edgeOpposite = new Dictionary<long, int>(PairKeyComparer.Instance);
             var stretchPairs = new List<int>();
             var bendPairs = new List<int>();
-            var bendKeys = new HashSet<long>();
+            var bendKeys = new HashSet<long>(PairKeyComparer.Instance);
 
             for (int t = 0; t < particleTriangles.Count; t += 3)
             {
@@ -125,6 +125,23 @@ namespace GP02.Core
                 lengths[k] = Vector3.Distance(positions[pairs[2 * k]], positions[pairs[2 * k + 1]]);
             }
             return lengths;
+        }
+
+        // long の標準のハッシュは上位と下位の XOR なので、(a, b) の組では衝突が多く、
+        // 頂点数が増えると辞書が極端に遅くなる。値をかき混ぜてから使う。
+        sealed class PairKeyComparer : IEqualityComparer<long>
+        {
+            public static readonly PairKeyComparer Instance = new PairKeyComparer();
+
+            public bool Equals(long x, long y) => x == y;
+
+            public int GetHashCode(long key)
+            {
+                ulong z = (ulong)key + 0x9E3779B97F4A7C15UL;
+                z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+                z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+                return (int)(z ^ (z >> 31));
+            }
         }
 
         static long PairKey(int a, int b)

@@ -17,6 +17,7 @@ GP02/
 ├── src/Core/          計算の中核（Unity非依存のC#）
 ├── tests/Core.Tests/  計算の中核の自動テスト
 ├── tools/preview/     見た目の確認（ブラウザ描画・動画化）
+├── tools/bench/       速度と布の伸びの測定
 └── unity/             Unityとのつなぎ（ローカルで確認。未着手）
 ```
 
@@ -24,6 +25,7 @@ GP02/
 - テスト: `dotnet test tests/Core.Tests`
 - 見た目の確認（従来方式と粒子方式を並べた動画）: `tools/preview/run.sh`
   - 出力は `tools/preview/out/`（Gitには含めない）
+- 速度の測定: `dotnet run --project tools/bench/Bench -c Release`
 
 ## クラウド環境
 - .NET 8 SDK を使う。新しいセッションで入っていない場合は、環境設定の Setup script に次を追加する
@@ -35,7 +37,7 @@ GP02/
 
 ## 決めたこと
 - 紹介動画は、完成間近になってから作る（`tools/preview` の比較動画は検証用）
-- 実アバターでの確認には、著作権フリーのアバターを用意する
+- 実アバターでの確認には、著作権フリーのアバターを用意する（VRoidで自作する予定）
   - リポジトリに入れる場合は、ライセンスが再配布を認めているか（CC0など）を確認する
 - 布のシワの細かい再現は重視しない（既存ツールでも表現しきれていないため）
 

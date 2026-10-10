@@ -28,8 +28,13 @@ namespace GP02.Core
         readonly int[] _nearestPin;
         bool _pinDistancesDirty = true;
 
+        // つまんでいる範囲。中心の粒子から、メッシュに沿ってブラシ半径以内の粒子
+        readonly bool[] _inBrush;
         int _grabbed = -1;
+        float _brushRadius;
         Vector3 _grabTarget;
+        Vector3 _grabOrigin;      // つまみ始めたときの中心の位置
+        Vector3 _appliedOffset;   // これまでに範囲内へ加えた移動量
 
         /// <summary>伸びやすさ。0 で伸びない。</summary>
         public float StretchCompliance { get; set; } = 0f;
@@ -38,7 +43,7 @@ namespace GP02.Core
         public float BendCompliance { get; set; } = 0.1f;
 
         /// <summary>
-        /// つまんだ点の動きが、メッシュに沿ってどこまで広がるか（メートル）。
+        /// つまんでいる範囲の外側へ、動きがメッシュに沿ってどこまで広がるか（メートル）。
         /// この外側は、布の長さを保つために必要な分しか動かない。
         /// </summary>
         public float InfluenceRadius { get; set; } = 0.3f;
@@ -55,6 +60,7 @@ namespace GP02.Core
             _grabDistance = new float[n];
             _pinDistance = new float[n];
             _nearestPin = new int[n];
+            _inBrush = new bool[n];
         }
 
         public ClothModel Model => _model;
@@ -62,8 +68,11 @@ namespace GP02.Core
         /// <summary>現在の粒子の位置。</summary>
         public ReadOnlySpan<Vector3> Positions => _positions;
 
-        /// <summary>つまんでいる粒子。つまんでいなければ -1。</summary>
+        /// <summary>つまんでいる範囲の中心の粒子。つまんでいなければ -1。</summary>
         public int GrabbedParticle => _grabbed;
+
+        /// <summary>つまんでいる範囲に含まれるか。</summary>
+        public bool IsGrabbed(int particle) => _grabbed >= 0 && _inBrush[particle];
 
         public bool IsPinned(int particle) => _pinned[particle];
 
@@ -75,15 +84,26 @@ namespace GP02.Core
             _pinDistancesDirty = true;
         }
 
-        /// <summary>粒子をつまみ、指定位置へ動かす。実際に動くのは次の Solve。</summary>
-        public void Grab(int particle, Vector3 target)
+        /// <summary>
+        /// 粒子をつまみ、指定位置へ動かす。実際に動くのは次の Solve。
+        /// </summary>
+        /// <param name="particle">つまむ範囲の中心</param>
+        /// <param name="target">中心の粒子の移動先。範囲内の粒子は、中心と同じだけ平行移動する</param>
+        /// <param name="brushRadius">つまむ範囲（メッシュに沿った距離、メートル）。0 なら中心の1点だけ</param>
+        public void Grab(int particle, Vector3 target, float brushRadius = 0f)
         {
             if ((uint)particle >= (uint)_positions.Length) throw new ArgumentOutOfRangeException(nameof(particle));
-            if (particle != _grabbed)
+            if (brushRadius < 0f) throw new ArgumentOutOfRangeException(nameof(brushRadius));
+            if (particle != _grabbed || brushRadius != _brushRadius)
             {
+                // メッシュに沿った距離で選ぶので、近くにあってもつながっていない布（重ね着など）はつままない
                 _graph.ShortestDistances(new[] { particle }, _grabDistance, null);
+                for (int i = 0; i < _inBrush.Length; i++) _inBrush[i] = _grabDistance[i] <= brushRadius;
+                _grabOrigin = _positions[particle];
+                _appliedOffset = Vector3.Zero;
             }
             _grabbed = particle;
+            _brushRadius = brushRadius;
             _grabTarget = target;
         }
 
@@ -159,22 +179,25 @@ namespace GP02.Core
 
         void SpreadGrabMotion()
         {
-            Vector3 delta = _grabTarget - _positions[_grabbed];
+            // 現在位置ではなく、つまみ始めからの移動量で考える。
+            // 中心がピン留めされていても、同じ移動を何度も足さないようにするため。
+            Vector3 delta = _grabTarget - _grabOrigin - _appliedOffset;
             if (delta.LengthSquared() == 0f) return;
+            _appliedOffset += delta;
 
             for (int i = 0; i < _positions.Length; i++)
             {
                 if (_pinned[i]) continue;
                 _positions[i] += delta * Falloff(_grabDistance[i]);
             }
-            _positions[_grabbed] = _grabTarget;
         }
 
-        // 1（つまんだ点）〜 0（影響範囲の外）
+        // 1（つまんでいる範囲）〜 0（影響範囲の外）
         float Falloff(float distance)
         {
+            if (distance <= _brushRadius) return 1f;
             if (InfluenceRadius <= 0f) return 0f;
-            float t = distance / InfluenceRadius;
+            float t = (distance - _brushRadius) / InfluenceRadius;
             if (t >= 1f) return 0f;
             float s = 1f - t;
             return s * s * (3f - 2f * s);
@@ -194,8 +217,12 @@ namespace GP02.Core
         {
             for (int i = 0; i < _positions.Length; i++)
             {
-                if (InverseMass(i) == 0f) continue;
-                if (_grabbed >= 0) SolveTether(i, _positions[_grabbed], _grabDistance[i]);
+                if (_pinned[i]) continue;
+                bool grabbed = IsGrabbed(i);
+                if (_grabbed >= 0 && !grabbed) SolveTether(i, _positions[_grabbed], _grabDistance[i]);
+
+                // つまんだ範囲も、ピンから布の長さ以上は離れない。
+                // 布の長さが足りない方向へ引っ張ると、本物の布のように目標の手前で止まる（持ち上がる）。
                 int pin = _nearestPin[i];
                 if (pin >= 0) SolveTether(i, _positions[pin], _pinDistance[i]);
             }
@@ -232,7 +259,7 @@ namespace GP02.Core
 
         float InverseMass(int particle)
         {
-            return _pinned[particle] || particle == _grabbed ? 0f : 1f;
+            return _pinned[particle] || IsGrabbed(particle) ? 0f : 1f;
         }
     }
 }

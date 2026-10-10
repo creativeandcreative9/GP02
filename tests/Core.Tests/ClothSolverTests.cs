@@ -128,6 +128,80 @@ public class ClothSolverTests
     }
 
     [Fact]
+    public void Grab_WithBrush_MovesWholeRegionTogether()
+    {
+        var solver = CreateHangingCloth(out int center);
+        const float brush = 0.1f;   // 格子の間隔は 0.05m なので、2マス分
+        var offset = new Vector3(0f, 0.05f, 0.2f);
+        Vector3 start = solver.Positions[center];
+
+        for (int s = 1; s <= 20; s++)
+        {
+            solver.Grab(center, start + offset * s / 20, brush);
+            solver.Solve(50);
+        }
+
+        var rest = solver.Model.RestPositions;
+        int grabbedCount = 0;
+        for (int i = 0; i < rest.Length; i++)
+        {
+            if (!solver.IsGrabbed(i)) continue;
+            grabbedCount++;
+            Assert.True(Vector3.Distance(rest[i] + offset, solver.Positions[i]) < Tolerance, $"粒子 {i}");
+        }
+        Assert.True(grabbedCount > 1, $"つまんだ粒子の数: {grabbedCount}");
+    }
+
+    [Fact]
+    public void Grab_WithBrush_IgnoresDisconnectedLayer()
+    {
+        // 1cm離して重ねた2枚の布（重ね着を想定）
+        ProceduralMeshes.Grid(10, 10, 1f, 1f, out var front, out var frontTriangles);
+        var back = front.Select(v => v + new Vector3(0f, 0f, -0.01f)).ToArray();
+        var vertices = front.Concat(back).ToArray();
+        var triangles = frontTriangles.Concat(frontTriangles.Select(i => i + front.Length)).ToArray();
+        var solver = new ClothSolver(ClothModel.Build(vertices, triangles));
+        int center = 5 * 11 + 5;
+
+        solver.Grab(center, solver.Positions[center] + new Vector3(0f, 0f, 0.1f), brushRadius: 0.2f);
+        solver.Solve(50);
+
+        var rest = solver.Model.RestPositions;
+        for (int i = front.Length; i < vertices.Length; i++)
+        {
+            Assert.False(solver.IsGrabbed(i));
+            Assert.Equal(rest[i], solver.Positions[i]);
+        }
+    }
+
+    [Fact]
+    public void Grab_PinnedCenter_DoesNotAccumulate()
+    {
+        var solver = CreateHangingCloth(out int center);
+        solver.SetPinned(center, true);
+        Vector3 target = solver.Positions[center] + new Vector3(0f, 0f, 0.2f);
+
+        var snapshots = new List<Vector3[]>();
+        for (int s = 0; s < 6; s++)
+        {
+            solver.Grab(center, target);
+            solver.Solve(100);
+            snapshots.Add(solver.Positions.ToArray());
+        }
+
+        // 同じ目標のまま解き続けると、変化はだんだん小さくなり、元の形から離れていかない
+        // （移動を毎回足してしまうと、変化が減らずに形がずれ続ける）
+        var rest = solver.Model.RestPositions;
+        float firstChange = snapshots[0].Zip(snapshots[1], Vector3.Distance).Max();
+        float lastChange = snapshots[4].Zip(snapshots[5], Vector3.Distance).Max();
+        float firstOffset = snapshots[1].Zip(rest, Vector3.Distance).Max();
+        float lastOffset = snapshots[5].Zip(rest, Vector3.Distance).Max();
+        Assert.True(lastChange < firstChange * 0.5f, $"最初の変化量: {firstChange}, 最後の変化量: {lastChange}");
+        Assert.True(lastOffset <= firstOffset, $"元の形からのずれ: {firstOffset} → {lastOffset}");
+        Assert.Equal(rest[center], solver.Positions[center]);
+    }
+
+    [Fact]
     public void Grab_IsDeterministic()
     {
         var a = CreateHangingCloth(out int grabbed);
