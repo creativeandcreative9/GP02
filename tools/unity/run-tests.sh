@@ -5,6 +5,8 @@
 #   環境変数 UNITY_LICENSES_ZIP_B64 … Windows の %LOCALAPPDATA%\Unity\licenses の中身を zip にして base64 にしたもの
 #     （新しい Unity Hub の方式。Linux 版の Unity は ~/.config/unity3d/Unity/licenses から読む）
 #   環境変数 UNITY_LICENSE_B64 … 従来のライセンスファイル（Unity_lic.ulf）を base64 にしたもの
+#   環境変数が使えない場合は、UNITY_LICENSES_ZIP_B64 と同じ内容をファイル ~/.gp02/unity_licenses_zip.b64 に置いてもよい
+#   （クラウド環境のセットアップスクリプトで書き出す）
 #
 # 出力（Gitには含めない）:
 #   tools/unity/out/editmode.xml … テスト結果
@@ -18,6 +20,10 @@ IMAGE="${GP02_UNITY_IMAGE:-mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-
 OUT="$REPO/tools/unity/out"
 
 LICENSE=""
+LICENSES_FILE="$HOME/.gp02/unity_licenses_zip.b64"
+if [ -z "${UNITY_LICENSES_ZIP_B64:-}" ] && [ -s "$LICENSES_FILE" ]; then
+  UNITY_LICENSES_ZIP_B64="$(tr -d '[:space:]' < "$LICENSES_FILE")"
+fi
 LICENSES_DIR="$OUT/licenses"
 rm -rf "$LICENSES_DIR"
 mkdir -p "$LICENSES_DIR"
@@ -28,7 +34,7 @@ if [ -n "${UNITY_LICENSES_ZIP_B64:-}" ]; then
 elif [ -n "${UNITY_LICENSE_B64:-}" ]; then
   LICENSE="$(printf '%s' "$UNITY_LICENSE_B64" | base64 -d)"
 else
-  echo "Unity のライセンスがありません。環境変数 UNITY_LICENSES_ZIP_B64 か UNITY_LICENSE_B64 を設定してください。" >&2
+  echo "Unity のライセンスがありません。環境変数 UNITY_LICENSES_ZIP_B64 か UNITY_LICENSE_B64、またはファイル $LICENSES_FILE を用意してください。" >&2
   exit 2
 fi
 
