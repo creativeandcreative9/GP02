@@ -1,0 +1,182 @@
+using System.Numerics;
+using GP02.Core;
+
+namespace GP02.Core.Tests;
+
+public class ClothSolverTests
+{
+    const float Tolerance = 1e-5f;
+    const int Columns = 20, Rows = 20;
+    const float Size = 1f;
+
+    static ClothSolver CreateHangingCloth(out int bottomCenter)
+    {
+        ProceduralMeshes.Grid(Columns, Rows, Size, Size, out var vertices, out var triangles);
+        var solver = new ClothSolver(ClothModel.Build(vertices, triangles));
+        int stride = Columns + 1;
+        for (int c = 0; c <= Columns; c++) solver.SetPinned(Rows * stride + c, true);
+        bottomCenter = Columns / 2;
+        return solver;
+    }
+
+    // 指定位置まで、少しずつ引っ張る（実際のドラッグ操作と同じ）
+    static void Drag(ClothSolver solver, int particle, Vector3 offset, int steps = 30, int iterations = 100)
+    {
+        Vector3 start = solver.Positions[particle];
+        for (int s = 1; s <= steps; s++)
+        {
+            solver.Grab(particle, start + offset * s / steps);
+            solver.Solve(iterations);
+        }
+    }
+
+    static float MaxStretch(ClothSolver solver)
+    {
+        var model = solver.Model;
+        float max = 0f;
+        for (int k = 0; k < model.StretchRestLengths.Length; k++)
+        {
+            float length = Vector3.Distance(solver.Positions[model.StretchPairs[2 * k]], solver.Positions[model.StretchPairs[2 * k + 1]]);
+            max = MathF.Max(max, length / model.StretchRestLengths[k] - 1f);
+        }
+        return max;
+    }
+
+    [Fact]
+    public void Solve_WithoutGrab_KeepsShape()
+    {
+        var solver = CreateHangingCloth(out _);
+
+        solver.Solve(50);
+
+        var rest = solver.Model.RestPositions;
+        for (int i = 0; i < rest.Length; i++)
+        {
+            Assert.True(Vector3.Distance(rest[i], solver.Positions[i]) < Tolerance);
+        }
+    }
+
+    [Fact]
+    public void Grab_MovesGrabbedParticleToTarget()
+    {
+        var solver = CreateHangingCloth(out int grabbed);
+        var offset = new Vector3(0.1f, 0.2f, 0.3f);
+        Vector3 target = solver.Positions[grabbed] + offset;
+
+        Drag(solver, grabbed, offset);
+
+        Assert.True(Vector3.Distance(target, solver.Positions[grabbed]) < Tolerance);
+    }
+
+    [Fact]
+    public void Grab_DoesNotMovePinnedParticles()
+    {
+        var solver = CreateHangingCloth(out int grabbed);
+
+        Drag(solver, grabbed, new Vector3(0.2f, 0.3f, 0.4f));
+
+        var rest = solver.Model.RestPositions;
+        for (int i = 0; i < rest.Length; i++)
+        {
+            if (!solver.IsPinned(i)) continue;
+            Assert.Equal(rest[i], solver.Positions[i]);
+        }
+    }
+
+    [Fact]
+    public void Grab_KeepsClothLength()
+    {
+        var solver = CreateHangingCloth(out int grabbed);
+
+        // 1mの布の端を約47cm引っ張る、かなり大きな操作
+        Drag(solver, grabbed, new Vector3(0.15f, 0.25f, 0.35f));
+
+        Assert.True(MaxStretch(solver) < 0.05f, $"最大の伸び: {MaxStretch(solver):P2}");
+    }
+
+    [Fact]
+    public void Grab_StretchesMuchLessThanFalloffOnly()
+    {
+        var particle = CreateHangingCloth(out int grabbed);
+        var falloffOnly = CreateHangingCloth(out _);
+        var offset = new Vector3(0.15f, 0.25f, 0.35f);
+
+        Drag(particle, grabbed, offset);
+        // 制約を解かない＝周りへ配るだけの、範囲指定方式と同じ動き
+        Drag(falloffOnly, grabbed, offset, iterations: 0);
+
+        float particleStretch = MaxStretch(particle);
+        float falloffStretch = MaxStretch(falloffOnly);
+        Assert.True(particleStretch * 5f < falloffStretch, $"粒子方式: {particleStretch:P2}, 範囲指定方式: {falloffStretch:P2}");
+    }
+
+    [Fact]
+    public void Grab_FarParticlesMoveLessThanNearOnes()
+    {
+        var solver = CreateHangingCloth(out int grabbed);
+        int stride = Columns + 1;
+        int near = grabbed + stride;               // つまんだ点の1つ上
+        int far = (Rows - 2) * stride;             // 左上のピンの近く
+
+        Drag(solver, grabbed, new Vector3(0f, 0f, 0.3f));
+
+        var rest = solver.Model.RestPositions;
+        float nearMove = Vector3.Distance(rest[near], solver.Positions[near]);
+        float farMove = Vector3.Distance(rest[far], solver.Positions[far]);
+        Assert.True(nearMove > 0.1f, $"近い点の移動: {nearMove}");
+        Assert.True(farMove < nearMove * 0.2f, $"遠い点の移動: {farMove}, 近い点の移動: {nearMove}");
+    }
+
+    [Fact]
+    public void Grab_IsDeterministic()
+    {
+        var a = CreateHangingCloth(out int grabbed);
+        var b = CreateHangingCloth(out _);
+        var offset = new Vector3(0.1f, 0.1f, 0.2f);
+
+        Drag(a, grabbed, offset);
+        Drag(b, grabbed, offset);
+
+        Assert.True(a.Positions.SequenceEqual(b.Positions));
+    }
+
+    [Fact]
+    public void Strokes_Accumulate()
+    {
+        var solver = CreateHangingCloth(out int first);
+        int second = 2 * (Columns + 1) + 1;        // 左下寄りの、離れた点
+        var offset = new Vector3(0f, 0f, 0.2f);
+        Drag(solver, first, offset);
+        solver.Release();
+        float firstMove = Vector3.Distance(solver.Model.RestPositions[first], solver.Positions[first]);
+
+        Drag(solver, second, offset);
+
+        // 2回目の編集のあとも、1回目に動かした点はほぼそのまま残る
+        float firstMoveAfter = Vector3.Distance(solver.Model.RestPositions[first], solver.Positions[first]);
+        Assert.True(firstMoveAfter > firstMove * 0.8f, $"1回目: {firstMove}, 2回目のあと: {firstMoveAfter}");
+    }
+
+    [Fact]
+    public void ResetToRest_RestoresShapeAndKeepsPins()
+    {
+        var solver = CreateHangingCloth(out int grabbed);
+        Drag(solver, grabbed, new Vector3(0f, 0f, 0.2f));
+
+        solver.ResetToRest();
+
+        Assert.True(solver.Positions.SequenceEqual(solver.Model.RestPositions));
+        Assert.Equal(-1, solver.GrabbedParticle);
+        Assert.True(solver.IsPinned(Rows * (Columns + 1)));
+    }
+
+    [Fact]
+    public void FindNearestParticle_ReturnsClosest()
+    {
+        var solver = CreateHangingCloth(out int bottomCenter);
+
+        int found = solver.FindNearestParticle(new Vector3(0.5f + 0.01f, -0.02f, 0.03f));
+
+        Assert.Equal(bottomCenter, found);
+    }
+}
