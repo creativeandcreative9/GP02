@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Docker の Unity（Linux）で unity/ のプロジェクトをコンパイルし、EditMode テストを実行する。
 #
-# 必要なもの（どちらか）:
+# 必要なもの（どれか）:
+#   環境変数 UNITY_EMAIL と UNITY_PASSWORD … CI専用の Unity アカウント（2段階認証なし）。Docker の中でサインインしてライセンスを取る
+#     （PCで作ったライセンスは PC に結びついていて Docker では使えないため、これを優先する）
 #   環境変数 UNITY_LICENSES_ZIP_B64 … Windows の %LOCALAPPDATA%\Unity\licenses の中身を zip にして base64 にしたもの
 #     （新しい Unity Hub の方式。Linux 版の Unity は ~/.config/unity3d/Unity/licenses から読む）
 #   環境変数 UNITY_LICENSE_B64 … 従来のライセンスファイル（Unity_lic.ulf）を base64 にしたもの
@@ -27,14 +29,16 @@ fi
 LICENSES_DIR="$OUT/licenses"
 rm -rf "$LICENSES_DIR"
 mkdir -p "$LICENSES_DIR"
-if [ -n "${UNITY_LICENSES_ZIP_B64:-}" ]; then
+if [ -n "${UNITY_EMAIL:-}" ] && [ -n "${UNITY_PASSWORD:-}" ]; then
+  : # Docker の中でサインインする（下の docker run で渡す）
+elif [ -n "${UNITY_LICENSES_ZIP_B64:-}" ]; then
   printf '%s' "$UNITY_LICENSES_ZIP_B64" | base64 -d > "$OUT/licenses.zip"
   python3 -I -m zipfile -e "$OUT/licenses.zip" "$LICENSES_DIR"
   rm -f "$OUT/licenses.zip"
 elif [ -n "${UNITY_LICENSE_B64:-}" ]; then
   LICENSE="$(printf '%s' "$UNITY_LICENSE_B64" | base64 -d)"
 else
-  echo "Unity のライセンスがありません。環境変数 UNITY_LICENSES_ZIP_B64 か UNITY_LICENSE_B64、またはファイル $LICENSES_FILE を用意してください。" >&2
+  echo "Unity のライセンスがありません。環境変数 UNITY_EMAIL と UNITY_PASSWORD（CI専用アカウント）、UNITY_LICENSES_ZIP_B64、UNITY_LICENSE_B64、またはファイル $LICENSES_FILE を用意してください。" >&2
   exit 2
 fi
 
@@ -50,18 +54,35 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE"
 mkdir -p "$OUT"
 rm -f "$OUT/editmode.xml" "$OUT/unity.log" "$OUT/licensing-client.log"
 
+# クラウド環境の通信は中継（プロキシ）の証明書で暗号化されているので、Docker の中でも信頼させる。
+# これが無いと Unity のライセンス管理がサーバーにつながらない（UntrustedRoot）
+CA_ARGS=()
+CA_FILE="${GP02_EXTRA_CA:-/root/.ccr/ca-bundle.crt}"
+if [ -s "$CA_FILE" ]; then
+  CA_ARGS=(-v "$CA_FILE:/usr/local/share/ca-certificates/gp02-extra.crt:ro")
+fi
+
 status=0
+# パスワードはコマンドラインに値を書かず、環境変数の名前だけで渡す
+UNITY_EMAIL="${UNITY_EMAIL:-}" UNITY_PASSWORD="${UNITY_PASSWORD:-}" \
 docker run --rm \
   -e GP02_LICENSE="$LICENSE" \
+  -e UNITY_EMAIL -e UNITY_PASSWORD \
+  "${CA_ARGS[@]}" \
   -v "$REPO:/repo" \
   "$IMAGE" \
   bash -c '
+    update-ca-certificates >/dev/null 2>&1 || true
     mkdir -p ~/.local/share/unity3d/Unity ~/.config/unity3d/Unity/licenses
     if [ -n "$GP02_LICENSE" ]; then
       printf "%s" "$GP02_LICENSE" > ~/.local/share/unity3d/Unity/Unity_lic.ulf
     fi
     cp -r /repo/tools/unity/out/licenses/. ~/.config/unity3d/Unity/licenses/
-    unity-editor -batchmode -nographics \
+    login=()
+    if [ -n "$UNITY_EMAIL" ] && [ -n "$UNITY_PASSWORD" ]; then
+      login=(-username "$UNITY_EMAIL" -password "$UNITY_PASSWORD")
+    fi
+    unity-editor -batchmode -nographics "${login[@]}" \
       -projectPath /repo/unity \
       -runTests -testPlatform EditMode \
       -testResults /repo/tools/unity/out/editmode.xml \
@@ -75,8 +96,21 @@ docker run --rm \
 # ライセンスの写しは残さない
 rm -rf "$LICENSES_DIR"
 
+# Unity はコマンドラインの引数をログに書くので、パスワードを伏せる
+if [ -n "${UNITY_PASSWORD:-}" ]; then
+  for f in "$OUT/unity.log" "$OUT/licensing-client.log"; do
+    [ -f "$f" ] || continue
+    UNITY_PASSWORD="$UNITY_PASSWORD" python3 -I -c '
+import os, sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8", errors="replace").read()
+open(p, "w", encoding="utf-8").write(s.replace(os.environ["UNITY_PASSWORD"], "********"))
+' "$f"
+  done
+fi
+
 echo "---- ライセンス ----"
-grep -hE "License is not active|No valid Unity Editor license|Successfully (activated|resolved)|HasEntitlements" "$OUT/unity.log" 2>/dev/null | sort -u | head -5 || true
+grep -hE "License is not active|No valid Unity Editor license|Successfully (activated|resolved)|HasEntitlements|Failed to login|LoginRequest" "$OUT/unity.log" 2>/dev/null | sort -u | head -5 || true
 
 echo "---- コンパイルエラー ----"
 grep -E "error CS[0-9]+" "$OUT/unity.log" 2>/dev/null | sort -u || echo "なし"
