@@ -221,6 +221,58 @@ public class ClothHierarchyTests
     }
 
     [Fact]
+    public void Settle_ReducesStretchBelowTolerance()
+    {
+        var cloth = SkirtSizedCloth();
+        var solver = PullHem(cloth, cloth.Hierarchy, 40, 0);
+        float before = solver.MeasureMaxStretch();
+
+        float after = solver.Settle(0.1f, 5000, out int iterations);
+
+        Assert.True(before > 0.1f, $"仕上げ前: {before:P2}");
+        Assert.True(after <= 0.1f, $"仕上げ後: {after:P2}");
+        Assert.InRange(iterations, 1, 5000);
+    }
+
+    [Fact]
+    public void Settle_KeepsGrabbedRegionInPlace()
+    {
+        var cloth = SkirtSizedCloth();
+        var solver = PullHem(cloth, cloth.Hierarchy, 40, 0);
+        var grabbed = Enumerable.Range(0, cloth.Model.ParticleCount).Where(solver.IsGrabbed).ToArray();
+        var before = grabbed.Select(i => solver.Positions[i]).ToArray();
+
+        solver.Settle(0.1f, 2000, out _);
+
+        // つまんだ所は押さえたまま仕上げるので、動かない
+        Assert.NotEmpty(grabbed);
+        for (int k = 0; k < grabbed.Length; k++) Assert.Equal(before[k], solver.Positions[grabbed[k]]);
+    }
+
+    [Fact]
+    public void Settle_DoesNothingWhenAlreadyWithinTolerance()
+    {
+        var cloth = SkirtSizedCloth();
+        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy);
+
+        float stretch = solver.Settle(0.05f, 1000, out int iterations);
+
+        Assert.Equal(0, iterations);
+        Assert.True(stretch < 1e-5f);
+    }
+
+    [Fact]
+    public void SolveFor_RunsAtLeastOneStep()
+    {
+        var cloth = SkirtSizedCloth();
+        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy);
+
+        int iterations = solver.SolveFor(0.0, iterationsPerStep: 3);
+
+        Assert.Equal(3, iterations);
+    }
+
+    [Fact]
     public void Build_CreatesCoarserLevels()
     {
         var cloth = SkirtSizedCloth();

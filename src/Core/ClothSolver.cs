@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Numerics;
 
 namespace GP02.Core
@@ -204,6 +205,70 @@ namespace GP02.Core
                 }
             }
             return best;
+        }
+
+        /// <summary>
+        /// 計算範囲にある伸びの制約のうち、最も大きい伸び（0.1 なら 10%）。
+        /// </summary>
+        public float MeasureMaxStretch()
+        {
+            if (_activeDirty)
+            {
+                UpdateActiveRegion();
+                _activeDirty = false;
+            }
+
+            int[] pairs = _model.StretchPairs;
+            float[] rest = _model.StretchRestLengths;
+            float max = 0f;
+            for (int a = 0; a < _activeStretchCount; a++)
+            {
+                int k = _activeStretch[a];
+                float length = Vector3.Distance(_positions[pairs[2 * k]], _positions[pairs[2 * k + 1]]);
+                max = MathF.Max(max, length / rest[k] - 1f);
+            }
+            return max;
+        }
+
+        /// <summary>
+        /// 手を止めたときの仕上げ。今の状態のまま（つまんでいれば、つまんだまま）、
+        /// 伸びが tolerance 以下になるか、反復回数が maxIterations に達するまで解き続ける。
+        /// つまんだまま解くのは、押さえを外すとつまんでいた範囲が戻り、編集した形が変わってしまうため。
+        /// </summary>
+        /// <param name="iterationsDone">実際に行った反復回数（出力）</param>
+        /// <returns>仕上げた後の最大の伸び</returns>
+        public float Settle(float tolerance, int maxIterations, out int iterationsDone, int iterationsPerStep = 40)
+        {
+            if (iterationsPerStep <= 0) throw new ArgumentOutOfRangeException(nameof(iterationsPerStep));
+            iterationsDone = 0;
+            float stretch = MeasureMaxStretch();
+            while (stretch > tolerance && iterationsDone < maxIterations)
+            {
+                int step = Math.Min(iterationsPerStep, maxIterations - iterationsDone);
+                Solve(step);
+                iterationsDone += step;
+                stretch = MeasureMaxStretch();
+            }
+            return stretch;
+        }
+
+        /// <summary>
+        /// 指定した時間（ミリ秒）だけ解く。Unity側で、1コマの時間予算に収めるために使う。
+        /// 最低でも1回は解く。
+        /// </summary>
+        /// <returns>行った反復回数</returns>
+        public int SolveFor(double milliseconds, int iterationsPerStep = 5)
+        {
+            if (iterationsPerStep <= 0) throw new ArgumentOutOfRangeException(nameof(iterationsPerStep));
+            var timer = Stopwatch.StartNew();
+            int done = 0;
+            do
+            {
+                Solve(iterationsPerStep);
+                done += iterationsPerStep;
+            }
+            while (timer.Elapsed.TotalMilliseconds < milliseconds);
+            return done;
         }
 
         /// <summary>

@@ -12,7 +12,7 @@ string output = args.Length > 0 ? args[0] : Path.Combine("out", "frames.json");
 
 const int MeshCells = 40;
 const float Size = 0.6f;
-const int DragFrames = 60, HoldFrames = 25, Iterations = 40;
+const int DragFrames = 45, HoldFrames = 45, Iterations = 40;
 const float Brush = 0.02f;
 var offset = new Vector3(0.08f, 0.15f, 0.2f);
 
