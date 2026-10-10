@@ -39,6 +39,10 @@ GP02/
 - 見た目の確認（従来方式と粒子方式を並べた動画）: `tools/preview/run.sh`
   - 出力は `tools/preview/out/`（Gitには含めない）
 - 速度の測定: `dotnet run --project tools/bench/Bench -c Release`
+- Unity でのコンパイルと EditMode テスト（Docker）: `tools/unity/run-tests.sh`
+  - 環境変数 `UNITY_LICENSE_B64`（Unity のライセンスファイル Unity_lic.ulf を base64 にしたもの）が必要。クラウド環境の設定の Network secrets（または環境変数）に登録する
+  - イメージは `mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-3`（Docker Hub は匿名の取得上限にかかるためミラーを使う）
+  - 結果は `tools/unity/out/`。2回目以降は `unity/Library` が残るので速い
 - `.meta` の作成: `python3 tools/unity/generate_meta.py`
   - `packages/` にファイルやフォルダを追加したら、必ず実行して `.meta` もコミットする（Unityに自動で作らせるとGUIDがPCごとに変わるため）
 
