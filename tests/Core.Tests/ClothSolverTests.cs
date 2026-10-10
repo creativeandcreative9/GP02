@@ -12,7 +12,7 @@ public class ClothSolverTests
     static ClothSolver CreateHangingCloth(out int bottomCenter)
     {
         ProceduralMeshes.Grid(Columns, Rows, Size, Size, out var vertices, out var triangles);
-        var solver = new ClothSolver(ClothModel.Build(vertices, triangles));
+        var solver = new ClothSolver(ClothModel.FromTriangleMesh(MeshTopology.Build(vertices, triangles)));
         int stride = Columns + 1;
         for (int c = 0; c <= Columns; c++) solver.SetPinned(Rows * stride + c, true);
         bottomCenter = Columns / 2;
@@ -160,7 +160,7 @@ public class ClothSolverTests
         var back = front.Select(v => v + new Vector3(0f, 0f, -0.01f)).ToArray();
         var vertices = front.Concat(back).ToArray();
         var triangles = frontTriangles.Concat(frontTriangles.Select(i => i + front.Length)).ToArray();
-        var solver = new ClothSolver(ClothModel.Build(vertices, triangles));
+        var solver = new ClothSolver(ClothModel.FromTriangleMesh(MeshTopology.Build(vertices, triangles)));
         int center = 5 * 11 + 5;
 
         solver.Grab(center, solver.Positions[center] + new Vector3(0f, 0f, 0.1f), brushRadius: 0.2f);
@@ -199,6 +199,34 @@ public class ClothSolverTests
         Assert.True(lastChange < firstChange * 0.5f, $"最初の変化量: {firstChange}, 最後の変化量: {lastChange}");
         Assert.True(lastOffset <= firstOffset, $"元の形からのずれ: {firstOffset} → {lastOffset}");
         Assert.Equal(rest[center], solver.Positions[center]);
+    }
+
+    [Fact]
+    public void Grab_OnlySolvesNearTheGrab()
+    {
+        ProceduralMeshes.Grid(Columns, Rows, Size, Size, out var vertices, out var triangles);
+        var solver = new ClothSolver(ClothModel.FromTriangleMesh(MeshTopology.Build(vertices, triangles)))
+        {
+            InfluenceRadius = 0.2f,
+            ActiveMargin = 0.05f,
+        };
+        int center = Columns / 2;
+
+        Drag(solver, center, new Vector3(0f, 0.05f, 0.2f));
+
+        // 計算範囲 = 影響範囲 + 余白 + 引っ張った距離。
+        // メッシュに沿った距離は直線距離以上なので、直線距離が計算範囲より遠い粒子は一切動かない
+        var rest = solver.Model.RestPositions;
+        float limit = 0.2f + 0.05f + new Vector3(0f, 0.05f, 0.2f).Length();
+        int untouched = 0;
+        for (int i = 0; i < rest.Length; i++)
+        {
+            if (Vector3.Distance(rest[i], rest[center]) <= limit + 1e-4f) continue;
+            Assert.Equal(rest[i], solver.Positions[i]);
+            untouched++;
+        }
+        Assert.True(untouched > 0);
+        Assert.True(solver.ActiveParticleCount < rest.Length);
     }
 
     [Fact]

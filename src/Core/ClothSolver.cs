@@ -11,6 +11,10 @@ namespace GP02.Core
     /// 2. XPBD（Extended Position Based Dynamics）の制約を繰り返し解き、布の伸びと曲げを直す
     ///
     /// 時間は進めない（重力も速度も持たない）ので、時間刻みは 1 とみなし、コンプライアンスは値をそのまま使う。
+    ///
+    /// つまんでいる間は、つまんだ点とつながった部品（島）だけを計算する。
+    /// <see cref="ActiveMargin"/> を有限にすると、さらに周りだけに絞れるが、
+    /// 外側を固定するため、大きく引っ張ると境目が伸びる（布を周りから引き寄せられないため）。
     /// </summary>
     public sealed class ClothSolver
     {
@@ -36,6 +40,19 @@ namespace GP02.Core
         Vector3 _grabOrigin;      // つまみ始めたときの中心の位置
         Vector3 _appliedOffset;   // これまでに範囲内へ加えた移動量
 
+        // 計算する範囲。固定の粒子（ピン、つまんだ範囲、計算範囲の外）は逆質量 0
+        readonly float[] _inverseMass;
+        readonly int[] _activeParticles;   // 計算範囲にある、ピン留めでない粒子
+        readonly int[] _activeStretch;
+        readonly int[] _activeBend;
+        int _activeParticleCount;
+        int _activeStretchCount;
+        int _activeBendCount;
+        bool _activeDirty = true;
+        float _activePull;   // 計算範囲を決めたときの、つまみ始めからの移動距離
+        float _influenceRadius = 0.3f;
+        float _activeMargin = float.PositiveInfinity;
+
         /// <summary>伸びやすさ。0 で伸びない。</summary>
         public float StretchCompliance { get; set; } = 0f;
 
@@ -46,7 +63,35 @@ namespace GP02.Core
         /// つまんでいる範囲の外側へ、動きがメッシュに沿ってどこまで広がるか（メートル）。
         /// この外側は、布の長さを保つために必要な分しか動かない。
         /// </summary>
-        public float InfluenceRadius { get; set; } = 0.3f;
+        public float InfluenceRadius
+        {
+            get => _influenceRadius;
+            set
+            {
+                if (value < 0f) throw new ArgumentOutOfRangeException(nameof(value));
+                _influenceRadius = value;
+                _activeDirty = true;
+            }
+        }
+
+        /// <summary>
+        /// 影響範囲のさらに外側で、計算に含める余白（メートル）。既定は無限大（つまんだ部品全体を計算する）。
+        /// 有限にすると、ブラシ半径＋影響範囲＋余白＋つまみ始めからの移動距離 より外を固定して速くする。
+        /// ただし外側を固定すると布を周りから引き寄せられないので、大きく引っ張ると境目が伸びる。
+        /// </summary>
+        public float ActiveMargin
+        {
+            get => _activeMargin;
+            set
+            {
+                if (value < 0f) throw new ArgumentOutOfRangeException(nameof(value));
+                _activeMargin = value;
+                _activeDirty = true;
+            }
+        }
+
+        /// <summary>直前の Solve で計算した粒子の数（ピン留めを除く）。</summary>
+        public int ActiveParticleCount => _activeParticleCount;
 
         public ClothSolver(ClothModel model)
         {
@@ -61,6 +106,10 @@ namespace GP02.Core
             _pinDistance = new float[n];
             _nearestPin = new int[n];
             _inBrush = new bool[n];
+            _inverseMass = new float[n];
+            _activeParticles = new int[n];
+            _activeStretch = new int[model.StretchRestLengths.Length];
+            _activeBend = new int[model.BendRestLengths.Length];
         }
 
         public ClothModel Model => _model;
@@ -82,6 +131,7 @@ namespace GP02.Core
             if (_pinned[particle] == pinned) return;
             _pinned[particle] = pinned;
             _pinDistancesDirty = true;
+            _activeDirty = true;
         }
 
         /// <summary>
@@ -101,6 +151,8 @@ namespace GP02.Core
                 for (int i = 0; i < _inBrush.Length; i++) _inBrush[i] = _grabDistance[i] <= brushRadius;
                 _grabOrigin = _positions[particle];
                 _appliedOffset = Vector3.Zero;
+                _activePull = 0f;
+                _activeDirty = true;
             }
             _grabbed = particle;
             _brushRadius = brushRadius;
@@ -110,6 +162,7 @@ namespace GP02.Core
         public void Release()
         {
             _grabbed = -1;
+            _activeDirty = true;
         }
 
         /// <summary>元の形に戻す。ピン留めは保持する。</summary>
@@ -117,6 +170,7 @@ namespace GP02.Core
         {
             Array.Copy(_model.RestPositions, _positions, _positions.Length);
             _grabbed = -1;
+            _activeDirty = true;
         }
 
         public void CopyPositionsTo(Vector3[] destination)
@@ -150,31 +204,82 @@ namespace GP02.Core
                 _pinDistancesDirty = false;
             }
 
-            if (_grabbed >= 0) SpreadGrabMotion();
+            // 大きく引っ張るほど、遠くの布まで引き寄せられる。引っ張った距離に応じて計算範囲を広げる
+            if (_grabbed >= 0)
+            {
+                float pull = Vector3.Distance(_grabTarget, _grabOrigin);
+                if (pull > _activePull + 0.5f * _activeMargin)
+                {
+                    _activePull = pull;
+                    _activeDirty = true;
+                }
+            }
 
-            Array.Clear(_stretchLambda, 0, _stretchLambda.Length);
-            Array.Clear(_bendLambda, 0, _bendLambda.Length);
+            if (_activeDirty)
+            {
+                UpdateActiveRegion();
+                _activeDirty = false;
+            }
+
+            if (_grabbed >= 0) SpreadGrabMotion();
 
             int[] stretchPairs = _model.StretchPairs;
             float[] stretchRest = _model.StretchRestLengths;
             int[] bendPairs = _model.BendPairs;
             float[] bendRest = _model.BendRestLengths;
 
+            for (int a = 0; a < _activeStretchCount; a++) _stretchLambda[_activeStretch[a]] = 0f;
+            for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
+
             for (int it = 0; it < iterations; it++)
             {
                 // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
-                for (int k = 0; k < bendRest.Length; k++)
+                float bendCompliance = BendCompliance;
+                for (int a = 0; a < _activeBendCount; a++)
                 {
-                    SolveDistance(bendPairs[2 * k], bendPairs[2 * k + 1], bendRest[k], BendCompliance, ref _bendLambda[k]);
+                    int k = _activeBend[a];
+                    SolveDistance(bendPairs[2 * k], bendPairs[2 * k + 1], bendRest[k], bendCompliance, ref _bendLambda[k]);
                 }
 
-                for (int k = 0; k < stretchRest.Length; k++)
+                float stretchCompliance = StretchCompliance;
+                for (int a = 0; a < _activeStretchCount; a++)
                 {
-                    SolveDistance(stretchPairs[2 * k], stretchPairs[2 * k + 1], stretchRest[k], StretchCompliance, ref _stretchLambda[k]);
+                    int k = _activeStretch[a];
+                    SolveDistance(stretchPairs[2 * k], stretchPairs[2 * k + 1], stretchRest[k], stretchCompliance, ref _stretchLambda[k]);
                 }
 
                 SolveTethers();
             }
+        }
+
+        void UpdateActiveRegion()
+        {
+            float limit = _brushRadius + _influenceRadius + _activeMargin + _activePull;
+            int n = _positions.Length;
+            _activeParticleCount = 0;
+            for (int i = 0; i < n; i++)
+            {
+                // つながっていない部品（距離が無限大）は計算しない
+                bool active = _grabbed < 0 || (!float.IsInfinity(_grabDistance[i]) && _grabDistance[i] <= limit);
+                bool fixedParticle = _pinned[i] || IsGrabbed(i) || !active;
+                _inverseMass[i] = fixedParticle ? 0f : 1f;
+                // つまんだ範囲もテザーの対象にするので、ピン留めでなければ一覧に入れる
+                if (active && !_pinned[i]) _activeParticles[_activeParticleCount++] = i;
+            }
+
+            _activeStretchCount = CollectActive(_model.StretchPairs, _activeStretch);
+            _activeBendCount = CollectActive(_model.BendPairs, _activeBend);
+        }
+
+        // 少なくとも一方の粒子が動ける制約だけを集める
+        int CollectActive(int[] pairs, int[] result)
+        {
+            int count = 0;
+            for (int k = 0; k < result.Length; k++)
+            {
+                if (_inverseMass[pairs[2 * k]] > 0f || _inverseMass[pairs[2 * k + 1]] > 0f) result[count++] = k;
+            }
+            return count;
         }
 
         void SpreadGrabMotion()
@@ -185,9 +290,9 @@ namespace GP02.Core
             if (delta.LengthSquared() == 0f) return;
             _appliedOffset += delta;
 
-            for (int i = 0; i < _positions.Length; i++)
+            for (int a = 0; a < _activeParticleCount; a++)
             {
-                if (_pinned[i]) continue;
+                int i = _activeParticles[a];
                 _positions[i] += delta * Falloff(_grabDistance[i]);
             }
         }
@@ -196,8 +301,8 @@ namespace GP02.Core
         float Falloff(float distance)
         {
             if (distance <= _brushRadius) return 1f;
-            if (InfluenceRadius <= 0f) return 0f;
-            float t = (distance - _brushRadius) / InfluenceRadius;
+            if (_influenceRadius <= 0f) return 0f;
+            float t = (distance - _brushRadius) / _influenceRadius;
             if (t >= 1f) return 0f;
             float s = 1f - t;
             return s * s * (3f - 2f * s);
@@ -215,11 +320,10 @@ namespace GP02.Core
 
         void SolveTethers()
         {
-            for (int i = 0; i < _positions.Length; i++)
+            for (int a = 0; a < _activeParticleCount; a++)
             {
-                if (_pinned[i]) continue;
-                bool grabbed = IsGrabbed(i);
-                if (_grabbed >= 0 && !grabbed) SolveTether(i, _positions[_grabbed], _grabDistance[i]);
+                int i = _activeParticles[a];
+                if (_grabbed >= 0 && !_inBrush[i]) SolveTether(i, _positions[_grabbed], _grabDistance[i]);
 
                 // つまんだ範囲も、ピンから布の長さ以上は離れない。
                 // 布の長さが足りない方向へ引っ張ると、本物の布のように目標の手前で止まる（持ち上がる）。
@@ -257,9 +361,6 @@ namespace GP02.Core
             _positions[j] -= wj * correction;
         }
 
-        float InverseMass(int particle)
-        {
-            return _pinned[particle] || IsGrabbed(particle) ? 0f : 1f;
-        }
+        float InverseMass(int particle) => _inverseMass[particle];
     }
 }

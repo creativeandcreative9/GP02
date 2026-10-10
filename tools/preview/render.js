@@ -28,8 +28,8 @@ function draw({ data, index, width, height }) {
   ctx.fillRect(0, 0, width, height);
 
   // 少し右斜め上から見る
-  const yaw = -0.6, pitch = 0.25, distance = 2.4, focal = 520;
-  const center = [0.5, 0.5, 0.15];
+  const yaw = -0.6, pitch = 0.25, distance = 1.45, focal = 520;
+  const center = [0.3, 0.3, 0.08];
   const light = normalize([0.4, 0.6, 0.7]);
 
   function normalize(v) {
