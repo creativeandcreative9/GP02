@@ -185,6 +185,18 @@ namespace GP02.Core
             _activeDirty = true;
         }
 
+        /// <summary>
+        /// 粒子の位置を丸ごと置き換える（「1つ戻す」用）。つまんでいる状態は解除する。
+        /// XPBD の lambda は Solve のたびに 0 に戻すので、ここでは何もしなくてよい。
+        /// </summary>
+        public void SetPositions(ReadOnlySpan<Vector3> positions)
+        {
+            if (positions.Length != _positions.Length) throw new ArgumentException("粒子数が一致しません。", nameof(positions));
+            positions.CopyTo(_positions);
+            _grabbed = -1;
+            _activeDirty = true;
+        }
+
         public void CopyPositionsTo(Vector3[] destination)
         {
             Array.Copy(_positions, destination, _positions.Length);

@@ -57,6 +57,31 @@ public class ClothSolverTests
     }
 
     [Fact]
+    public void SetPositions_RestoresSnapshotAndReleasesGrab()
+    {
+        var solver = CreateHangingCloth(out int grabbed);
+        var snapshot = solver.Positions.ToArray();
+        Drag(solver, grabbed, new Vector3(0.1f, 0.2f, 0.3f), steps: 5);
+        Assert.NotEqual(snapshot[grabbed], solver.Positions[grabbed]);
+
+        solver.SetPositions(snapshot);
+
+        Assert.Equal(-1, solver.GrabbedParticle);
+        for (int i = 0; i < snapshot.Length; i++) Assert.Equal(snapshot[i], solver.Positions[i]);
+        // 戻した後に解いても、元の形のまま動かない
+        solver.Solve(20);
+        for (int i = 0; i < snapshot.Length; i++) Assert.True(Vector3.Distance(snapshot[i], solver.Positions[i]) < Tolerance);
+    }
+
+    [Fact]
+    public void SetPositions_RejectsWrongLength()
+    {
+        var solver = CreateHangingCloth(out _);
+
+        Assert.Throws<ArgumentException>(() => solver.SetPositions(new Vector3[3]));
+    }
+
+    [Fact]
     public void Grab_MovesGrabbedParticleToTarget()
     {
         var solver = CreateHangingCloth(out int grabbed);
