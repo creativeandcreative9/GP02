@@ -60,6 +60,8 @@ namespace GP02.EditorTools
             _settings = ClothEditSettings.Load();
             _controller = new ClothEditController(_settings) { ShowProgress = true };
             _controller.Changed += OnControllerChanged;
+            // シェイプキーの一覧の「布で編集する」から、このウィンドウの編集を使う
+            ShapeKeyClothEdit.ControllerProvider = () => _controller;
             SyncController();
             SceneView.beforeSceneGui += OnBeforeSceneGUI;
             SceneView.duringSceneGui += OnSceneGUI;
@@ -74,6 +76,7 @@ namespace GP02.EditorTools
             SceneView.duringSceneGui -= OnSceneGUI;
             EditorApplication.update -= OnUpdate;
             EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            if (ShapeKeyClothEdit.ControllerProvider != null && ShapeKeyClothEdit.ControllerProvider() == _controller) ShapeKeyClothEdit.ControllerProvider = null;
             if (_controller != null)
             {
                 _controller.Changed -= OnControllerChanged;
@@ -497,9 +500,38 @@ namespace GP02.EditorTools
             _foldSave = Section(_foldSave, L10n.Tr("保存", "Save"));
             if (!_foldSave) return;
 
+            GP02ShapeKeys entryComponent = ShapeKeyClothEdit.ActiveComponent;
+            if (entryComponent != null && entryComponent.gameObject == _controller.Target.gameObject)
+            {
+                // 一覧から「布で編集する」で始めたときは、そのシェイプキーへ保存する
+                EditorGUILayout.HelpBox(L10n.Tr($"シェイプキー「{ShapeKeyClothEdit.ActiveEntryName}」を布で編集しています。保存はデータに入ります。メッシュへの書き出しは、シェイプキーの一覧から行います。",
+                    $"Editing the shape key \"{ShapeKeyClothEdit.ActiveEntryName}\" with cloth. Saving stores it in the data. Export to the mesh from the shape key list."), MessageType.Info);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button(L10n.Tr("同じ名前で上書き保存", "Save (overwrite)"))) SaveEntry(true);
+                    if (GUILayout.Button(L10n.Tr("別名で追加", "Save as new"))) SaveEntry(false);
+                }
+                if (GUILayout.Button(L10n.Tr("シェイプキーの一覧を開く", "Open the shape key list"))) EditorApplication.ExecuteMenuItem("Tools/GP02/シェイプキーの一覧");
+                EditorGUILayout.Space();
+                return;
+            }
+
             _shapeName = EditorGUILayout.TextField(L10n.Tr("シェイプキーの名前", "Shape Key Name"), _shapeName);
-            if (GUILayout.Button(L10n.Tr("シェイプキーとして保存", "Save as Shape Key"))) Save();
+            if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーとして保存", "Save as Shape Key"),
+                L10n.Tr("メッシュの複製にシェイプキーとして入れ、編集の内容をデータにも記録します（あとでシェイプキーの一覧から再編集・分割・反転できます）",
+                    "Adds it to a copy of the mesh as a shape key and records the edit in the data (you can re-edit, split, or flip it later from the shape key list)")))) Save();
             EditorGUILayout.Space();
+        }
+
+        void SaveEntry(bool overwrite)
+        {
+            ShapeKeyEntry saved = ShapeKeyClothEdit.SaveActive(_controller, overwrite, overwrite ? null : _controller.SuggestShapeName());
+            if (saved == null)
+            {
+                EditorUtility.DisplayDialog("GP02", string.IsNullOrEmpty(_controller.LastError) ? L10n.Tr("保存できませんでした。", "Could not save.") : _controller.LastError, "OK");
+                return;
+            }
+            ShowNotification(new GUIContent(L10n.Tr($"「{saved.Name}」を保存しました", $"Saved \"{saved.Name}\"")));
         }
 
         void Save()

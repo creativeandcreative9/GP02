@@ -1069,6 +1069,13 @@ namespace GP02.EditorTools
             Mesh saved;
             try
             {
+                // あとで一覧から再編集・分割・書き出しができるよう、データにも記録する。
+                // メッシュを差し替える前に行うのは、データの元のメッシュを、差し替える前のメッシュにするため
+                if (RecordToData)
+                {
+                    GP02ShapeKeyData data = ShapeKeyLibrary.FindOrCreateData(_target, DataFolder);
+                    if (data != null && data.VertexCount == _session.VertexCount) RecordEntry(data, name, true);
+                }
                 saved = _session.ApplyToScene(name, SaveFolder);
             }
             catch (Exception ex)
@@ -1156,29 +1163,45 @@ namespace GP02.EditorTools
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (!EnsureAlive())
             {
-                LastError = "編集中ではありません。";
+                LastError = L10n.Tr("編集中ではありません。", "You are not editing.");
                 return null;
             }
             string name = entryName == null ? "" : entryName.Trim();
             if (name.Length == 0)
             {
-                LastError = "シェイプキーの名前が空です。名前を入れてから保存してください。";
+                LastError = L10n.Tr("シェイプキーの名前が空です。名前を入れてから保存してください。", "The shape key name is empty. Enter a name before saving.");
                 return null;
             }
             if (data.VertexCount != _session.VertexCount)
             {
-                LastError = $"データの頂点数（{data.VertexCount}）が、編集中のメッシュの頂点数（{_session.VertexCount}）と違うので保存できません。";
+                LastError = L10n.Tr($"データの頂点数（{data.VertexCount}）が、編集中のメッシュの頂点数（{_session.VertexCount}）と違うので保存できません。",
+                    $"Cannot save: the data has {data.VertexCount} vertices but the mesh being edited has {_session.VertexCount}.");
                 return null;
             }
 
             FinishStroke();
+            Undo.IncrementCurrentGroup();
+            ShapeKeyEntry result = RecordEntry(data, name, overwrite);
+            Undo.IncrementCurrentGroup();
+            LastError = "";
+            return result;
+        }
+
+        /// <summary><see cref="Save"/> を押したときに、データにも記録するか。テストで、データを作らずに保存を確かめるときは false にする。</summary>
+        public bool RecordToData { get; set; } = true;
+
+        /// <summary><see cref="Save"/> でデータを新しく作るときの保存先。</summary>
+        public string DataFolder { get; set; } = ShapeKeyLibrary.DataFolder;
+
+        // 今の編集をエントリとしてデータに入れる（Undo のグループは呼び出し側で区切る）
+        ShapeKeyEntry RecordEntry(GP02ShapeKeyData data, string name, bool overwrite)
+        {
             Vector3[] deltas = _session.GetMeshSpaceDeltas();
             // 法線の差分は、元の形（データの元のメッシュ）に対して計算する
             Mesh rest = data.SourceMesh != null && data.SourceMesh.vertexCount == deltas.Length ? data.SourceMesh : _session.SourceMesh;
             ShapeKeyEntry fresh = ShapeKeyLibrary.CreateEntryFromDeltas(rest, name, deltas);
             fresh.PinnedVertices = CollectPinnedVertices();
 
-            Undo.IncrementCurrentGroup();
             ShapeKeyEntry result;
             ShapeKeyEntry existing = overwrite ? data.FindEntry(name) : null;
             if (existing != null)
@@ -1196,8 +1219,6 @@ namespace GP02.EditorTools
                 result = fresh;
             }
             ShapeKeyLibrary.SaveData(data);
-            Undo.IncrementCurrentGroup();
-            LastError = "";
             return result;
         }
 

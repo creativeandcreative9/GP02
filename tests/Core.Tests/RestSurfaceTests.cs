@@ -109,6 +109,45 @@ public class RestSurfaceTests
         return deepest;
     }
 
+    // 前側の中ほどをつまんで、つまんだ点を中心に縮める（範囲は中心へ寄るので、円錐の面より内側へ向かう）。
+    // つまんだ範囲を含めて、元の形より最も内側に入った深さを返す
+    static float ShrinkFrontAndMeasureDepth(bool keepOutside, float brushCompliance)
+    {
+        Cone(120, 35, true, out var vertices, out var triangles);
+        var cloth = ParticleCloth.Build(vertices, triangles);
+        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { KeepOutsideRestSurface = keepOutside, BrushCompliance = brushCompliance };
+        for (int i = 0; i < cloth.Model.ParticleCount; i++)
+        {
+            if (cloth.Model.RestPositions[i].Y > TopY - cloth.Spacing) solver.SetPinned(i, true);
+        }
+        int grabbed = solver.FindNearestParticle(new Vector3(0f, TopY - 0.25f, -RestRadiusAt(TopY - 0.25f)));
+        Vector3 pivot = solver.Positions[grabbed] + new Vector3(0f, 0f, 0.05f);   // 面より 5cm 内側を中心に縮める
+        var options = new BrushOptions { Radius = 0.06f };
+        for (int f = 1; f <= 10; f++)
+        {
+            solver.Grab(grabbed, new BrushMotion(Vector3.Zero, Quaternion.Identity, 1f - 0.5f * f / 10f, pivot), options);
+            solver.Solve(20);
+        }
+        solver.Settle(0.01f, 2000, out _);
+
+        float deepest = 0f;
+        for (int i = 0; i < cloth.Model.ParticleCount; i++) deepest = MathF.Max(deepest, RadialDepth(solver.Positions[i]));
+        return deepest;
+    }
+
+    [Fact]
+    public void KeepOutside_AlsoKeepsBrushTargetsOutside()
+    {
+        // 制約なしでは、縮めた範囲が目標どおり内側へ入る（このテストが効いていることの確認）
+        float without = ShrinkFrontAndMeasureDepth(false, ClothSolver.DefaultBrushCompliance);
+        Assert.True(without > 0.01f, $"制約なしの最大の深さ {without * 1000:F1}mm");
+        // 柔らかいつまみでも固定のつまみでも、つまんだ範囲を含めて元の形より内側に入らない
+        float soft = ShrinkFrontAndMeasureDepth(true, ClothSolver.DefaultBrushCompliance);
+        Assert.True(soft < 0.0015f, $"柔らかいつまみの最大の深さ {soft * 1000:F2}mm");
+        float fixedBrush = ShrinkFrontAndMeasureDepth(true, 0f);
+        Assert.True(fixedBrush < 0.0015f, $"固定のつまみの最大の深さ {fixedBrush * 1000:F2}mm");
+    }
+
     [Fact]
     public void KeepOutside_PreventsSinkingInsideRestShape()
     {

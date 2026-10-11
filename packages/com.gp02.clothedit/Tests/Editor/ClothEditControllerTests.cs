@@ -87,7 +87,7 @@ namespace GP02.Tests
         {
             // 計算時間を短くして、テストを速くする
             settings = settings ?? new ClothEditSettings { SolveMilliseconds = 4f };
-            var controller = new ClothEditController(settings) { SaveFolder = Folder, BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+            var controller = new ClothEditController(settings) { SaveFolder = Folder, DataFolder = Folder, BrushRadius = 0.05f, InfluenceRadius = 0.3f };
             _controllers.Add(controller);
             Assert.That(controller.TryStart(renderer, out string error), Is.True, error);
             return controller;
@@ -378,6 +378,21 @@ namespace GP02.Tests
             Assert.That(saved.GetBlendShapeIndex("Second"), Is.EqualTo(1));
             Assert.That(c.IsEditing, Is.True);
             Assert.That(c.Session.PinnedCount, Is.EqualTo(pinned));
+
+            // 保存した編集はデータにも記録され、あとで一覧から扱える
+            var component = renderer.GetComponent<GP02ShapeKeys>();
+            Assert.That(component, Is.Not.Null);
+            Assert.That(component.Data, Is.Not.Null);
+            Assert.That(AssetDatabase.GetAssetPath(component.Data), Does.StartWith(Folder));
+            Assert.That(component.Data.SourceMesh, Is.SameAs(original), "データの元は、差し替える前のメッシュ");
+            Assert.That(component.Data.FindEntry("First"), Is.Not.Null);
+            Assert.That(component.Data.FindEntry("Second"), Is.Not.Null);
+            Vector3[] firstDeltas = component.Data.FindEntry("First").Frames[0].DeltaVertices;
+            Vector3[] meshDeltas = new Vector3[saved.vertexCount];
+            saved.GetBlendShapeFrameVertices(0, 0, meshDeltas, null, null);
+            float maxDifference = 0f;
+            for (int i = 0; i < meshDeltas.Length; i++) maxDifference = Mathf.Max(maxDifference, (meshDeltas[i] - firstDeltas[i]).magnitude);
+            Assert.That(maxDifference, Is.LessThan(1e-5f), "データとシェイプキーの差分が同じ");
         }
 
         [Test]

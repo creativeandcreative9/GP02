@@ -336,7 +336,7 @@ namespace GP02.Tests
         }
 
         [Test]
-        public void UsingGap_LetsClothMoveInward_AndLeavesLessStretch()
+        public void UsingGap_LetsClothMoveInward_UpToTheGap()
         {
             float stretchWithout = PullHemInward(false, out float inwardWithout, out float gapMean);
             DestroyCreated();
@@ -347,7 +347,10 @@ namespace GP02.Tests
             Assert.That(gapMean, Is.GreaterThan(0.05f), "体から離れているので、隙間は大きい");
             Assert.That(inwardWithout, Is.LessThan(0.003f), "隙間を使わなければ、元の形より内側へはほとんど入らない");
             Assert.That(inwardWith, Is.GreaterThan(inwardWithout + 0.005f), "隙間を使うと内側へ動ける");
-            Assert.That(stretchWith, Is.LessThan(stretchWithout), "隙間を使うと伸びが小さい");
+            Assert.That(inwardWith, Is.LessThan(gapMean + 0.01f), "隙間より深くは入らない");
+            // つまんだ範囲の目標も、入ってよい深さで止まる（体の中まで連れて行かない）ので、どちらも大きくは伸びない
+            Assert.That(stretchWithout, Is.LessThan(0.08f), "内側へ引いても、目標が元の形の外に保たれる");
+            Assert.That(stretchWith, Is.LessThan(0.15f), "隙間の分だけ内側へ動いても、大きくは伸びない");
         }
 
         void DestroyCreated()

@@ -47,6 +47,9 @@ namespace GP02.Core
         readonly Vector3[] _brushStart;       // 範囲を選んだときの位置（内部の座標）
         readonly Vector3[] _brushGoal;        // 目標（内部の座標）
         readonly Vector3[] _brushApplied;     // 周りへ配り終えた目標。SpreadGrabMotion が前回からの増分だけを配るため
+        readonly int[] _goalAnchor;           // つまんだ範囲の粒子ごとの、目標に一番近い元の粒子（目標を元の形の外に保つため）
+        readonly int[] _clampedBrush;         // 目標を元の形の外へ押し出した、つまんだ範囲の粒子
+        int _clampedCount;
         readonly Vector3[] _brushLambda;      // XPBD の λ。同じつまみが続く間は Solve をまたいで引き継ぐ
         float _brushCompliance = DefaultBrushCompliance;
         readonly bool[] _pinned;
@@ -227,6 +230,8 @@ namespace GP02.Core
             _brushStart = new Vector3[n];
             _brushGoal = new Vector3[n];
             _brushApplied = new Vector3[n];
+            _goalAnchor = new int[n];
+            _clampedBrush = new int[n];
             _brushLambda = new Vector3[n];
             _pinned = new bool[n];
             _stretchLambda = new float[model.StretchRestLengths.Length];
@@ -263,6 +268,9 @@ namespace GP02.Core
         public bool IsGrabbed(int particle) => _grabbed >= 0 && _inBrush[particle];
 
         /// <summary>つまんでいる範囲の中の重み（0〜1）。範囲外やつまんでいないときは 0。中心の粒子は 1。</summary>
+        /// <summary>目標を元の形の外へ押し出した、つまんだ範囲の粒子の数（<see cref="KeepOutsideRestSurface"/>）。</summary>
+        public int ClampedBrushCount => _clampedCount;
+
         public float BrushWeight(int particle) => _grabbed >= 0 ? _brushWeight[particle] : 0f;
 
         public bool IsPinned(int particle) => _pinned[particle];
@@ -434,8 +442,10 @@ namespace GP02.Core
                 _brushGoal[i] = p[i];
                 _brushApplied[i] = p[i];
                 _brushLambda[i] = Vector3.Zero;
+                _goalAnchor[i] = _restAnchor[i];
             }
 
+            _clampedCount = 0;
             _mirrorSeed = mirror;
             _midline = midline;
             _grabOrigin = p[seed];
@@ -447,6 +457,77 @@ namespace GP02.Core
             _activeDirty = true;
         }
 
+        // 目標を、近くの元の面より（入ってよい深さを超えて）内側に入らないよう押し出す
+        bool KeepGoalOutside(int i)
+        {
+            Vector3 g = _brushGoal[i];
+            int anchor = WalkToNearestRest(_goalAnchor[i], g.X, g.Y, g.Z);
+            _goalAnchor[i] = anchor;
+            Vector3 n = _restNormals[anchor];
+            Vector3 r = _restInternal[anchor];
+            float d = (g.X - r.X) * n.X + (g.Y - r.Y) * n.Y + (g.Z - r.Z) * n.Z;
+            if (_restAllowance != null) d += _restAllowance[anchor];
+            if (d >= 0f) return false;
+            _brushGoal[i].X = g.X - d * n.X;
+            _brushGoal[i].Y = g.Y - d * n.Y;
+            _brushGoal[i].Z = g.Z - d * n.Z;
+            return true;
+        }
+
+        // 目標を押し出した粒子は、粒子そのものも元の面の外へ出す。柔らかいつまみでは、周りの布に引かれて目標から内側へずれるため。
+        // 範囲の全部ではなくこの粒子だけにするのは、外へ引いたとき（目標が面の外）の柔らかいつまみの譲り方を変えないため。
+        // カーネル（Burst）を変えずに済むよう、Solve の最後に1回だけ行う
+        void PushClampedBrushOutside()
+        {
+            if (_grabbed < 0) return;
+            Vector3[] p = _positions;
+            for (int k = 0; k < _clampedCount; k++)
+            {
+                int i = _clampedBrush[k];
+                if (_pinned[i]) continue;
+                int anchor = _goalAnchor[i];
+                Vector3 n = _restNormals[anchor];
+                Vector3 r = _restInternal[anchor];
+                float d = (p[i].X - r.X) * n.X + (p[i].Y - r.Y) * n.Y + (p[i].Z - r.Z) * n.Z;
+                if (_restAllowance != null) d += _restAllowance[anchor];
+                if (d >= 0f) continue;
+                p[i].X -= d * n.X;
+                p[i].Y -= d * n.Y;
+                p[i].Z -= d * n.Z;
+                _worldPositions[i].X = p[i].X + _origin.X;
+                _worldPositions[i].Y = p[i].Y + _origin.Y;
+                _worldPositions[i].Z = p[i].Z + _origin.Z;
+            }
+        }
+
+        // anchor から、伸びの制約でつながった隣へ、点に近くなる限りたどる（UpdateRestAnchors と同じ探し方）
+        int WalkToNearestRest(int anchor, float px, float py, float pz)
+        {
+            int[] offsets = _graph.Offsets;
+            int[] neighbors = _graph.Neighbors;
+            Vector3[] rest = _restInternal;
+            float best = DistanceSquared(px, py, pz, rest[anchor]);
+            // 目標は1回で大きく動くことがあるので、Solve ごとの探し直し（16歩）より多めにたどる
+            for (int step = 0; step < 64; step++)
+            {
+                int next = -1;
+                int end = offsets[anchor + 1];
+                for (int k = offsets[anchor]; k < end; k++)
+                {
+                    int candidate = neighbors[k];
+                    float d = DistanceSquared(px, py, pz, rest[candidate]);
+                    if (d < best)
+                    {
+                        best = d;
+                        next = candidate;
+                    }
+                }
+                if (next < 0) break;
+                anchor = next;
+            }
+            return anchor;
+        }
+
         // 範囲の粒子ごとの目標を計算し直す。動きが前回と同じなら何もしない（λ を引き継ぐ）
         void SetMotion(in AffineMotion motion)
         {
@@ -456,6 +537,10 @@ namespace GP02.Core
             _mirrorMotion = mirrored;
             _motionValid = true;
 
+            // 回す・縮めると、範囲の一部の目標が元の形より内側（体や内側の布の中）に入る。
+            // 範囲の粒子そのものに押し戻しをかけると、届かない所へ引いたときに柔らかいつまみが譲れなくなって伸びが増えるので、目標の方を外に出す
+            bool keepOutside = KeepOutsideRestSurface && _restNormals != null;
+            _clampedCount = 0;
             float pullSquared = 0f;
             for (int k = 0; k < _brushCount; k++)
             {
@@ -469,6 +554,7 @@ namespace GP02.Core
                 _brushGoal[i].X = s.X + dx;
                 _brushGoal[i].Y = s.Y + dy;
                 _brushGoal[i].Z = s.Z + dz;
+                if (keepOutside && KeepGoalOutside(i)) _clampedBrush[_clampedCount++] = i;
                 pullSquared = MathF.Max(pullSquared, dx * dx + dy * dy + dz * dz);
                 // ドラッグ中（目標が動いている間）は λ をためない。ためると、一時的にかかった力の分だけ、
                 // 届く目標でも遅れが残る。手を止めてから、届かない分だけ少しずつ譲る
@@ -935,6 +1021,7 @@ namespace GP02.Core
                     _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _grabSource, _nearestPin, _pinDistance,
                     keepOutside, _restInternal, _restNormals, _restAnchor, _restAllowance,
                     softBrush ? _brushCompliance : 0f, _brushGoal, _brushLambda), iterations);
+                if (keepOutside && iterations > 0) PushClampedBrushOutside();
                 return;
             }
 
@@ -952,6 +1039,7 @@ namespace GP02.Core
                 SolveTethers();
                 if (keepOutside) SolveRestSurface();
             }
+            if (keepOutside && iterations > 0) PushClampedBrushOutside();
 
             // 動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）
             for (int a = 0; a < _activeParticleCount; a++)

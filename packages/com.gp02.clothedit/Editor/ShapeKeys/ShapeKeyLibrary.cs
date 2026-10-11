@@ -697,7 +697,7 @@ namespace GP02.EditorTools
         /// データの元のメッシュは、コンポーネントに元のメッシュがあればそれ、無ければレンダラーの今のメッシュ。
         /// メッシュが無ければ null。
         /// </summary>
-        public static GP02ShapeKeyData FindOrCreateData(Renderer renderer)
+        public static GP02ShapeKeyData FindOrCreateData(Renderer renderer, string folder = DataFolder)
         {
             if (renderer == null) throw new ArgumentNullException(nameof(renderer));
             var component = renderer.GetComponent<GP02ShapeKeys>();
@@ -705,7 +705,7 @@ namespace GP02.EditorTools
 
             Mesh source = component != null && component.SourceMesh != null ? component.SourceMesh : ClothEditController.GetMesh(renderer);
             if (source == null) return null;
-            GP02ShapeKeyData data = CreateData(source);
+            GP02ShapeKeyData data = CreateData(source, folder);
             Attach(renderer, data);
             return data;
         }
