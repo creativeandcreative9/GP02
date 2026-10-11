@@ -4,6 +4,9 @@ using GP02.Core;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using NVector3 = System.Numerics.Vector3;
+using NQuaternion = System.Numerics.Quaternion;
+using PivotKind = GP02.EditorTools.SelectionPivot;
 
 namespace GP02.EditorTools
 {
@@ -25,6 +28,12 @@ namespace GP02.EditorTools
 
         /// <summary>塗った所を、元の形へ近づける。</summary>
         Relax,
+
+        /// <summary>
+        /// 点（粒子）を選んで動かす。塗って選ぶ（ポインタの操作）と、選んだ点をハンドルで動かす・回す・拡大縮小する
+        /// （<see cref="ClothEditController.BeginSelectionTransform"/> など）を合わせた道具。
+        /// </summary>
+        Select,
     }
 
     /// <summary>
@@ -92,6 +101,62 @@ namespace GP02.EditorTools
         bool _hoverMirrorValid;
 
         int _hoverTriangle = -1;        // カーソルの下の三角形（重ね着で、どの布をつまむか・ピン留めするかを決める）
+
+        // 選んだ点（粒子）。Unity の Undo には入れない
+        bool[] _selected;               // 粒子ごと。編集中でなければ null
+        int[] _selectedList = new int[0];   // 選んだ粒子の番号（昇順）。選択が変わるたびに作り直す（つまむときに同じ配列を渡す）
+        int _selectionCount;
+        int _selectionVersion;
+        readonly List<int> _selectWork = new List<int>();
+        readonly List<int> _selectWork2 = new List<int>();
+        bool _selectPainting;           // 塗って選んでいる途中
+        bool _selectDeselect;
+        bool _hasLastClick;
+        int _lastClickParticle = -1;    // 最後にクリックした所の一番近い粒子と、そこからのずれ（形が変わっても付いていくため）
+        Vector3 _lastClickOffset;
+        Vector3 _lastClickWorld;
+
+        // 選んだ点の変形
+        bool _xformActive;              // BeginSelectionTransform から EndSelectionTransform まで
+        bool _setGrab;                  // 集合でつまんでいる（変形の開始から確定まで）
+        Vector3 _xformPivot;            // 押したときの中心と、拡大の軸の向き
+        Quaternion _xformFrame = Quaternion.identity;
+        Vector3 _xformRawTranslation;   // 呼び出し側から最後に受け取った値（押したときからの合計）
+        Quaternion _xformRawRotation = Quaternion.identity;
+        Vector3 _xformRawLogScale;
+        Vector3 _xformTranslation;      // 精密操作を反映した、動きの合計
+        Quaternion _xformRotation = Quaternion.identity;
+        Vector3 _xformLogScale;
+        bool _xformPreciseUsed;
+
+        // ハンドルの基準の計算結果（選択か形が変わるまで使い回す）
+        int _pivotVersion = -1, _pivotShape = -1;
+        Vector3 _centerCache;
+        int _frameVersion = -1, _frameShape = -1;
+        HandleOrientation _frameSpace;
+        Quaternion _frameCache = Quaternion.identity;
+
+        // 画面で鏡像の側を薄く見せるための粒子
+        readonly List<int> _mirrored = new List<int>();
+        int _mirroredVersion = -1;
+        bool _mirroredHasPlane;
+        MirrorPlane _mirroredPlane;
+
+        // なめらかに減る範囲の重み
+        public const int MaxSelectionWeightParticles = 3000;
+        readonly int[] _weightParticles = new int[MaxSelectionWeightParticles];
+        readonly float[] _weightValues = new float[MaxSelectionWeightParticles];
+        int[] _weightWorkIndices;
+        float[] _weightWorkValues;
+        int _weightCount;
+        int _weightVersion = -1;
+        float _weightRadius;
+        FalloffCurve _weightCurve;
+        BrushDistanceMode _weightMode;
+        bool _weightHasMirror;
+        MirrorPlane _weightPlane;
+        int _weightShape;
+        bool _weightShown;
 
         public ClothEditController(ClothEditSettings settings = null)
         {
@@ -317,6 +382,7 @@ namespace GP02.EditorTools
             {
                 if (_dragging)
                 {
+                    if (_setGrab) return L10n.Tr("選んだ点を動かしている", "Moving the selection");
                     return _strokeMode == ClothEditMode.Rotate ? L10n.Tr("回している", "Rotating")
                         : _strokeMode == ClothEditMode.Scale ? L10n.Tr("拡大縮小している", "Scaling")
                         : L10n.Tr("つまんでいる", "Grabbing");
@@ -504,15 +570,16 @@ namespace GP02.EditorTools
             _settings.ShowOriginal = false;
             _settings.CompareBlend = 1f;
             _holdOriginal = false;
-            return StartSession(null, null, null, null, out error);
+            return StartSession(null, null, null, null, null, out error);
         }
 
         /// <param name="carriedPins">引き継ぐピンのワールド位置（Undo による作り直しのとき）</param>
         /// <param name="carriedPinIslands">引き継ぐピンごとの部品（島）の番号。重ね着で元の層だけを留めるため</param>
         /// <param name="reuseCloth">粒子を置き直さずに使う布（保存後の <see cref="ParticleCloth.Rebase"/> の結果）。メッシュに合わなければ使わない</param>
         /// <param name="carriedPinParticles">reuseCloth を使うときに引き継ぐピンの粒子の番号（番号が同じなので位置で探さない）</param>
+        /// <param name="carriedSelection">引き継ぐ選択（<see cref="CaptureSelection"/>）。null なら選択は空から始める</param>
         bool StartSession(IReadOnlyList<Vector3> carriedPins, IReadOnlyList<int> carriedPinIslands,
-            ParticleCloth reuseCloth, IReadOnlyList<int> carriedPinParticles, out string error)
+            ParticleCloth reuseCloth, IReadOnlyList<int> carriedPinParticles, SelectionCarry carriedSelection, out string error)
         {
             End();
             error = _targets.Count == 0 ? GetStartProblem(null) : null;
@@ -571,6 +638,8 @@ namespace GP02.EditorTools
                 Debug.Log($"[GP02] ピン {carriedPins.Count} 点から {pinned} 粒子を引き継ぎました。");
             }
 
+            RestoreSelection(carriedSelection, reuseCloth != null);
+
             // Burst のコンパイルをここで済ませる（最初のドラッグで止まらないように）
             double warmUp = _session.WarmUp();
 
@@ -610,6 +679,10 @@ namespace GP02.EditorTools
             _previewCount = 0;
             _previewKeyValid = false;
             HasMirrorHover = false;
+            _selectPainting = false;
+            _xformActive = false;
+            _setGrab = false;
+            ResetSelectionState();
             if (_state != null)
             {
                 Undo.ClearUndo(_state);
@@ -689,12 +762,12 @@ namespace GP02.EditorTools
 
         // つまんだ瞬間に、実際に範囲に入った粒子と重み（ClothSolver.BrushWeight）を表示用に控える。
         // 対称のときは鏡像の側も含まれる。ドラッグ中は範囲が変わらないので、一度だけ集めて使い回す（毎コマの確保をしない）
-        void CaptureGrabRange()
+        void CaptureGrabRange(bool setGrab = false)
         {
             _previewCount = 0;
             _previewShown = false;
             HasMirrorHover = false;
-            if (!_settings.ShowBrushPreview) return;
+            if (!(setGrab ? _settings.ShowSelectionWeights : _settings.ShowBrushPreview)) return;
 
             ClothSolver solver = _session.Solver;
             int total = solver.BrushParticleCount;
@@ -734,6 +807,13 @@ namespace GP02.EditorTools
         // マウスの動きごとに呼ばれるので、一番近い粒子や設定が変わらない間は何もしない
         void RefreshHoverExtras()
         {
+            if (Mode == ClothEditMode.Select)
+            {
+                // 選ぶ道具は鏡像の側を塗らず、重みもつけない（鏡像の側は MirroredSelection で見せる）
+                _previewShown = false;
+                HasMirrorHover = false;
+                return;
+            }
             bool hasMirror = TryGetMirrorPlane(out MirrorPlane plane);
             bool wantPreview = _settings.ShowBrushPreview && UsesWeights(Mode);
             _previewShown = wantPreview;
@@ -847,6 +927,12 @@ namespace GP02.EditorTools
                     BeginOperation(L10n.Tr("GP02 元に戻すブラシ", "GP02 Restore Brush"));
                     RelaxHere();
                     break;
+                case ClothEditMode.Select:
+                    // 選ぶ道具。押している間、ブラシ半径で塗って選ぶ（選択は Undo に入れない）
+                    _selectPainting = true;
+                    _selectDeselect = false;
+                    PaintSelectionHere(true);
+                    break;
             }
             Notify();
             return true;
@@ -926,6 +1012,11 @@ namespace GP02.EditorTools
                     if (_opOpen) RelaxHere();
                     break;
 
+                case ClothEditMode.Select:
+                    _lastScreenX = screenX;
+                    SelectPaintDrag(ray);
+                    break;
+
                 default:
                     _lastScreenX = screenX;
                     UpdateHover(ray);
@@ -957,7 +1048,11 @@ namespace GP02.EditorTools
             _pointerDown = false;
             InvalidatePreview();
 
-            if (_strokeMode == ClothEditMode.Pin || _strokeMode == ClothEditMode.Unpin)
+            if (_strokeMode == ClothEditMode.Select)
+            {
+                SelectPaintEnd();
+            }
+            else if (_strokeMode == ClothEditMode.Pin || _strokeMode == ClothEditMode.Unpin)
             {
                 CommitOperation();
             }
@@ -999,12 +1094,22 @@ namespace GP02.EditorTools
         public bool Cancel()
         {
             if (!EnsureAlive()) return false;
-            if (!(_pointerDown || _dragging || _settling || _opOpen)) return false;
+            bool busy = _dragging || _settling || _opOpen;
+            if (!busy && (_selectPainting || (_pointerDown && _strokeMode == ClothEditMode.Select)))
+            {
+                // 塗って選んでいる途中。選んだ分はそのまま残す（選択は Undo に入れないので、戻すものがない）
+                _selectPainting = false;
+                _pointerDown = false;
+                return true;
+            }
+            if (!(_pointerDown || busy)) return false;
 
             _pointerDown = false;
             _dragging = false;
             _settling = false;
             _settleClockPending = false;
+            _selectPainting = false;
+            EndTransformState();
             _relaxHeld.Clear();   // ピンの状態は、下で操作の前の形（_state）に戻すときに戻る
             if (_session.IsGrabbing) _session.Release();
             if (_opOpen)
@@ -1085,6 +1190,690 @@ namespace GP02.EditorTools
             _session.RelaxAt(HoverPoint, _hoverTriangle, _brushRadius, _settings.RelaxStrength, _settings.GetFalloffCurve(), _settings.DistanceMode, mirror);
         }
 
+        // ---- 選んで動かす（点の選択と、選んだ点の変形） ----
+        // 選ぶ操作は、選んだ粒子の集合を変えるだけで、布の形は変えない。Unity の Undo には入れない
+        // （Ctrl+Z は形とピンを戻し、選択は残る）。変えたら Changed で知らせる。
+        // 対称がオンのときも、選ぶ操作は鏡像の側を足さない。動かすときに ClothSolver が鏡像を鏡に映した動きで動かすため
+        // （両側を選ぶと、ソルバーは中央線をまたいだとみなして、動きを鏡の面に沿う成分だけにしてしまう）。
+
+        /// <summary>選んでいる粒子の数。</summary>
+        public int SelectionCount => _selectionCount;
+
+        /// <summary>選んでいる粒子の番号（昇順）。選択が変わるたびに新しい配列になる。つまむときに同じ配列を毎コマ渡している。</summary>
+        public IReadOnlyList<int> SelectedParticles => _selectedList;
+
+        /// <summary>粒子が選ばれているか。</summary>
+        public bool IsSelected(int particle) => _selected != null && (uint)particle < (uint)_selected.Length && _selected[particle];
+
+        /// <summary>選択が変わるたびに増える番号。画面の表示のキャッシュを作り直すかの判断に使う。</summary>
+        public int SelectionVersion => _selectionVersion;
+
+        /// <summary>
+        /// 最後にクリックして選んだ、面の上の点（ワールド）。クリックした所の粒子に付いていくので、形が変わってもその場所を指す。
+        /// まだクリックして選んでいなければ原点。
+        /// </summary>
+        public Vector3 LastClickPoint
+        {
+            get
+            {
+                if (_lastClickParticle >= 0 && _session != null && _lastClickParticle < _session.ParticleCount)
+                {
+                    NVector3 p = _session.Solver.Positions[_lastClickParticle];
+                    return new Vector3(p.X, p.Y, p.Z) + _lastClickOffset;
+                }
+                return _lastClickWorld;
+            }
+        }
+
+        /// <summary>
+        /// <see cref="LastClickPoint"/> が使えるか。クリックして選んだ所の粒子が、まだ選ばれているときだけ true
+        /// （外されたあとは、中心の計算には使われない）。
+        /// </summary>
+        public bool HasLastClickPoint => _hasLastClick && IsSelected(_lastClickParticle);
+
+        // 選択を空にして、編集中でなければ配列も持たない。バージョンは増やす（画面のキャッシュを捨てさせる）
+        void ResetSelectionState()
+        {
+            _selected = null;
+            _selectedList = new int[0];
+            _selectionCount = 0;
+            _selectionVersion++;
+            _hasLastClick = false;
+            _lastClickParticle = -1;
+            _mirrored.Clear();
+            _mirroredVersion = -1;
+            _weightCount = 0;
+            _weightVersion = -1;
+            _pivotVersion = -1;
+            _frameVersion = -1;
+        }
+
+        // _selected の中身から、数と番号の配列を作り直し、バージョンを増やして知らせる
+        void CommitSelection()
+        {
+            int count = 0;
+            for (int i = 0; i < _selected.Length; i++)
+            {
+                if (_selected[i]) count++;
+            }
+            var list = new int[count];
+            int k = 0;
+            for (int i = 0; i < _selected.Length; i++)
+            {
+                if (_selected[i]) list[k++] = i;
+            }
+            _selectedList = list;
+            _selectionCount = count;
+            _selectionVersion++;
+            Notify();
+        }
+
+        // particles を選ぶ（deselect なら外す）。変わった数を返す
+        int ApplySelection(List<int> particles, bool deselect)
+        {
+            int changed = 0;
+            bool value = !deselect;
+            for (int k = 0; k < particles.Count; k++)
+            {
+                int i = particles[k];
+                if ((uint)i >= (uint)_selected.Length || _selected[i] == value) continue;
+                _selected[i] = value;
+                changed++;
+            }
+            if (changed > 0) CommitSelection();
+            return changed;
+        }
+
+        // 選んだ点の変形が仕上げ中なら確定してから、選択を変える
+        void FinishSelectionTransform()
+        {
+            if (_setGrab) FinishStroke();
+        }
+
+        void RegisterClick(Vector3 point, int triangle)
+        {
+            int particle = _session.FindParticle(point, triangle);
+            if (particle < 0) return;
+            NVector3 p = _session.Solver.Positions[particle];
+            _lastClickParticle = particle;
+            _lastClickOffset = point - new Vector3(p.X, p.Y, p.Z);
+            _lastClickWorld = point;
+            _hasLastClick = true;
+        }
+
+        // カーソルの下をブラシ半径で選ぶ（外す）。半径が小さくて粒子が入らないときは、一番近い粒子を1つ
+        void PaintSelectionHere(bool click)
+        {
+            if (!HasHover) return;
+            _session.CollectInSphere(HoverPoint, _brushRadius, _hoverTriangle, _selectWork);
+            if (_selectWork.Count == 0)
+            {
+                int nearest = _session.FindParticle(HoverPoint, _hoverTriangle);
+                if (nearest >= 0) _selectWork.Add(nearest);
+            }
+            ApplySelection(_selectWork, _selectDeselect);
+            if (click && !_selectDeselect) RegisterClick(HoverPoint, _hoverTriangle);
+        }
+
+        /// <summary>
+        /// 塗って選ぶ操作を始める。カーソルの下の布の、ブラシ半径（<see cref="BrushRadius"/>）以内の粒子を、当たった部品（島）の中で選ぶ。
+        /// deselect なら、選びではなく外す。当たらなければ false。<see cref="Mode"/> が <see cref="ClothEditMode.Select"/> のときの
+        /// <see cref="PointerDown"/> は、これ（選ぶ側）に回る。続けて <see cref="SelectPaintDrag"/>、最後に <see cref="SelectPaintEnd"/>。
+        /// 最初にクリックした所は、<see cref="LastClickPoint"/>（中心を「最後にクリックした点」にしたとき）になる。
+        /// </summary>
+        public bool SelectPaintBegin(Ray ray, bool deselect)
+        {
+            if (!EnsureAlive() || !UpdateHover(ray)) return false;
+            FinishSelectionTransform();
+            _selectPainting = true;
+            _selectDeselect = deselect;
+            PaintSelectionHere(true);
+            Notify();
+            return true;
+        }
+
+        /// <summary>塗って選んでいる途中で、カーソルを動かした。通った所を選ぶ（外す）。</summary>
+        public void SelectPaintDrag(Ray ray)
+        {
+            if (!_selectPainting || !EnsureAlive()) return;
+            if (UpdateHover(ray)) PaintSelectionHere(false);
+            Notify();
+        }
+
+        /// <summary>塗って選ぶ操作を終える。</summary>
+        public void SelectPaintEnd()
+        {
+            _selectPainting = false;
+        }
+
+        /// <summary>
+        /// 画面上の矩形に入る粒子を選ぶ（deselect なら外す）。変わった数を返す。
+        /// <see cref="ClothEditSettings.SelectThroughOcclusion"/> が false なら、カメラ側を向いた粒子で、他の布に隠れていないものだけ。
+        /// true なら、裏側や隠れた粒子も選ぶ。
+        /// </summary>
+        /// <param name="viewportRect">矩形（ビューポート座標。0〜1、左下が原点）</param>
+        public int SelectInRect(Matrix4x4 viewProjection, Vector3 cameraPosition, Vector3 cameraForward, bool orthographic, Rect viewportRect, bool deselect)
+        {
+            if (!EnsureAlive()) return 0;
+            FinishSelectionTransform();
+            bool visibleOnly = !_settings.SelectThroughOcclusion;
+            _session.CollectInViewport(viewProjection, cameraPosition, cameraForward, orthographic, viewportRect, visibleOnly, visibleOnly, _selectWork);
+            return ApplySelection(_selectWork, deselect);
+        }
+
+        /// <summary>レイが当たった布の部品（島）全体を選ぶ（deselect なら外す）。変わった数を返す。当たらなければ 0。</summary>
+        public int SelectIslandAt(Ray ray, bool deselect)
+        {
+            if (!EnsureAlive() || !UpdateHover(ray)) return 0;
+            FinishSelectionTransform();
+            int triangle = _hoverTriangle;
+            _session.CollectIsland(triangle, _selectWork);
+            int changed = ApplySelection(_selectWork, deselect);
+            if (!deselect && _selectWork.Count > 0) RegisterClick(HoverPoint, triangle);
+            return changed;
+        }
+
+        /// <summary>すべての粒子を選ぶ。新しく選んだ数を返す。</summary>
+        public int SelectAll()
+        {
+            if (!EnsureAlive()) return 0;
+            FinishSelectionTransform();
+            int added = _selected.Length - _selectionCount;
+            if (added > 0)
+            {
+                for (int i = 0; i < _selected.Length; i++) _selected[i] = true;
+                CommitSelection();
+            }
+            return added;
+        }
+
+        /// <summary>選択をすべて外す。外した数を返す。</summary>
+        public int ClearSelection()
+        {
+            if (!EnsureAlive()) return 0;
+            FinishSelectionTransform();
+            int removed = _selectionCount;
+            if (removed > 0)
+            {
+                Array.Clear(_selected, 0, _selected.Length);
+                CommitSelection();
+            }
+            return removed;
+        }
+
+        /// <summary>選んだ粒子と、選んでいない粒子を入れ替える。変えた数（全粒子）を返す。</summary>
+        public int InvertSelection()
+        {
+            if (!EnsureAlive()) return 0;
+            FinishSelectionTransform();
+            for (int i = 0; i < _selected.Length; i++) _selected[i] = !_selected[i];
+            CommitSelection();
+            return _selected.Length;
+        }
+
+        /// <summary>選択を1周ぶん広げる（伸びの制約でつながった隣を足す。同じ島の中だけ）。足した数を返す。</summary>
+        public int GrowSelection()
+        {
+            if (!EnsureAlive()) return 0;
+            FinishSelectionTransform();
+            int before = _selectionCount;
+            _session.GrowSelection(_selected);
+            CommitSelection();
+            return _selectionCount - before;
+        }
+
+        /// <summary>選択を1周ぶん狭める（選んでいない隣がある粒子を外す。同じ島の中だけ）。外した数を返す。</summary>
+        public int ShrinkSelection()
+        {
+            if (!EnsureAlive()) return 0;
+            FinishSelectionTransform();
+            int before = _selectionCount;
+            _session.ShrinkSelection(_selected);
+            CommitSelection();
+            return before - _selectionCount;
+        }
+
+        /// <summary>
+        /// 選んだ粒子の鏡像の粒子を足す。鏡の面は対称編集の設定（軸とずれ）から作り、対称がオフでも設定の軸で映す。
+        /// アバターの基準の Transform が無ければ何もしない。足した数を返す。
+        /// </summary>
+        public int MirrorSelection()
+        {
+            if (!EnsureAlive() || _selectionCount == 0) return 0;
+            if (!ClothEditSymmetry.TryBuildMirrorPlane(_settings, _avatarRoot, true, out MirrorPlane plane)) return 0;
+            FinishSelectionTransform();
+            _session.CollectMirror(_selectedList, plane, _selectWork);
+            return ApplySelection(_selectWork, false);
+        }
+
+        /// <summary>ピン留めされている粒子を選択に足す（すでに選んでいる粒子は残す）。足した数を返す。</summary>
+        public int SelectPinned()
+        {
+            if (!EnsureAlive()) return 0;
+            FinishSelectionTransform();
+            _session.GetPinnedParticles(_selectWork);
+            return ApplySelection(_selectWork, false);
+        }
+
+        /// <summary>選んだ粒子をピン留めする（pinned が false なら解除する）。Unity の Undo の1段。変えた粒子の数を返す。</summary>
+        public int PinSelected(bool pinned)
+        {
+            if (!EnsureAlive() || _selectionCount == 0) return 0;
+            int[] particles = _selectedList;
+            return ChangePins(pinned ? L10n.Tr("GP02 選んだ点をピン留め", "GP02 Pin Selection") : L10n.Tr("GP02 選んだ点のピン解除", "GP02 Unpin Selection"),
+                () => _session.SetPinned(particles, pinned));
+        }
+
+        /// <summary>
+        /// 対称がオンのとき、選んだ粒子の鏡像の粒子（選んでいないもの）。動かすと、これらが鏡に映した動きで動く。画面で薄く見せる用。
+        /// 選択か対称の設定が変わったときだけ計算し直す。対称がオフなら空。
+        /// </summary>
+        public IReadOnlyList<int> MirroredSelection
+        {
+            get
+            {
+                RefreshMirroredSelection();
+                return _mirrored;
+            }
+        }
+
+        void RefreshMirroredSelection()
+        {
+            bool has = _session != null && TryGetMirrorPlane(out _mirroredPlaneNow);
+            if (_mirroredVersion == _selectionVersion && has == _mirroredHasPlane && (!has || SamePlane(_mirroredPlane, _mirroredPlaneNow))) return;
+            _mirroredVersion = _selectionVersion;
+            _mirroredHasPlane = has;
+            _mirroredPlane = _mirroredPlaneNow;
+            _mirrored.Clear();
+            if (!has || _selectionCount == 0) return;
+            _session.CollectMirror(_selectedList, _mirroredPlaneNow, _selectWork2);
+            foreach (int j in _selectWork2)
+            {
+                if (!_selected[j]) _mirrored.Add(j);
+            }
+        }
+
+        MirrorPlane _mirroredPlaneNow;
+
+        // ---- ハンドルの基準 ----
+
+        /// <summary>
+        /// ハンドルを置く中心（ワールド）。<see cref="ClothEditSettings.PivotMode"/> に従う。
+        /// Center は選んだ点の今の位置の平均、LastClicked は最後にクリックして選んだ面の上の点（無ければ Center）。
+        /// 選んだ点がなければ原点。<see cref="IsTransformingSelection"/> の間は、押したときの値のまま動かない（ハンドルが逃げない）。
+        /// </summary>
+        public Vector3 SelectionPivot
+        {
+            get
+            {
+                if (_xformActive) return _xformPivot;
+                if (_session == null || _selectionCount == 0) return Vector3.zero;
+                if (_settings.PivotMode == PivotKind.LastClicked && HasLastClickPoint) return LastClickPoint;
+                if (_pivotVersion != _selectionVersion || _pivotShape != _session.ShapeVersion)
+                {
+                    NVector3 sum = NVector3.Zero;
+                    var positions = _session.Solver.Positions;
+                    for (int k = 0; k < _selectedList.Length; k++) sum += positions[_selectedList[k]];
+                    sum /= _selectedList.Length;
+                    _centerCache = new Vector3(sum.X, sum.Y, sum.Z);
+                    _pivotVersion = _selectionVersion;
+                    _pivotShape = _session.ShapeVersion;
+                }
+                return _centerCache;
+            }
+        }
+
+        /// <summary>
+        /// ハンドルの向き。<see cref="ClothEditSettings.HandleSpace"/> に従う。
+        /// Global は単位、Avatar はアバターの基準の Transform（対称編集と同じもの）の向き、
+        /// Normal は選んだ点の面の法線の平均を Z にし、Y はワールドの上をなるべく保った向き（法線が求まらなければ単位）。
+        /// <see cref="IsTransformingSelection"/> の間は、押したときの値のまま動かない。
+        /// </summary>
+        public Quaternion HandleRotation
+        {
+            get
+            {
+                if (_xformActive) return _xformFrame;
+                switch (_settings.HandleSpace)
+                {
+                    case HandleOrientation.Avatar:
+                        return _avatarRoot != null ? _avatarRoot.rotation : Quaternion.identity;
+                    case HandleOrientation.Normal:
+                        if (_session == null || _selectionCount == 0) return Quaternion.identity;
+                        if (_frameVersion != _selectionVersion || _frameShape != _session.ShapeVersion || _frameSpace != HandleOrientation.Normal)
+                        {
+                            _frameCache = _session.TryGetAverageNormal(_selectedList, out Vector3 normal) ? FrameFromNormal(normal) : Quaternion.identity;
+                            _frameVersion = _selectionVersion;
+                            _frameShape = _session.ShapeVersion;
+                            _frameSpace = HandleOrientation.Normal;
+                        }
+                        return _frameCache;
+                    default:
+                        return Quaternion.identity;
+                }
+            }
+        }
+
+        // Z が法線で、Y がワールドの上にできるだけ近い向き。法線が真上か真下なら、上の代わりにワールドの前を使う
+        static Quaternion FrameFromNormal(Vector3 normal)
+        {
+            Vector3 up = Mathf.Abs(Vector3.Dot(normal, Vector3.up)) > 0.9999f ? Vector3.forward : Vector3.up;
+            return Quaternion.LookRotation(normal, up);
+        }
+
+        // ---- 選んだ点の変形 ----
+
+        /// <summary>選んだ点を動かしている途中か（<see cref="BeginSelectionTransform"/> から <see cref="EndSelectionTransform"/> まで）。仕上げ中は含まない（<see cref="IsSettling"/>）。</summary>
+        public bool IsTransformingSelection => _xformActive;
+
+        // 選んだ点を動かす範囲の決め方（なめらかに減る半径・カーブ・距離の測り方・対称）
+        BrushOptions BuildSelectionOptions()
+        {
+            float radius = _settings.SelectionFalloffRadius;
+            return new BrushOptions
+            {
+                Radius = radius >= 0f ? Mathf.Min(radius, ClothEditSettings.MaxSelectionFalloffRadius) : 0f,
+                Falloff = _settings.GetFalloffCurve(),
+                DistanceMode = _settings.DistanceMode,
+                Mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null,
+            };
+        }
+
+        /// <summary>
+        /// 選んだ点を動かし始める（ハンドルを押した）。選択が空なら false。押したときの中心（<see cref="SelectionPivot"/>）と向き
+        /// （<see cref="HandleRotation"/>）を覚え、選んだ点を集合でつまむ。続けて <see cref="UpdateSelectionTransform"/> を毎コマ呼び、
+        /// 離したら <see cref="EndSelectionTransform"/>。Unity の Undo の1段になる。Esc の <see cref="Cancel"/> で押す前に戻る。
+        /// 選んだ点は、設定の半径（<see cref="ClothEditSettings.SelectionFalloffRadius"/>）の中でなめらかに減る重みで、周りの布も連れていく。
+        /// ピン留めした粒子は、選んでいても動かない。
+        /// </summary>
+        public bool BeginSelectionTransform()
+        {
+            if (!EnsureAlive() || _selectionCount == 0) return false;
+            FinishStroke();
+            Vector3 pivot = SelectionPivot;
+            Quaternion frame = HandleRotation;
+            BeginOperation(L10n.Tr("GP02 選んだ点を動かす", "GP02 Move Selection"));
+            if (!_session.BeginGrabSet(_selectedList, BuildSelectionOptions()))
+            {
+                CommitOperation();
+                return false;
+            }
+            _xformPivot = pivot;
+            _xformFrame = frame;
+            _xformRawTranslation = _xformTranslation = Vector3.zero;
+            _xformRawRotation = _xformRotation = Quaternion.identity;
+            _xformRawLogScale = _xformLogScale = Vector3.zero;
+            _xformPreciseUsed = false;
+            _xformActive = true;
+            _setGrab = true;
+            _strokeMode = ClothEditMode.Select;
+            _moved = false;
+            _dragging = true;
+            _settling = false;
+            CaptureGrabRange(true);
+            Notify();
+            return true;
+        }
+
+        // 拡大率の対数を取る前に、0 や負の値を避ける
+        const float MinAxisScale = 1e-3f;
+
+        static Vector3 LogScale(Vector3 scale)
+        {
+            return new Vector3(Mathf.Log(Mathf.Max(scale.x, MinAxisScale)), Mathf.Log(Mathf.Max(scale.y, MinAxisScale)), Mathf.Log(Mathf.Max(scale.z, MinAxisScale)));
+        }
+
+        /// <summary>
+        /// 選んだ点の動きを更新する。値は押したときからの合計（ハンドルが返す値そのまま）。
+        /// translation はワールドの平行移動、rotation はワールドでの回転の差、scale は <see cref="HandleRotation"/>（押したときの向き）の軸に沿った倍率。
+        /// 回転と拡大縮小の中心は、押したときの <see cref="SelectionPivot"/>。回転のあとに平行移動を足す。
+        /// precise（Shift）なら、前回からの増分を <see cref="PrecisionFactor"/> 倍して足す
+        /// （平行移動は差、回転は Slerp で増分を縮め、拡大は対数で増分を縮める）。途中で切り替えても動かし先は飛ばない。
+        /// </summary>
+        public void UpdateSelectionTransform(Vector3 translation, Quaternion rotation, Vector3 scale, bool precise)
+        {
+            if (!_xformActive || !EnsureAlive()) return;
+            float length = Mathf.Sqrt(rotation.x * rotation.x + rotation.y * rotation.y + rotation.z * rotation.z + rotation.w * rotation.w);
+            rotation = length > 1e-6f ? new Quaternion(rotation.x / length, rotation.y / length, rotation.z / length, rotation.w / length) : Quaternion.identity;
+            Vector3 logScale = LogScale(scale);
+
+            if (precise) _xformPreciseUsed = true;
+            if (!_xformPreciseUsed)
+            {
+                // 精密操作を使っていなければ、受け取った値そのまま（丸め誤差を足さない）
+                _xformTranslation = translation;
+                _xformRotation = rotation;
+                _xformLogScale = logScale;
+            }
+            else
+            {
+                float factor = precise ? PrecisionFactor : 1f;
+                _xformTranslation += (translation - _xformRawTranslation) * factor;
+                Quaternion delta = rotation * Quaternion.Inverse(_xformRawRotation);
+                if (factor != 1f) delta = Quaternion.Slerp(Quaternion.identity, delta, factor);
+                _xformRotation = Quaternion.Normalize(delta * _xformRotation);
+                _xformLogScale += (logScale - _xformRawLogScale) * factor;
+            }
+            _xformRawTranslation = translation;
+            _xformRawRotation = rotation;
+            _xformRawLogScale = logScale;
+
+            Vector3 effectiveScale = _xformPreciseUsed
+                ? new Vector3(Mathf.Exp(_xformLogScale.x), Mathf.Exp(_xformLogScale.y), Mathf.Exp(_xformLogScale.z))
+                : new Vector3(Mathf.Max(scale.x, MinAxisScale), Mathf.Max(scale.y, MinAxisScale), Mathf.Max(scale.z, MinAxisScale));
+            var motion = new BrushMotion(
+                ClothEditSymmetry.ToNumerics(_xformTranslation),
+                new NQuaternion(_xformRotation.x, _xformRotation.y, _xformRotation.z, _xformRotation.w),
+                1f,
+                ClothEditSymmetry.ToNumerics(_xformPivot))
+            {
+                ScaleAxes = ClothEditSymmetry.ToNumerics(effectiveScale),
+                ScaleFrame = new NQuaternion(_xformFrame.x, _xformFrame.y, _xformFrame.z, _xformFrame.w),
+            };
+            _session.UpdateGrabSet(motion);
+
+            if (_xformTranslation.sqrMagnitude > 1e-12f || Quaternion.Angle(_xformRotation, Quaternion.identity) > 1e-3f
+                || (effectiveScale - Vector3.one).sqrMagnitude > 1e-8f)
+            {
+                _moved = true;
+            }
+            Notify();
+        }
+
+        /// <summary>
+        /// 選んだ点を動かし終えた（ハンドルを離した）。動いていれば仕上げに入る（以降の <see cref="Tick"/> で進み、終わると Undo の1段として確定）。
+        /// 動いていなければ、記録を残さずに終わる。
+        /// </summary>
+        public void EndSelectionTransform()
+        {
+            if (!_xformActive) return;
+            _xformActive = false;
+            if (!EnsureAlive()) return;
+            if (_moved)
+            {
+                _dragging = false;
+                _settling = true;
+                _settleClockPending = true;
+            }
+            else
+            {
+                FinishStroke();
+            }
+            Notify();
+        }
+
+        /// <summary>
+        /// 選んだ点を、数値で指定した動きで動かす。<see cref="BeginSelectionTransform"/>、<see cref="UpdateSelectionTransform"/>（精密操作なし）、
+        /// <see cref="EndSelectionTransform"/> を1回で行うので、ハンドルで同じ値まで動かしたときと同じ結果になる。仕上げは以降の <see cref="Tick"/>。
+        /// 選択が空なら false。動きが無い（単位の値）ときも何もせず false。
+        /// </summary>
+        /// <param name="translation">ワールドの平行移動</param>
+        /// <param name="rotation">ワールドでの回転</param>
+        /// <param name="scale"><see cref="HandleRotation"/> の軸に沿った倍率</param>
+        public bool ApplySelectionTransform(Vector3 translation, Quaternion rotation, Vector3 scale)
+        {
+            if (!BeginSelectionTransform()) return false;
+            UpdateSelectionTransform(translation, rotation, scale, false);
+            bool moved = _moved;
+            EndSelectionTransform();
+            return moved;
+        }
+
+        // 選んだ点の変形を終えた状態にする（確定・取り消し・Undo のとき）
+        void EndTransformState()
+        {
+            if (!_setGrab && !_xformActive) return;
+            _setGrab = false;
+            _xformActive = false;
+            _previewCount = 0;
+            _previewShown = false;
+        }
+
+        // ---- なめらかに減る範囲の表示 ----
+
+        /// <summary>
+        /// 選んだ点の周りの、動く粒子（選んでいないもの）の数。選んだ点を動かしたときに、設定の半径・カーブ・距離の測り方で重みがつく粒子で、
+        /// 対称がオンなら鏡像の側も含む。選択・半径・カーブ・距離の測り方・対称が変わったときだけ計算し直す。上限は <see cref="MaxSelectionWeightParticles"/>（超えるときは間引く）。
+        /// <see cref="ClothEditSettings.ShowSelectionWeights"/> がオフ、半径が 0、選択が空のときは 0。選んだ点そのもの（重み 1）は含まないので、<see cref="SelectedParticles"/> を使う。
+        /// </summary>
+        public int SelectionWeightCount
+        {
+            get
+            {
+                RefreshSelectionWeights();
+                return _weightCount;
+            }
+        }
+
+        /// <summary>k 番目の粒子の番号（0 〜 <see cref="SelectionWeightCount"/> - 1）。位置は <c>Session.Solver.Positions</c> から読む。</summary>
+        public int SelectionWeightParticle(int k) => _weightParticles[k];
+
+        /// <summary>k 番目の粒子の重み（0 より大きく 1 以下）。</summary>
+        public float SelectionWeightValue(int k) => _weightValues[k];
+
+        void RefreshSelectionWeights()
+        {
+            bool show = _session != null && _settings.ShowSelectionWeights && _selectionCount > 0 && _settings.SelectionFalloffRadius > 0f;
+            if (!show)
+            {
+                _weightCount = 0;
+                _weightShown = false;
+                _weightVersion = -1;
+                return;
+            }
+            BrushOptions options = BuildSelectionOptions();
+            bool hasMirror = options.Mirror.HasValue;
+            MirrorPlane plane = hasMirror ? options.Mirror.Value : default;
+            // 直線距離で測るときは、形が変わると範囲も変わる。つまんでいる間は毎コマ計算しない
+            int shape = options.DistanceMode == BrushDistanceMode.Linear && !IsBusy ? _session.ShapeVersion : 0;
+            if (_weightShown && _weightVersion == _selectionVersion && _weightRadius == options.Radius && ReferenceEquals(_weightCurve, options.Falloff)
+                && _weightMode == options.DistanceMode && _weightHasMirror == hasMirror && (!hasMirror || SamePlane(_weightPlane, plane)) && _weightShape == shape)
+            {
+                return;
+            }
+            _weightShown = true;
+            _weightVersion = _selectionVersion;
+            _weightRadius = options.Radius;
+            _weightCurve = options.Falloff;
+            _weightMode = options.DistanceMode;
+            _weightHasMirror = hasMirror;
+            _weightPlane = plane;
+            _weightShape = shape;
+
+            int n = _session.ParticleCount;
+            if (_weightWorkIndices == null || _weightWorkIndices.Length != n)
+            {
+                _weightWorkIndices = new int[n];
+                _weightWorkValues = new float[n];
+            }
+            int total = _session.CollectSetRange(_selectedList, options, _weightWorkIndices, _weightWorkValues, n);
+            int outside = 0;
+            for (int k = 0; k < total; k++)
+            {
+                if (!_selected[_weightWorkIndices[k]]) outside++;
+            }
+            int stride = outside <= MaxSelectionWeightParticles ? 1 : (outside + MaxSelectionWeightParticles - 1) / MaxSelectionWeightParticles;
+            _weightCount = 0;
+            int seen = 0;
+            for (int k = 0; k < total && _weightCount < MaxSelectionWeightParticles; k++)
+            {
+                int i = _weightWorkIndices[k];
+                if (_selected[i] || seen++ % stride != 0) continue;
+                _weightParticles[_weightCount] = i;
+                _weightValues[_weightCount] = _weightWorkValues[k];
+                _weightCount++;
+            }
+        }
+
+        // ---- 編集をやり直すときの選択の引き継ぎ ----
+
+        // 作り直す前の選択。粒子の番号が同じ作り直し（保存後）は番号で、粒子を置き直す作り直しは位置と島で引き継ぐ
+        sealed class SelectionCarry
+        {
+            public int[] Particles;
+            public List<Vector3> Positions;
+            public List<int> Islands;
+            public bool HasLastClick;
+            public Vector3 LastClick;
+        }
+
+        SelectionCarry CaptureSelection()
+        {
+            if (_session == null || _selectionCount == 0) return null;
+            var carry = new SelectionCarry
+            {
+                Particles = _selectedList,
+                Positions = new List<Vector3>(_selectedList.Length),
+                Islands = new List<int>(_selectedList.Length),
+                HasLastClick = HasLastClickPoint,
+                LastClick = LastClickPoint,
+            };
+            var positions = _session.Solver.Positions;
+            int[] particleIsland = _session.Cloth.ParticleIsland;
+            foreach (int i in _selectedList)
+            {
+                carry.Positions.Add(new Vector3(positions[i].X, positions[i].Y, positions[i].Z));
+                carry.Islands.Add(particleIsland[i]);
+            }
+            return carry;
+        }
+
+        void RestoreSelection(SelectionCarry carry, bool sameParticles)
+        {
+            int n = _session.ParticleCount;
+            _selected = new bool[n];
+            if (carry != null)
+            {
+                if (sameParticles)
+                {
+                    foreach (int i in carry.Particles)
+                    {
+                        if ((uint)i < (uint)n) _selected[i] = true;
+                    }
+                }
+                else
+                {
+                    _session.CollectNear(carry.Positions, _session.Cloth.Spacing * 0.75f, carry.Islands, _selectWork);
+                    foreach (int i in _selectWork) _selected[i] = true;
+                }
+            }
+            int count = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (_selected[i]) count++;
+            }
+            var list = new int[count];
+            int k = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (_selected[i]) list[k++] = i;
+            }
+            _selectedList = list;
+            _selectionCount = count;
+            _selectionVersion++;
+            if (carry != null && carry.HasLastClick && count > 0) RegisterClick(carry.LastClick, -1);
+        }
+
         // ---- 時間の経過 ----
 
         /// <summary>
@@ -1115,6 +1904,7 @@ namespace GP02.EditorTools
                 _session.ReleaseHeld(_relaxHeld);
                 _session.Release();
                 _settling = false;
+                EndTransformState();
                 CommitOperation();
                 InvalidatePreview();
             }
@@ -1128,6 +1918,7 @@ namespace GP02.EditorTools
             _dragging = false;
             _settling = false;
             _settleClockPending = false;
+            EndTransformState();
             if (_session != null) _session.ReleaseHeld(_relaxHeld);
             if (_session != null && _session.IsGrabbing) _session.Release();
             CommitOperation();
@@ -1195,6 +1986,8 @@ namespace GP02.EditorTools
             _settling = false;
             _settleClockPending = false;
             _opOpen = false;
+            _selectPainting = false;
+            EndTransformState();
             _relaxHeld.Clear();
             if (_session.IsGrabbing) _session.Release();
 
@@ -1221,7 +2014,9 @@ namespace GP02.EditorTools
             var pins = new List<Vector3>();
             var pinIslands = new List<int>();
             _session.GetPinnedPositions(pins, pinIslands);
-            StartSession(pins, pinIslands, null, null, out _);
+            // 粒子を置き直すと番号が変わるので、選んだ点も位置と島から探し直す
+            SelectionCarry carry = CaptureSelection();
+            StartSession(pins, pinIslands, null, null, carry, out _);
         }
 
         void AfterShapeChanged()
@@ -1318,6 +2113,7 @@ namespace GP02.EditorTools
             var timer = System.Diagnostics.Stopwatch.StartNew();
             ParticleCloth rebased;
             var pinParticles = new List<int>();
+            SelectionCarry carry = CaptureSelection();   // 粒子の番号は同じなので、選択もそのまま引き継ぐ
             try
             {
                 rebased = _session.Cloth.Rebase(_session.Solver.Positions);
@@ -1330,11 +2126,11 @@ namespace GP02.EditorTools
                 var pins = new List<Vector3>();
                 var pinIslands = new List<int>();
                 _session.GetPinnedPositions(pins, pinIslands);
-                if (!StartSession(pins, pinIslands, null, null, out string retryError)) message += L10n.Tr("\n編集を続けられませんでした。「編集を開始」からやり直してください。\n", "\nCould not continue editing. Press \"Start Editing\" to start over.\n") + retryError;
+                if (!StartSession(pins, pinIslands, null, null, carry, out string retryError)) message += L10n.Tr("\n編集を続けられませんでした。「編集を開始」からやり直してください。\n", "\nCould not continue editing. Press \"Start Editing\" to start over.\n") + retryError;
                 return true;
             }
             double rebaseMs = timer.Elapsed.TotalMilliseconds;
-            if (!StartSession(null, null, rebased, pinParticles, out string error)) message += L10n.Tr("\n編集を続けられませんでした。「編集を開始」からやり直してください。\n", "\nCould not continue editing. Press \"Start Editing\" to start over.\n") + error;
+            if (!StartSession(null, null, rebased, pinParticles, carry, out string error)) message += L10n.Tr("\n編集を続けられませんでした。「編集を開始」からやり直してください。\n", "\nCould not continue editing. Press \"Start Editing\" to start over.\n") + error;
             Debug.Log($"[GP02] 保存後の作り直し {timer.Elapsed.TotalMilliseconds:F0}ms（うち静止状態の更新 {rebaseMs:F0}ms）");
             return true;
         }

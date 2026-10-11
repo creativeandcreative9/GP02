@@ -2,7 +2,7 @@
 # Docker の Unity を画面あり（仮想画面 Xvfb ＋ ソフトウェア描画）で起動し、見た目を画像にする。
 # 編集中のプレビューや、保存したシェイプキーの見た目を、クラウドで確かめるため。
 #
-# 使い方: tools/unity/render.sh [メソッド名]（既定は RenderScenes.All。EditAndSave・Tools・Layers を続けて描く）
+# 使い方: tools/unity/render.sh [メソッド名]（既定は RenderScenes.All。EditAndSave・Tools・Layers・Select を続けて描く）
 #   描画の中身は tools/unity/render/RenderScenes.cs
 #
 # 開発用の unity/ とは別の作業用プロジェクト（tools/unity/out/render_project）を使うので、
@@ -12,7 +12,8 @@
 #
 # 出力（Gitには含めない）:
 #   tools/unity/out/render/*.png … 画像（edit_and_save.png ＝ 編集と保存、tools.png ＝ 対称・回す・拡大縮小・元に戻すブラシ、
-#                                   layers.png ＝ 重ね着（上: スカートだけ、下: スカートとペチコートをまとめて）で回す・縮める・両側を外へ引く）
+#                                   layers.png ＝ 重ね着（上: スカートだけ、下: スカートとペチコートをまとめて）で回す・縮める・両側を外へ引く、
+#                                   select.png ＝ 点を選んで動かす（前の裾の点を矩形で選び、移動・軸ごとの拡大・法線まわりの回転・内へ押す）。select_marked.png は選んだ点の印つき）
 #   tools/unity/out/render/unity.log
 set -euo pipefail
 cd "$(dirname "$0")/../.."

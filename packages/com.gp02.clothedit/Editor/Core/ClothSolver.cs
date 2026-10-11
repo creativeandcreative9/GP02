@@ -512,74 +512,15 @@ namespace GP02.Core
             bool midline = false;
             if (hasMirror)
             {
-                int inside = 0;
-                for (int k = 0; k < setCount; k++)
-                {
-                    int m = FindMirrorNear(sources[k], plane, tolerance);
-                    if (m < 0) continue;
-                    if (mark[m])
-                    {
-                        inside++;
-                        continue;
-                    }
-                    if (_brushMirrored[m]) continue;
-                    _brushMirrored[m] = true;
-                    sources[sourceCount++] = m;
-                }
-                if (2 * inside >= setCount) midline = true;
-                for (int k = setCount; k < sourceCount; k++) _brushMirrored[sources[k]] = false;
-                if (midline) sourceCount = setCount;
-                else if (sourceCount > setCount) mirrorSeed = sources[setCount];
+                sourceCount = AddSetMirrors(sources, setCount, mark, _brushMirrored, plane, tolerance, out midline);
+                if (!midline && sourceCount > setCount) mirrorSeed = sources[setCount];
             }
 
             // 起点からの距離。範囲の距離はテザーの距離の配列を作業場所として使う（あとで範囲全体からの距離で上書きする）
             float[] distance = _grabDistance;
             int[] nearest = _grabSource;
             Vector3[] p = _positions;
-            if (radius > 0f && mode == BrushDistanceMode.Surface)
-            {
-                _graph.ShortestDistances(sources, sourceCount, distance, nearest, radius);
-            }
-            else if (radius > 0f)
-            {
-                if (_queryWork == null) _queryWork = new List<int>();
-                var grid = new PointGrid(radius);
-                for (int k = 0; k < sourceCount; k++) grid.Add(sources[k], p[sources[k]]);
-                for (int i = 0; i < n; i++)
-                {
-                    distance[i] = float.PositiveInfinity;
-                    nearest[i] = -1;
-                    grid.Query(p[i], radius, _queryWork);
-                    for (int c = 0; c < _queryWork.Count; c++)
-                    {
-                        int source = _queryWork[c];
-                        float d = MathF.Sqrt(DistanceSquared(p[i].X, p[i].Y, p[i].Z, p[source]));
-                        if (d < distance[i])
-                        {
-                            distance[i] = d;
-                            nearest[i] = source;
-                        }
-                    }
-                }
-                for (int k = 0; k < sourceCount; k++)
-                {
-                    distance[sources[k]] = 0f;
-                    nearest[sources[k]] = sources[k];
-                }
-            }
-            else
-            {
-                for (int i = 0; i < n; i++)
-                {
-                    distance[i] = float.PositiveInfinity;
-                    nearest[i] = -1;
-                }
-                for (int k = 0; k < sourceCount; k++)
-                {
-                    distance[sources[k]] = 0f;
-                    nearest[sources[k]] = sources[k];
-                }
-            }
+            ComputeSetDistances(sources, sourceCount, radius, mode, distance, nearest);
 
             // 印を、集合から鏡像の起点に付け替える（範囲の粒子が、どちらの起点に属するかを見るため）
             for (int k = 0; k < setCount; k++) mark[sources[k]] = false;
@@ -613,6 +554,160 @@ namespace GP02.Core
             _motionValid = false;
             _spreadPending = false;
             _activeDirty = true;
+        }
+
+        // 集合の粒子 sources[0..setCount) の鏡像を、sources の後ろに足す。足した数まで含めた起点の数を返す。
+        // mark は集合の印（呼ぶ前に true にしておく）、mirrorFlag は足した鏡像を重複なく数えるための作業用（呼ぶ前後で全部 false）。
+        // 集合の半分以上の鏡像が集合の中にあるとき（中央線をまたいだ）は midline が true になり、鏡像は足さない
+        int AddSetMirrors(int[] sources, int setCount, bool[] mark, bool[] mirrorFlag, MirrorPlane plane, float tolerance, out bool midline)
+        {
+            int sourceCount = setCount;
+            int inside = 0;
+            for (int k = 0; k < setCount; k++)
+            {
+                int m = FindMirrorNear(sources[k], plane, tolerance);
+                if (m < 0) continue;
+                if (mark[m])
+                {
+                    inside++;
+                    continue;
+                }
+                if (mirrorFlag[m]) continue;
+                mirrorFlag[m] = true;
+                sources[sourceCount++] = m;
+            }
+            midline = 2 * inside >= setCount;
+            for (int k = setCount; k < sourceCount; k++) mirrorFlag[sources[k]] = false;
+            return midline ? setCount : sourceCount;
+        }
+
+        // 起点 sources からの距離と、一番近い起点を求める（範囲 radius の外は届かなくてよい）。radius が 0 なら起点だけが距離 0。
+        // nearest は null でもよい
+        void ComputeSetDistances(int[] sources, int sourceCount, float radius, BrushDistanceMode mode, float[] distance, int[] nearest)
+        {
+            int n = _positions.Length;
+            Vector3[] p = _positions;
+            if (radius > 0f && mode == BrushDistanceMode.Surface)
+            {
+                _graph.ShortestDistances(sources, sourceCount, distance, nearest, radius);
+            }
+            else if (radius > 0f)
+            {
+                if (_queryWork == null) _queryWork = new List<int>();
+                var grid = new PointGrid(radius);
+                for (int k = 0; k < sourceCount; k++) grid.Add(sources[k], p[sources[k]]);
+                for (int i = 0; i < n; i++)
+                {
+                    distance[i] = float.PositiveInfinity;
+                    if (nearest != null) nearest[i] = -1;
+                    grid.Query(p[i], radius, _queryWork);
+                    for (int c = 0; c < _queryWork.Count; c++)
+                    {
+                        int source = _queryWork[c];
+                        float d = MathF.Sqrt(DistanceSquared(p[i].X, p[i].Y, p[i].Z, p[source]));
+                        if (d < distance[i])
+                        {
+                            distance[i] = d;
+                            if (nearest != null) nearest[i] = source;
+                        }
+                    }
+                }
+                for (int k = 0; k < sourceCount; k++)
+                {
+                    distance[sources[k]] = 0f;
+                    if (nearest != null) nearest[sources[k]] = sources[k];
+                }
+            }
+            else
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    distance[i] = float.PositiveInfinity;
+                    if (nearest != null) nearest[i] = -1;
+                }
+                for (int k = 0; k < sourceCount; k++)
+                {
+                    distance[sources[k]] = 0f;
+                    if (nearest != null) nearest[sources[k]] = sources[k];
+                }
+            }
+        }
+
+        /// <summary>
+        /// 粒子の集合をつまんだとき（<see cref="Grab(int[], BrushMotion, BrushOptions)"/>）に範囲に入る粒子と重みを調べる。
+        /// つまんだ状態は変えない。範囲と重みは Grab と同じ決め方で、集合の粒子は重み 1、
+        /// options.Radius 以内の粒子は集合からの距離（DistanceMode の測り方）に応じた Falloff の重み、それより外は 0（含めない）。
+        /// options.Mirror があれば、集合の鏡像の側の範囲も含める（中央線をまたぐ集合では鏡像を使わない、も Grab と同じ）。
+        /// 範囲の粒子が maxCount より多いときは、粒子の番号順に一定の間隔で間引いて maxCount 以下にする（重みでは選ばない）。
+        /// 選択が変わったときだけ呼ぶ想定で、呼ぶたびに配列を確保する。
+        /// </summary>
+        /// <param name="particles">集合（重複してよい）。空なら 0 を返す</param>
+        /// <param name="options">null なら半径 0・対称なし</param>
+        /// <param name="indices">範囲の粒子の番号（出力、番号の昇順）</param>
+        /// <param name="weights">範囲の中の重み（出力、indices と同じ順）</param>
+        /// <param name="maxCount">書き込む数の上限</param>
+        /// <returns>書き込んだ数</returns>
+        public int CollectSetRange(int[] particles, BrushOptions options, int[] indices, float[] weights, int maxCount)
+        {
+            if (particles == null) throw new ArgumentNullException(nameof(particles));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            int n = _positions.Length;
+            foreach (int particle in particles)
+            {
+                if ((uint)particle >= (uint)n) throw new ArgumentOutOfRangeException(nameof(particles));
+            }
+            float radius = options != null ? options.Radius : 0f;
+            if (!(radius >= 0f) || float.IsInfinity(radius)) throw new ArgumentOutOfRangeException(nameof(options), "半径が不正です。");
+            FalloffCurve curve = options?.Falloff ?? FalloffCurve.Constant;
+            BrushDistanceMode mode = options != null ? options.DistanceMode : BrushDistanceMode.Surface;
+            MirrorPlane? mirror = options?.Mirror;
+            bool hasMirror = mirror.HasValue;
+            MirrorPlane plane = hasMirror ? mirror.Value : default;
+            if (hasMirror && !plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(options));
+            float tolerance = options != null ? options.MirrorTolerance : BrushOptions.DefaultMirrorTolerance;
+            if (hasMirror && !(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(options), "鏡像を探す許容距離が不正です。");
+            maxCount = Math.Min(maxCount, Math.Min(indices.Length, weights.Length));
+            if (maxCount <= 0 || particles.Length == 0) return 0;
+
+            // 作業用の配列は、つまんでいる状態を壊さないよう、この呼び出しの中だけで確保する
+            var mark = new bool[n];
+            var sources = new int[n];
+            int setCount = 0;
+            foreach (int particle in particles)
+            {
+                if (mark[particle]) continue;
+                mark[particle] = true;
+                sources[setCount++] = particle;
+            }
+            int sourceCount = setCount;
+            if (hasMirror) sourceCount = AddSetMirrors(sources, setCount, mark, new bool[n], plane, tolerance, out _);
+
+            if (_workDistance == null) _workDistance = new float[n];
+            float[] distance = _workDistance;
+            ComputeSetDistances(sources, sourceCount, radius, mode, distance, null);
+
+            int total = 0;
+            for (int i = 0; i < n; i++)
+            {
+                float d = distance[i];
+                if (!(d <= radius)) continue;
+                if (d <= 0f || curve.Evaluate(d / radius) > 0f) total++;
+            }
+            int stride = total <= maxCount ? 1 : (total + maxCount - 1) / maxCount;
+            int written = 0, seen = 0;
+            for (int i = 0; i < n && written < maxCount; i++)
+            {
+                float d = distance[i];
+                if (!(d <= radius)) continue;
+                float w = d <= 0f ? 1f : curve.Evaluate(d / radius);
+                if (!(w > 0f)) continue;
+                if (seen++ % stride != 0) continue;
+                indices[written] = i;
+                weights[written] = w;
+                written++;
+            }
+            return written;
         }
 
         // FindMirrorParticle と同じ選び方を、元の位置の格子で近くの粒子だけ調べて行う（集合の粒子ごとに全粒子を調べると遅いため）
@@ -898,7 +993,29 @@ namespace GP02.Core
             var twist = new Quaternion(n * along, q.W);
             float length = twist.Length();
             twist = length > 1e-6f ? Quaternion.Multiply(twist, 1f / length) : Quaternion.Identity;
-            return new BrushMotion(translation, twist, motion.Scale, pivot);
+            var result = new BrushMotion(translation, twist, motion.Scale, pivot);
+            if (motion.HasAxisScale) ApplySymmetricAxisScale(ref result, motion, n);
+            return result;
+        }
+
+        // 軸ごとの拡大は、拡大の軸が鏡の面の法線とそろっている（鏡映と入れ替えても変わらない）ときだけ残す。
+        // そろっていないと、鏡像の側と食い違って中央線で崩れるので、軸の倍率の平均で一様に拡大する
+        static void ApplySymmetricAxisScale(ref BrushMotion result, in BrushMotion motion, Vector3 n)
+        {
+            motion.GetScaleMatrix(out float m00, out float m01, out float m02, out float m10, out float m11, out float m12,
+                out float m20, out float m21, out float m22);
+            // M が H = I - 2nnᵀ と入れ替わる ⇔ M n が n に平行
+            var mn = new Vector3(m00 * n.X + m01 * n.Y + m02 * n.Z, m10 * n.X + m11 * n.Y + m12 * n.Z, m20 * n.X + m21 * n.Y + m22 * n.Z);
+            float along = Vector3.Dot(mn, n);
+            Vector3 across = mn - along * n;
+            if (across.LengthSquared() <= 1e-8f * MathF.Max(1f, mn.LengthSquared()))
+            {
+                result.ScaleAxes = motion.ScaleAxes;
+                result.ScaleFrame = motion.ScaleFrame;
+                return;
+            }
+            Vector3 axes = motion.ScaleAxes;
+            result.Scale = motion.Scale * (axes.X + axes.Y + axes.Z) / 3f;
         }
 
         /// <summary>

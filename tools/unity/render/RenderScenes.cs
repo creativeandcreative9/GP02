@@ -23,6 +23,8 @@ public static class RenderScenes
             ToolScenes();
             ClearScene();
             LayerScenes();
+            ClearScene();
+            SelectScenes();
         });
     }
 
@@ -31,6 +33,8 @@ public static class RenderScenes
     public static void EditAndSave() => Run(EditAndSaveScenes);
 
     public static void Tools() => Run(ToolScenes);
+
+    public static void Select() => Run(SelectScenes);
 
     static void Run(Action action)
     {
@@ -227,6 +231,163 @@ public static class RenderScenes
                 c => PullSideways(c, camera, 0.12f), petticoat));
         }
         SaveGrid(shots, 4, "layers");
+    }
+
+    // ---- 点を選んで動かす（スカートとペチコートをまとめて編集し、前の裾の点を矩形で選ぶ） ----
+    // ① 外下へ 4cm（移動） ② アバターの向きで X だけ 1.3 倍 ③ 面の法線の向きで 20 度回す ④ 内へ 3cm（ペチコートを押す）⑤ 外上へ 3.6cm。
+    // ①②③は、ウエストをピン留めした伸びない布の裾には届かない動き（裾を下へ引く・裾の幅や高さを変える）なので、選んだ点は目標の手前で止まる。④⑤は届く
+    // select.png は形だけ、select_marked.png は選んだ点（赤）となめらかに減る範囲（黄〜橙。重みが大きいほど橙）の印を重ねたもの。
+    // ログに、選んだ点が目標のどこまで動いたか、最大の伸び、スカートがペチコートに入った最大の深さを出す
+
+    static void SelectScenes()
+    {
+        Camera camera = SetUpCamera(new Vector3(0f, 0.62f, -1.25f), new Vector3(0f, 0.58f, 0f));
+        camera.aspect = 1f;
+        GameObject root = TestClothMenu.CreateInScene(null, true);
+        var skirt = root.transform.Find("Skirt").GetComponent<SkinnedMeshRenderer>();
+        var petticoat = root.transform.Find("Petticoat").GetComponent<SkinnedMeshRenderer>();
+        foreach (Transform bone in skirt.bones) bone.localRotation = Quaternion.identity;
+        Texture2D before = Shot(camera, "select_0_before");
+        var plain = new List<Texture2D> { before };
+        var marked = new List<Texture2D>();
+
+        var cases = new[]
+        {
+            ("select_1_move", HandleOrientation.Global, new Vector3(0f, -0.028f, -0.028f), Quaternion.identity, Vector3.one),
+            ("select_2_scale_x_avatar", HandleOrientation.Avatar, Vector3.zero, Quaternion.identity, new Vector3(1.3f, 1f, 1f)),
+            ("select_3_rotate_normal", HandleOrientation.Normal, Vector3.zero, Quaternion.identity, Vector3.one),
+            ("select_4_push_inward", HandleOrientation.Global, new Vector3(0f, 0f, 0.03f), Quaternion.identity, Vector3.one),
+            // 布の長さで届く動き（伸びない布は、①のように裾を下へ引いたり、②③のように裾の幅や高さを変えたりはできない）
+            ("select_5_move_out_up", HandleOrientation.Global, new Vector3(0f, 0.02f, -0.03f), Quaternion.identity, Vector3.one),
+        };
+        bool first = true;
+        foreach (var (name, space, translation, baseRotation, scale) in cases)
+        {
+            var settings = new ClothEditSettings
+            {
+                Falloff = FalloffPreset.Smooth,
+                SelectionFalloffRadius = 0.05f,
+                HandleSpace = space,
+                SettleTimeoutSeconds = LayerSettleSeconds,
+            };
+            var controller = new ClothEditController(settings) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+            try
+            {
+                if (!controller.TryStartLayered(new Renderer[] { skirt, petticoat }, out string startError)) throw new InvalidOperationException(startError);
+                ClothEditSession session = controller.Session;
+                float top = float.MinValue;
+                foreach (Vector3 v in session.CurrentWorldVertices) top = Mathf.Max(top, v.y);
+                var waist = new List<Vector3>();
+                foreach (System.Numerics.Vector3 r in session.Cloth.Model.RestPositions)
+                {
+                    if (r.Y > top - 1.5f * session.Cloth.Spacing) waist.Add(new Vector3(r.X, r.Y, r.Z));
+                }
+                session.PinNear(waist, 0.004f);
+
+                // 前の裾の帯を、矩形で選ぶ（外の布の後ろにあるペチコートは選ばれない）
+                Vector3 low = camera.WorldToViewportPoint(new Vector3(-0.12f, 0.455f, -0.25f));
+                Vector3 high = camera.WorldToViewportPoint(new Vector3(0.12f, 0.52f, -0.25f));
+                var rect = Rect.MinMaxRect(low.x, low.y, high.x, high.y);
+                Matrix4x4 viewProjection = camera.projectionMatrix * camera.worldToCameraMatrix;
+                controller.SelectInRect(viewProjection, camera.transform.position, camera.transform.forward, false, rect, false);
+                int petticoatSelected = 0;
+                for (int k = 0; k < controller.SelectedParticles.Count; k++)
+                {
+                    int triangle = session.Cloth.Topology.TriangleToSource[session.Cloth.ParticleTriangle[controller.SelectedParticles[k]]];
+                    if (session.TryGetMeshTriangle(triangle, out int rendererIndex, out _) && rendererIndex == 1) petticoatSelected++;
+                }
+                if (first)
+                {
+                    session.UpdateCurrentShape();
+                    session.DrawPreview(camera);
+                    DrawSelectionMarkers(camera, controller);
+                    marked.Add(Shot(camera, "select_0_before_marked"));
+                    first = false;
+                }
+
+                Vector3 pivot = controller.SelectionPivot;
+                Quaternion frame = controller.HandleRotation;
+                Quaternion rotation = name == "select_3_rotate_normal" ? Quaternion.AngleAxis(20f, frame * Vector3.forward) : baseRotation;
+                var selected = new List<int>(controller.SelectedParticles);
+                var start = new List<Vector3>();
+                foreach (int i in selected) start.Add(new Vector3(session.Solver.Positions[i].X, session.Solver.Positions[i].Y, session.Solver.Positions[i].Z));
+
+                var timer = System.Diagnostics.Stopwatch.StartNew();
+                // ハンドルを引く操作に合わせて、少しずつ動かす
+                controller.BeginSelectionTransform();
+                for (int k = 1; k <= 12; k++)
+                {
+                    float f = k / 12f;
+                    controller.UpdateSelectionTransform(translation * f, Quaternion.Slerp(Quaternion.identity, rotation, f), Vector3.Lerp(Vector3.one, scale, f), false);
+                    controller.Tick(NextTime());
+                }
+                controller.EndSelectionTransform();
+                Settle(controller);
+                timer.Stop();
+
+                // 目標に対する、選んだ点の動いた割合
+                Quaternion inverse = Quaternion.Inverse(frame);
+                float errorSum = 0f, errorMax = 0f;
+                for (int k = 0; k < selected.Count; k++)
+                {
+                    Vector3 local = Vector3.Scale(inverse * (start[k] - pivot), scale);
+                    Vector3 goal = pivot + rotation * (frame * local) + translation;
+                    var p = session.Solver.Positions[selected[k]];
+                    float error = Vector3.Distance(new Vector3(p.X, p.Y, p.Z), goal);
+                    errorSum += error;
+                    errorMax = Mathf.Max(errorMax, error);
+                }
+                session.UpdateCurrentShape();
+                session.DrawPreview(camera);
+                string penetration = $" / スカートがペチコートに入った最大 {SkirtPenetration(session, petticoat) * 1000f:F1} mm";
+                Debug.Log($"[GP02描画] {name}: 選んだ点 {selected.Count}（ペチコート {petticoatSelected}）/ 目標との差 平均 {errorSum / selected.Count * 1000f:F1} mm 最大 {errorMax * 1000f:F1} mm / 最大の伸び {controller.LastStretch:P1}{penetration} / 粒子 {session.ParticleCount} / 操作 {timer.ElapsedMilliseconds} ms / 高速化 {ClothEditSession.DescribeAcceleration(session.Solver.Kernel)}");
+                plain.Add(Shot(camera, name));
+                session.DrawPreview(camera);
+                DrawSelectionMarkers(camera, controller);
+                marked.Add(Shot(camera, name + "_marked"));
+            }
+            finally
+            {
+                controller.Dispose();
+            }
+        }
+        SaveGrid(plain, 3, "select");
+        SaveGrid(marked, 3, "select_marked");
+    }
+
+    // 選んだ点（赤）と、なめらかに減る範囲（黄〜橙）を、小さな四角で重ねる（シーンビューの重ね描きの代わり）
+    static void DrawSelectionMarkers(Camera camera, ClothEditController controller)
+    {
+        ClothEditSession session = controller.Session;
+        var vertices = new List<Vector3>();
+        var colors = new List<Color>();
+        var triangles = new List<int>();
+        Vector3 right = camera.transform.right, up = camera.transform.up, toCamera = -camera.transform.forward;
+        void Add(int particle, Color color)
+        {
+            var p = session.Solver.Positions[particle];
+            Vector3 c = new Vector3(p.X, p.Y, p.Z) + toCamera * 0.006f;
+            int v = vertices.Count;
+            const float h = 0.003f;
+            vertices.Add(c - right * h - up * h);
+            vertices.Add(c - right * h + up * h);
+            vertices.Add(c + right * h + up * h);
+            vertices.Add(c + right * h - up * h);
+            for (int k = 0; k < 4; k++) colors.Add(color);
+            triangles.AddRange(new[] { v, v + 1, v + 2, v, v + 2, v + 3 });
+        }
+        for (int k = 0; k < controller.SelectionWeightCount; k++)
+        {
+            float w = controller.SelectionWeightValue(k);
+            Add(controller.SelectionWeightParticle(k), Color.Lerp(new Color(1f, 0.95f, 0.2f), new Color(1f, 0.5f, 0.05f), w));
+        }
+        foreach (int i in controller.SelectedParticles) Add(i, new Color(0.9f, 0.05f, 0.05f));
+        var mesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+        mesh.SetVertices(vertices);
+        mesh.SetColors(colors);
+        mesh.SetTriangles(triangles, 0);
+        var material = new Material(Shader.Find("Sprites/Default"));
+        Graphics.DrawMesh(mesh, Matrix4x4.identity, material, 0, camera);
     }
 
     // 前の裾寄りを、面の法線まわりに回す（pixels が回す量）か、拡大縮小する（負で縮める）

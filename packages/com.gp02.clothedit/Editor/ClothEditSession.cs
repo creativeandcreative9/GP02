@@ -69,11 +69,15 @@ namespace GP02.EditorTools
 
         // つまんでいる間の状態
         int _grabParticle = -1;
+        int[] _grabSet;                           // 集合でつまんでいるときの粒子（BeginGrabSet で写し取ったもの）。1点でつまむなら null
         BrushOptions _grabOptions;                // つまむ範囲の決め方（BeginGrab で写し取ったもの）
         NVector3 _grabPointStart;
 
         int _pinnedCount;
         readonly List<int> _pinWork = new List<int>();   // 矩形で選んだ粒子（使い回す）
+        int[] _mirrorMap;                                // BuildMirrorMap の結果（面ごとに1つだけ持つ）
+        MirrorPlane _mirrorMapPlane;
+        bool[] _growWork;                                // GrowSelection / ShrinkSelection の作業用
 
         /// <summary>対象のレンダラー（複数のときは最初のもの）。</summary>
         public Renderer Renderer => _parts[0].Renderer;
@@ -586,11 +590,7 @@ namespace GP02.EditorTools
         /// </param>
         public bool Raycast(Ray ray, out Vector3 hitPoint, out Vector3 hitNormal, out int hitTriangle)
         {
-            if (_bvhDirty)
-            {
-                _bvh.Refit(_welded, _solver.Kernel as IShapeKernel);
-                _bvhDirty = false;
-            }
+            EnsureBvh();
 
             var origin = new NVector3(ray.origin.x, ray.origin.y, ray.origin.z);
             var direction = new NVector3(ray.direction.x, ray.direction.y, ray.direction.z);
@@ -611,6 +611,14 @@ namespace GP02.EditorTools
             hitNormal = Vector3.Dot(normal, ray.direction) > 0f ? -normal : normal;
             hitTriangle = topology.TriangleToSource[triangle];
             return true;
+        }
+
+        // 形が変わったあとは、レイを飛ばす前に境界箱を更新する
+        void EnsureBvh()
+        {
+            if (!_bvhDirty) return;
+            _bvh.Refit(_welded, _solver.Kernel as IShapeKernel);
+            _bvhDirty = false;
         }
 
         /// <summary>
@@ -708,6 +716,7 @@ namespace GP02.EditorTools
             if (particle < 0) return false;
 
             _grabParticle = particle;
+            _grabSet = null;
             _grabOptions = options != null ? options.Clone() : new BrushOptions();
             _grabOptions.Radius = brushRadius;
             _grabPointStart = point;
@@ -728,7 +737,7 @@ namespace GP02.EditorTools
         /// </summary>
         public void UpdateGrab(Vector3 cursor, Quaternion rotation, float scale)
         {
-            if (_grabParticle < 0) return;
+            if (_grabParticle < 0 || _grabSet != null) return;
             var motion = new BrushMotion(
                 new NVector3(cursor.x, cursor.y, cursor.z) - _grabPointStart,
                 new System.Numerics.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
@@ -741,7 +750,56 @@ namespace GP02.EditorTools
         public void Release()
         {
             _grabParticle = -1;
+            _grabSet = null;
             _solver.Release();
+        }
+
+        /// <summary>
+        /// 粒子の集合をつまむ（「点を選んで動かす」用）。動かすのは <see cref="UpdateGrabSet"/>。つまみを外すのは <see cref="Release"/>。
+        /// 集合の粒子は重み 1、options の Radius が正なら、集合の端からその半径以内の粒子も、options のカーブと距離の測り方に応じた重みでつまむ。
+        /// options.Mirror があれば、集合の鏡像の粒子も鏡に映した動きで動かす
+        /// （集合の半分以上の鏡像が集合の中にある、つまり中央線をまたいで両側を選んだときは、鏡像を使わず、動きを鏡の面に沿う成分だけにする）。
+        /// すでにつまんでいれば外してから始める。particles と options は写し取るので、あとで書き換えても影響しない。
+        /// </summary>
+        /// <param name="particles">つまむ粒子の番号。空や範囲外の番号があれば false</param>
+        /// <param name="options">null なら半径 0・対称なし</param>
+        public bool BeginGrabSet(int[] particles, BrushOptions options)
+        {
+            if (particles == null || particles.Length == 0) return false;
+            int count = ParticleCount;
+            foreach (int particle in particles)
+            {
+                if ((uint)particle >= (uint)count) return false;
+            }
+            if (_solver.GrabbedParticle >= 0 || _grabParticle >= 0) Release();
+
+            _grabSet = (int[])particles.Clone();
+            _grabParticle = _grabSet[0];
+            _grabOptions = options != null ? options.Clone() : new BrushOptions();
+            // ここで範囲を決めておく（動かすのは次の UpdateGrabSet から）
+            _solver.Grab(_grabSet, new BrushMotion(), _grabOptions);
+            return true;
+        }
+
+        /// <summary>
+        /// 集合でつまんだ範囲を動かす。motion は、つまみ始めの形に対する動き（ワールド座標）。
+        /// 集合の粒子 i の目標は start_i + w_i (motion.Apply(start_i) - start_i)。実際に動くのは次の Solve。
+        /// <see cref="BeginGrabSet"/> でつまんでいなければ何もしない。
+        /// </summary>
+        public void UpdateGrabSet(BrushMotion motion)
+        {
+            if (_grabSet == null) return;
+            _solver.Grab(_grabSet, motion, _grabOptions);
+        }
+
+        /// <summary>
+        /// 粒子の集合をつまんだときに範囲に入る粒子と重みを調べる（つまんだ状態は変えない）。
+        /// <see cref="BeginGrabSet"/> と同じ範囲と重み。範囲が maxCount より多いときは、粒子の番号順に一定の間隔で間引く。
+        /// 選択が変わったときだけ呼ぶこと（呼ぶたびに配列を確保する）。書き込んだ数を返す。
+        /// </summary>
+        public int CollectSetRange(int[] particles, BrushOptions options, int[] indices, float[] weights, int maxCount)
+        {
+            return _solver.CollectSetRange(particles, options, indices, weights, maxCount);
         }
 
         /// <summary>
@@ -763,6 +821,7 @@ namespace GP02.EditorTools
         public void ResetAll()
         {
             _grabParticle = -1;
+            _grabSet = null;
             _solver.ResetToRest();
             UpdateCurrentShape();
         }
@@ -801,6 +860,7 @@ namespace GP02.EditorTools
             for (int i = 0; i < count; i++) _stateWork[i] = new NVector3(source[i * 3], source[i * 3 + 1], source[i * 3 + 2]);
 
             _grabParticle = -1;
+            _grabSet = null;
             _solver.SetPositions(_stateWork);
             _pinnedCount = 0;
             for (int i = 0; i < count; i++)
@@ -949,7 +1009,7 @@ namespace GP02.EditorTools
 
             // 島の粒子の鏡像がほぼ別の島に乗っていれば、その島もする（一部がはみ出しているだけの島は巻き込まない）
             int[] particleIsland = _cloth.ParticleIsland;
-            int[] map = BuildMirrorMap(mirror.Value);
+            int[] map = GetMirrorMap(mirror.Value);
             var hits = new Dictionary<int, int>();
             int size = 0;
             for (int i = 0; i < particleIsland.Length; i++)
@@ -994,10 +1054,40 @@ namespace GP02.EditorTools
         public int PinInViewport(Matrix4x4 viewProjection, Vector3 cameraPosition, Vector3 cameraForward, bool orthographic,
             Rect viewportRect, bool pinned, bool frontOnly, MirrorPlane? mirror = null)
         {
+            CollectInViewport(viewProjection, cameraPosition, cameraForward, orthographic, viewportRect, frontOnly, false, _pinWork);
+
+            int changed = 0;
+            for (int k = 0; k < _pinWork.Count; k++)
+            {
+                if (SetPin(_pinWork[k], pinned)) changed++;
+            }
+            if (mirror.HasValue) changed += PinMirrorOf(_pinWork, mirror.Value, pinned);
+            _pinWork.Clear();
+            return changed;
+        }
+
+        // ---- 選ぶための「集める」メソッド（粒子の状態は変えない。選択の持ち方は呼び出し側で決める） ----
+
+        /// <summary>
+        /// 画面上の矩形に入る粒子を result に集める（result は先に空にする）。集めた数を返す。
+        /// 矩形の判定と frontOnly は <see cref="PinInViewport"/> と同じ。
+        /// occlusionTest が true なら、カメラ（平行投影なら視線の向き）から粒子へのレイを編集中のメッシュに飛ばし、
+        /// 粒子より手前に別の布が当たる粒子を除く（<see cref="IsParticleVisible"/>）。重ね着で、外の布の後ろにある内の布を集めないため。
+        /// </summary>
+        /// <param name="viewProjection">カメラの射影行列 × ワールドからカメラへの行列</param>
+        /// <param name="cameraPosition">カメラの位置（透視投影の、表側と隠れているかの判定に使う。平行投影では使わない）</param>
+        /// <param name="cameraForward">カメラの向き（平行投影のときの、表側と隠れているかの判定に使う）</param>
+        /// <param name="orthographic">平行投影か</param>
+        /// <param name="viewportRect">矩形（ビューポート座標。0〜1、左下が原点）</param>
+        /// <param name="frontOnly">true なら、カメラ側を向いた粒子（粒子が乗っている面の表が見えるもの）だけを集める</param>
+        public int CollectInViewport(Matrix4x4 viewProjection, Vector3 cameraPosition, Vector3 cameraForward, bool orthographic,
+            Rect viewportRect, bool frontOnly, bool occlusionTest, List<int> result)
+        {
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            result.Clear();
             ReadOnlySpan<NVector3> positions = _solver.Positions;
             int[] particleTriangle = _cloth.ParticleTriangle;
             int[] triangles = _cloth.Topology.Triangles;
-            _pinWork.Clear();
 
             for (int i = 0; i < positions.Length; i++)
             {
@@ -1021,25 +1111,283 @@ namespace GP02.EditorTools
                         : normal.X * (cameraPosition.x - p.X) + normal.Y * (cameraPosition.y - p.Y) + normal.Z * (cameraPosition.z - p.Z);
                     if (!(facing > 0f)) continue;
                 }
-                _pinWork.Add(i);
+                result.Add(i);
             }
 
-            int changed = 0;
-            for (int k = 0; k < _pinWork.Count; k++)
+            if (occlusionTest)
             {
-                if (SetPin(_pinWork[k], pinned)) changed++;
+                // 矩形に入ったものだけに、レイを飛ばす（重い）
+                int kept = 0;
+                for (int k = 0; k < result.Count; k++)
+                {
+                    int i = result[k];
+                    if (IsParticleVisible(i, positions[i], cameraPosition, cameraForward, orthographic)) result[kept++] = i;
+                }
+                result.RemoveRange(kept, result.Count - kept);
             }
-            if (mirror.HasValue) changed += PinMirrorOf(_pinWork, mirror.Value, pinned);
-            _pinWork.Clear();
+            return result.Count;
+        }
+
+        /// <summary>
+        /// 粒子が、他の布に隠れていないか。カメラ（平行投影なら視線の向き）から粒子へのレイを編集中のメッシュに飛ばし、
+        /// 最初に当たる所が粒子の位置か、その後ろなら見えているとする。
+        /// 粒子と同じ部品（島）の布は、粒子の間隔より手前に当たるときだけ隠れているとみなす（布の細かい凹凸で隠れるとしないため）。
+        /// 別の部品（重ね着の外側の布など）は、粒子よりわずか（間隔の 5%）でも手前に当たれば隠れているとみなす（数 mm 内側の布も見分けるため）。
+        /// 面の表裏は見ない（表側だけにするのは <see cref="CollectInViewport"/> の frontOnly）。
+        /// 透視投影で粒子がカメラの後ろにあるときは false。
+        /// </summary>
+        public bool IsParticleVisible(int particle, Vector3 cameraPosition, Vector3 cameraForward, bool orthographic)
+        {
+            if ((uint)particle >= (uint)ParticleCount) return false;
+            return IsParticleVisible(particle, _solver.Positions[particle], cameraPosition, cameraForward, orthographic);
+        }
+
+        bool IsParticleVisible(int particle, NVector3 p, Vector3 cameraPosition, Vector3 cameraForward, bool orthographic)
+        {
+            EnsureBvh();
+            NVector3 origin, direction;
+            float distance;
+            if (orthographic)
+            {
+                var forward = new NVector3(cameraForward.x, cameraForward.y, cameraForward.z);
+                float length = forward.Length();
+                if (!(length > 1e-6f)) return true;
+                direction = forward / length;
+                // メッシュ全体の外から飛ばす
+                _bvh.GetNodeBox(0, out NVector3 min, out NVector3 max);
+                distance = (max - min).Length() + _cloth.Spacing;
+                origin = p - direction * distance;
+            }
+            else
+            {
+                origin = new NVector3(cameraPosition.x, cameraPosition.y, cameraPosition.z);
+                NVector3 toParticle = p - origin;
+                distance = toParticle.Length();
+                if (!(distance > 1e-6f)) return true;
+                direction = toParticle / distance;
+                if (cameraForward.sqrMagnitude > 1e-12f
+                    && direction.X * cameraForward.x + direction.Y * cameraForward.y + direction.Z * cameraForward.z <= 0f) return false;
+            }
+
+            if (!_bvh.Raycast(origin, direction, _welded, out float hit, out int triangle)) return true;
+            bool sameIsland = _cloth.Topology.TriangleIsland[triangle] == _cloth.ParticleIsland[particle];
+            float tolerance = sameIsland ? _cloth.Spacing : 0.05f * _cloth.Spacing;
+            return hit >= distance - tolerance;
+        }
+
+        /// <summary>
+        /// 現在位置がワールドで radius 以内で、かつ当たった三角形と同じ部品（島）の粒子を result に集める
+        /// （result は先に空にする。<see cref="PaintPins(Vector3, float, bool, int)"/> と同じ選び方）。集めた数を返す。
+        /// </summary>
+        /// <param name="hitTriangle">Raycast が返した三角形の番号。負の値や範囲外なら、島で絞り込まない</param>
+        public int CollectInSphere(Vector3 worldPoint, float radius, int hitTriangle, List<int> result)
+        {
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            result.Clear();
+            int island = IslandOfMeshTriangle(hitTriangle);
+            int[] particleIsland = _cloth.ParticleIsland;
+            var point = new NVector3(worldPoint.x, worldPoint.y, worldPoint.z);
+            float radiusSq = radius * radius;
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (island >= 0 && particleIsland[i] != island) continue;
+                if (NVector3.DistanceSquared(positions[i], point) > radiusSq) continue;
+                result.Add(i);
+            }
+            return result.Count;
+        }
+
+        /// <summary>
+        /// 当たった三角形と同じ部品（島）の粒子すべてを result に集める（result は先に空にする）。集めた数を返す。
+        /// </summary>
+        /// <param name="hitTriangle">Raycast が返した三角形の番号。負の値や範囲外なら何も集めない</param>
+        public int CollectIsland(int hitTriangle, List<int> result)
+        {
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            result.Clear();
+            int island = IslandOfMeshTriangle(hitTriangle);
+            if (island < 0) return 0;
+            int[] particleIsland = _cloth.ParticleIsland;
+            for (int i = 0; i < particleIsland.Length; i++)
+            {
+                if (particleIsland[i] == island) result.Add(i);
+            }
+            return result.Count;
+        }
+
+        /// <summary>
+        /// particles の鏡像の粒子を result に集める（result は先に空にする。番号の昇順）。
+        /// 鏡像は、元の形で鏡に映した位置に一番近い粒子（BuildMirrorMap）。
+        /// 鏡像の側の粒子 j は、j の鏡像が particles にあれば入れる（穴があかない）。中央線の近くでは particles の粒子自身も入ることがある。
+        /// 面ごとに鏡像の対応を持つので、同じ面で続けて呼ぶと速い。
+        /// </summary>
+        public void CollectMirror(IReadOnlyList<int> particles, MirrorPlane plane, List<int> result)
+        {
+            if (particles == null) throw new ArgumentNullException(nameof(particles));
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            result.Clear();
+            if (particles.Count == 0 || !plane.IsValid) return;
+            int[] map = GetMirrorMap(plane);
+            var selected = new bool[map.Length];
+            for (int k = 0; k < particles.Count; k++)
+            {
+                if ((uint)particles[k] < (uint)selected.Length) selected[particles[k]] = true;
+            }
+            for (int j = 0; j < map.Length; j++)
+            {
+                if (map[j] >= 0 && selected[map[j]]) result.Add(j);
+            }
+        }
+
+        // 面ごとに1つだけ覚えておく（元の形は変わらないので、面が同じなら使い回せる）
+        int[] GetMirrorMap(MirrorPlane plane)
+        {
+            if (_mirrorMap != null && _mirrorMapPlane.Point == plane.Point && _mirrorMapPlane.Normal == plane.Normal) return _mirrorMap;
+            _mirrorMap = BuildMirrorMap(plane);
+            _mirrorMapPlane = plane;
+            return _mirrorMap;
+        }
+
+        /// <summary>
+        /// 選択を1周ぶん広げる。伸びの制約でつながった隣（同じ島の中だけ）の粒子を足す。selected は粒子数の長さの配列で、そのまま書き換える。
+        /// </summary>
+        public void GrowSelection(bool[] selected)
+        {
+            SpreadSelection(selected, true);
+        }
+
+        /// <summary>
+        /// 選択を1周ぶん狭める。伸びの制約でつながった隣（同じ島の中だけ）に選んでいない粒子がある粒子を外す。
+        /// 島の端など、隣が最初から無い所は削れない。selected は粒子数の長さの配列で、そのまま書き換える。
+        /// </summary>
+        public void ShrinkSelection(bool[] selected)
+        {
+            SpreadSelection(selected, false);
+        }
+
+        // 選んでいる粒子と選んでいない粒子が伸びの制約でつながっている所を見つけ、広げるなら選んでいない側を足し、狭めるなら選んでいる側を外す。
+        // 1周ぶんだけにするため、変えるのはすべて見つけ終わってから
+        void SpreadSelection(bool[] selected, bool grow)
+        {
+            if (selected == null) throw new ArgumentNullException(nameof(selected));
+            int count = ParticleCount;
+            if (selected.Length != count) throw new ArgumentException("粒子数が一致しません。", nameof(selected));
+            if (_growWork == null) _growWork = new bool[count];
+            Array.Clear(_growWork, 0, count);
+
+            int[] pairs = _cloth.Model.StretchPairs;
+            int[] particleIsland = _cloth.ParticleIsland;
+            for (int k = 0; k + 1 < pairs.Length; k += 2)
+            {
+                int i = pairs[k], j = pairs[k + 1];
+                if (selected[i] == selected[j] || particleIsland[i] != particleIsland[j]) continue;
+                // 選んでいる側 / 選んでいない側
+                int inside = selected[i] ? i : j;
+                int outside = selected[i] ? j : i;
+                _growWork[grow ? outside : inside] = true;
+            }
+            for (int i = 0; i < count; i++)
+            {
+                if (_growWork[i]) selected[i] = grow;
+            }
+        }
+
+        /// <summary>
+        /// 粒子の番号でピン留めする（または解除する）。範囲外の番号は無視する。変えた粒子の数を返す。
+        /// <see cref="PinParticles"/> の、解除もできる版。
+        /// </summary>
+        public int SetPinned(IReadOnlyList<int> particles, bool pinned)
+        {
+            if (particles == null) return 0;
+            int changed = 0;
+            int count = ParticleCount;
+            for (int k = 0; k < particles.Count; k++)
+            {
+                int i = particles[k];
+                if ((uint)i < (uint)count && SetPin(i, pinned)) changed++;
+            }
             return changed;
         }
 
+        /// <summary>
+        /// 粒子の集合が乗っている面の、今の向きの平均（長さ1）を求める。面ごとの向き（表側）を足して正規化する。
+        /// 向きが打ち消し合って決められない（平均の長さが 0.05 未満）とき、または粒子が無いときは false。
+        /// </summary>
+        public bool TryGetAverageNormal(IReadOnlyList<int> particles, out Vector3 normal)
+        {
+            normal = Vector3.up;
+            if (particles == null || particles.Count == 0) return false;
+            int[] particleTriangle = _cloth.ParticleTriangle;
+            int[] triangles = _cloth.Topology.Triangles;
+            NVector3 sum = NVector3.Zero;
+            int used = 0;
+            for (int k = 0; k < particles.Count; k++)
+            {
+                int i = particles[k];
+                if ((uint)i >= (uint)particleTriangle.Length) continue;
+                int t = particleTriangle[i];
+                NVector3 a = _welded[triangles[3 * t]];
+                NVector3 n = NVector3.Cross(_welded[triangles[3 * t + 1]] - a, _welded[triangles[3 * t + 2]] - a);
+                float length = n.Length();
+                if (!(length > 1e-12f)) continue;
+                sum += n / length;
+                used++;
+            }
+            if (used == 0) return false;
+            float sumLength = sum.Length();
+            if (!(sumLength >= 0.05f * used)) return false;
+            normal = new Vector3(sum.X, sum.Y, sum.Z) / sumLength;
+            return true;
+        }
+
+        /// <summary>
+        /// 位置が worldPositions のどれかから radius 以内にある粒子を result に集める（result は先に空にする。重複なし）。
+        /// <see cref="PinNear(IReadOnlyList{Vector3}, float, IReadOnlyList{int})"/> と同じ探し方で、島の番号 islands も同じ使い方。
+        /// セッションを作り直したときに、選択を引き継ぐ用。集めた数を返す。
+        /// </summary>
+        public int CollectNear(IReadOnlyList<Vector3> worldPositions, float radius, IReadOnlyList<int> islands, List<int> result)
+        {
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            result.Clear();
+            if (worldPositions == null || worldPositions.Count == 0 || radius <= 0f) return 0;
+
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            var grid = new PointGrid(radius);
+            for (int i = 0; i < positions.Length; i++) grid.Add(i, positions[i]);
+
+            float radiusSq = radius * radius;
+            var candidates = new List<int>();
+            var added = new bool[positions.Length];
+            int[] particleIsland = _cloth.ParticleIsland;
+            int islandCount = _cloth.Topology.IslandCount;
+            for (int k = 0; k < worldPositions.Count; k++)
+            {
+                int island = islands != null && k < islands.Count ? islands[k] : -1;
+                if (island >= islandCount) island = -1;
+                Vector3 w = worldPositions[k];
+                var point = new NVector3(w.x, w.y, w.z);
+                grid.Query(point, radius, candidates);
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    int i = candidates[c];
+                    if (added[i] || NVector3.DistanceSquared(positions[i], point) > radiusSq) continue;
+                    if (island >= 0 && particleIsland[i] != island) continue;
+                    added[i] = true;
+                    result.Add(i);
+                }
+            }
+            return result.Count;
+        }
+
         // 粒子ごとの、元の形で鏡に映した位置に一番近い粒子（許容距離内、無ければ -1）。粒子数に比例する時間で済むよう、格子で探す。
-        // 面の向きが分かる粒子どうしは、向きがそろうものだけ（重ね着で、近くの別の層を選ばないため）
+        // 同じ島の粒子を優先する（重ね着で、近くの別の層に移らないため）。同じ島に無ければ、別の島の粒子のうち、
+        // 面の向きが分かる粒子どうしは向きがそろうもの（左右の袖のように、別の島に分かれた部品のため）
         int[] BuildMirrorMap(MirrorPlane plane)
         {
             NVector3[] rest = _cloth.Model.RestPositions;
             NVector3[] restNormals = _cloth.Model.RestNormals;
+            int[] particleIsland = _cloth.ParticleIsland;
             float tolerance = BrushOptions.DefaultMirrorTolerance;
             var grid = new PointGrid(tolerance);
             for (int i = 0; i < rest.Length; i++) grid.Add(i, rest[i]);
@@ -1052,18 +1400,28 @@ namespace GP02.EditorTools
                 NVector3 target = plane.Reflect(rest[i]);
                 NVector3 normal = restNormals != null ? plane.ReflectDirection(restNormals[i]) : NVector3.Zero;
                 grid.Query(target, tolerance, candidates);
-                int best = -1;
-                float bestSq = float.MaxValue;
+                int bestSame = -1, bestOther = -1;
+                float bestSameSq = float.MaxValue, bestOtherSq = float.MaxValue;
                 for (int c = 0; c < candidates.Count; c++)
                 {
                     int j = candidates[c];
                     float sq = NVector3.DistanceSquared(rest[j], target);
-                    if (sq > limit || sq >= bestSq) continue;
+                    if (sq > limit) continue;
                     if (normal != NVector3.Zero && restNormals[j] != NVector3.Zero && NVector3.Dot(restNormals[j], normal) <= 0.5f) continue;
-                    bestSq = sq;
-                    best = j;
+                    if (particleIsland[j] == particleIsland[i])
+                    {
+                        if (sq >= bestSameSq) continue;
+                        bestSameSq = sq;
+                        bestSame = j;
+                    }
+                    else
+                    {
+                        if (sq >= bestOtherSq) continue;
+                        bestOtherSq = sq;
+                        bestOther = j;
+                    }
                 }
-                map[i] = best;
+                map[i] = bestSame >= 0 ? bestSame : bestOther;
             }
             return map;
         }
@@ -1073,7 +1431,7 @@ namespace GP02.EditorTools
         int PinMirrorOf(List<int> selected, MirrorPlane plane, bool pinned)
         {
             if (selected.Count == 0 || !plane.IsValid) return 0;
-            int[] map = BuildMirrorMap(plane);
+            int[] map = GetMirrorMap(plane);
             var isSelected = new bool[map.Length];
             for (int k = 0; k < selected.Count; k++) isSelected[selected[k]] = true;
 
@@ -1493,6 +1851,7 @@ namespace GP02.EditorTools
             _cloth.ParticlePositionsFromWelded(target, particles);
 
             _grabParticle = -1;
+            _grabSet = null;
             _solver.SetPositions(particles);
             UpdateCurrentShape();
             return true;

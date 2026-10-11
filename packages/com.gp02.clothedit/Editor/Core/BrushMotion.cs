@@ -8,6 +8,10 @@ namespace GP02.Core
     /// 範囲の粒子 i の目標は、つまみ始めの位置 start_i から、重み w_i の分だけこの動きに近づけた位置
     /// start_i + w_i * (行き先(start_i) - start_i)。
     ///
+    /// 軸ごとの拡大縮小（<see cref="ScaleAxes"/>）を設定すると、行き先は
+    /// Pivot + Rotation * (F * diag(Scale * ScaleAxes) * F⁻¹ * (p - Pivot)) + Translation（F は <see cref="ScaleFrame"/> の回転）。
+    /// 先に F の軸で非一様に拡大してから Rotation で回す。ScaleAxes を設定しない（または (1,1,1)）ときは上の式の一様な拡大そのもの。
+    ///
     /// 既定値（<c>default</c>）は何もしない動き（回転なし、拡大率 1）。
     /// </summary>
     public struct BrushMotion
@@ -15,6 +19,9 @@ namespace GP02.Core
         Quaternion _rotation;
         float _scale;
         bool _hasScale;
+        Vector3 _scaleAxes;
+        bool _hasScaleAxes;
+        Quaternion _scaleFrame;
 
         /// <summary>平行移動（メートル）。</summary>
         public Vector3 Translation { get; set; }
@@ -40,11 +47,40 @@ namespace GP02.Core
             }
         }
 
+        /// <summary>
+        /// 軸ごとの拡大率（<see cref="ScaleFrame"/> の軸 X・Y・Z に沿う倍率）。<see cref="Scale"/> に掛かる。
+        /// 既定は (1,1,1)。<c>default</c> の構造体でも (1,1,1) になる。
+        /// </summary>
+        public Vector3 ScaleAxes
+        {
+            get => _hasScaleAxes ? _scaleAxes : Vector3.One;
+            set
+            {
+                _scaleAxes = value;
+                _hasScaleAxes = true;
+            }
+        }
+
+        /// <summary>
+        /// <see cref="ScaleAxes"/> の軸の向き。成分がすべて 0（<c>default</c>）なら単位（ワールドの軸）とみなす。長さは使うときに 1 にそろえる。
+        /// </summary>
+        public Quaternion ScaleFrame
+        {
+            get => IsZero(_scaleFrame) ? Quaternion.Identity : _scaleFrame;
+            set => _scaleFrame = value;
+        }
+
+        /// <summary>軸ごとの拡大縮小が設定されているか（(1,1,1) のままなら false）。</summary>
+        public bool HasAxisScale => _hasScaleAxes && _scaleAxes != Vector3.One;
+
         public BrushMotion(Vector3 translation, Quaternion rotation, float scale, Vector3 pivot)
         {
             _rotation = rotation;
             _scale = scale;
             _hasScale = true;
+            _scaleAxes = Vector3.One;
+            _hasScaleAxes = false;
+            _scaleFrame = default;
             Translation = translation;
             Pivot = pivot;
         }
@@ -58,14 +94,47 @@ namespace GP02.Core
         /// <summary>点 p の行き先。</summary>
         public Vector3 Apply(Vector3 p)
         {
-            return Pivot + Vector3.Transform((p - Pivot) * Scale, NormalizedRotation()) + Translation;
+            if (!HasAxisScale) return Pivot + Vector3.Transform((p - Pivot) * Scale, NormalizedRotation()) + Translation;
+
+            // ScaleFrame の軸に直して拡大し、元の向きに戻してから回す
+            Quaternion frame = NormalizedScaleFrame();
+            Vector3 local = Vector3.Transform(p - Pivot, Quaternion.Conjugate(frame));
+            local *= ScaleAxes * Scale;
+            return Pivot + Vector3.Transform(Vector3.Transform(local, frame), NormalizedRotation()) + Translation;
         }
 
-        internal Quaternion NormalizedRotation()
+        internal Quaternion NormalizedRotation() => Normalized(Rotation);
+
+        internal Quaternion NormalizedScaleFrame() => Normalized(ScaleFrame);
+
+        static Quaternion Normalized(Quaternion q)
         {
-            Quaternion q = Rotation;
             float length = q.Length();
             return length > 0f && !float.IsInfinity(length) && !float.IsNaN(length) ? Quaternion.Multiply(q, 1f / length) : Quaternion.Identity;
+        }
+
+        /// <summary>
+        /// 回転 Rotation を掛ける前の、拡大縮小の 3x3 行列 F diag(Scale * ScaleAxes) Fᵀ（列ベクトルに左から掛ける形）。
+        /// </summary>
+        internal void GetScaleMatrix(out float m00, out float m01, out float m02, out float m10, out float m11, out float m12,
+            out float m20, out float m21, out float m22)
+        {
+            Quaternion q = NormalizedScaleFrame();
+            float x = q.X, y = q.Y, z = q.Z, w = q.W;
+            // 回転行列 F の列（F の軸 X・Y・Z）
+            float f00 = 1f - 2f * (y * y + z * z), f01 = 2f * (x * y - z * w), f02 = 2f * (x * z + y * w);
+            float f10 = 2f * (x * y + z * w), f11 = 1f - 2f * (x * x + z * z), f12 = 2f * (y * z - x * w);
+            float f20 = 2f * (x * z - y * w), f21 = 2f * (y * z + x * w), f22 = 1f - 2f * (x * x + y * y);
+            Vector3 s = ScaleAxes * Scale;
+            m00 = s.X * f00 * f00 + s.Y * f01 * f01 + s.Z * f02 * f02;
+            m01 = s.X * f00 * f10 + s.Y * f01 * f11 + s.Z * f02 * f12;
+            m02 = s.X * f00 * f20 + s.Y * f01 * f21 + s.Z * f02 * f22;
+            m10 = m01;
+            m11 = s.X * f10 * f10 + s.Y * f11 * f11 + s.Z * f12 * f12;
+            m12 = s.X * f10 * f20 + s.Y * f11 * f21 + s.Z * f12 * f22;
+            m20 = m02;
+            m21 = m12;
+            m22 = s.X * f20 * f20 + s.Y * f21 * f21 + s.Z * f22 * f22;
         }
 
         static bool IsZero(Quaternion q) => q.X == 0f && q.Y == 0f && q.Z == 0f && q.W == 0f;
@@ -91,7 +160,30 @@ namespace GP02.Core
             Quaternion q = motion.NormalizedRotation();
             float s = motion.Scale;
             float x = q.X, y = q.Y, z = q.Z, w = q.W;
-            var m = new AffineMotion
+            AffineMotion m;
+            if (motion.HasAxisScale)
+            {
+                // L = R * (F S Fᵀ) - I。軸ごとの拡大は、回転を掛ける前の行列 M = F S Fᵀ にまとめる
+                motion.GetScaleMatrix(out float s00, out float s01, out float s02, out float s10, out float s11, out float s12,
+                    out float s20, out float s21, out float s22);
+                float r00 = 1f - 2f * (y * y + z * z), r01 = 2f * (x * y - z * w), r02 = 2f * (x * z + y * w);
+                float r10 = 2f * (x * y + z * w), r11 = 1f - 2f * (x * x + z * z), r12 = 2f * (y * z - x * w);
+                float r20 = 2f * (x * z - y * w), r21 = 2f * (y * z + x * w), r22 = 1f - 2f * (x * x + y * y);
+                m = new AffineMotion
+                {
+                    L00 = r00 * s00 + r01 * s10 + r02 * s20 - 1f,
+                    L01 = r00 * s01 + r01 * s11 + r02 * s21,
+                    L02 = r00 * s02 + r01 * s12 + r02 * s22,
+                    L10 = r10 * s00 + r11 * s10 + r12 * s20,
+                    L11 = r10 * s01 + r11 * s11 + r12 * s21 - 1f,
+                    L12 = r10 * s02 + r11 * s12 + r12 * s22,
+                    L20 = r20 * s00 + r21 * s10 + r22 * s20,
+                    L21 = r20 * s01 + r21 * s11 + r22 * s21,
+                    L22 = r20 * s02 + r21 * s12 + r22 * s22 - 1f,
+                };
+                return FinishFromBrushMotion(m, motion, origin);
+            }
+            m = new AffineMotion
             {
                 // 回転行列（列ベクトルに左から掛ける形。Vector3.Transform(v, q) と同じ向き）× 拡大率 - 単位行列
                 L00 = s * (1f - 2f * (y * y + z * z)) - 1f,
@@ -104,6 +196,11 @@ namespace GP02.Core
                 L21 = s * (2f * (y * z + x * w)),
                 L22 = s * (1f - 2f * (x * x + y * y)) - 1f,
             };
+            return FinishFromBrushMotion(m, motion, origin);
+        }
+
+        static AffineMotion FinishFromBrushMotion(AffineMotion m, in BrushMotion motion, Vector3 origin)
+        {
             // 内部の座標での移動量 = L p + T - L * (中心の内部の座標)
             Vector3 pivot = motion.Pivot - origin;
             Vector3 lp = m.Multiply(pivot);

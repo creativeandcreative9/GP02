@@ -41,6 +41,7 @@ namespace GP02.EditorTools
                 case ClothEditMode.Pin: return L10n.Tr("ピン留め", "Pin");
                 case ClothEditMode.Unpin: return L10n.Tr("ピン解除", "Unpin");
                 case ClothEditMode.Relax: return L10n.Tr("元に戻すブラシ", "Restore Brush");
+                case ClothEditMode.Select: return L10n.Tr("選んで動かす", "Select & Move");
                 default: return L10n.Tr("つまむ", "Grab");
             }
         }

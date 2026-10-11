@@ -43,8 +43,18 @@ namespace GP02.EditorTools
         /// </summary>
         public static bool TryBuildMirrorPlane(ClothEditSettings settings, Transform avatarRoot, out MirrorPlane plane)
         {
+            return TryBuildMirrorPlane(settings, avatarRoot, false, out plane);
+        }
+
+        /// <summary>
+        /// <see cref="TryBuildMirrorPlane(ClothEditSettings, Transform, out MirrorPlane)"/> の、対称がオフでも設定の軸とずれで面を作れる版。
+        /// 「選んだ点の鏡像を足す」のように、対称編集を使わなくても鏡に映したいときに使う。
+        /// </summary>
+        /// <param name="ignoreEnabled">true なら <see cref="ClothEditSettings.SymmetryEnabled"/> を見ない</param>
+        public static bool TryBuildMirrorPlane(ClothEditSettings settings, Transform avatarRoot, bool ignoreEnabled, out MirrorPlane plane)
+        {
             plane = default;
-            if (settings == null || !settings.SymmetryEnabled || avatarRoot == null) return false;
+            if (settings == null || (!ignoreEnabled && !settings.SymmetryEnabled) || avatarRoot == null) return false;
 
             Vector3 axis = LocalAxis(settings.SymmetryAxis);
             Vector3 normal = avatarRoot.TransformDirection(axis);
