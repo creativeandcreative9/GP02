@@ -126,13 +126,14 @@ namespace GP02.Core
 
         static float Sq(float x) => x * x;
 
-        public static MeshTopology Build(Vector3[] vertices, int[] triangles, float weldTolerance = DefaultWeldTolerance)
+        /// <param name="vertexGroups">頂点ごとの組の番号。同じ組の頂点どうしだけをまとめる（<see cref="VertexWelder.Weld(Vector3[], float, int[], out Vector3[])"/>）。null なら全部を1つの組とみなす</param>
+        public static MeshTopology Build(Vector3[] vertices, int[] triangles, float weldTolerance = DefaultWeldTolerance, int[] vertexGroups = null)
         {
             if (vertices == null) throw new ArgumentNullException(nameof(vertices));
             if (triangles == null) throw new ArgumentNullException(nameof(triangles));
             if (triangles.Length % 3 != 0) throw new ArgumentException("三角形の頂点数が3の倍数ではありません。", nameof(triangles));
 
-            int[] vertexToWelded = VertexWelder.Weld(vertices, weldTolerance, out var positions);
+            int[] vertexToWelded = VertexWelder.Weld(vertices, weldTolerance, vertexGroups, out var positions);
 
             var welded = new List<int>(triangles.Length);
             var sourceToTriangle = new int[triangles.Length / 3];

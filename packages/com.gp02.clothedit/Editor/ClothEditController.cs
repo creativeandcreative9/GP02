@@ -38,7 +38,8 @@ namespace GP02.EditorTools
         public const string DefaultSaveFolder = "Assets/GP02/Meshes";
 
         readonly ClothEditSettings _settings;
-        Renderer _target;
+        Renderer _target;                // 対象（複数のときは最初のもの）
+        readonly List<Renderer> _targets = new List<Renderer>();
         ClothEditSession _session;
         ClothEditState _state;          // Unity の Undo の記録先（セッションごとに作る）
         float _influenceRadius = 0.3f;
@@ -105,7 +106,11 @@ namespace GP02.EditorTools
         // ---- 設定・状態 ----
 
         public ClothEditSettings Settings => _settings;
+        /// <summary>対象のレンダラー（重ね着をまとめて編集しているときは最初のもの）。</summary>
         public Renderer Target => _target;
+
+        /// <summary>まとめて編集している（最後に編集を始めた）レンダラー。</summary>
+        public IReadOnlyList<Renderer> Targets => _targets;
         public ClothEditSession Session => _session;
         public bool IsEditing => _session != null;
         public bool IsDragging => _dragging;
@@ -115,8 +120,11 @@ namespace GP02.EditorTools
         /// <summary>直前の編集開始・作り直しが失敗したときの理由。成功すると空になる。</summary>
         public string LastError { get; private set; } = "";
 
-        /// <summary>最後に保存したメッシュ。</summary>
+        /// <summary>最後に保存したメッシュ（重ね着をまとめて編集しているときは最初のレンダラーのもの）。</summary>
         public Mesh LastSavedMesh { get; private set; }
+
+        /// <summary>最後に保存したメッシュ（<see cref="Targets"/> の順）。</summary>
+        public IReadOnlyList<Mesh> LastSavedMeshes { get; private set; } = new Mesh[0];
 
         /// <summary>計算の最後に測った、最大の伸び（0.1 で 10%）。</summary>
         public float LastStretch { get; private set; }
@@ -321,7 +329,7 @@ namespace GP02.EditorTools
         public void ApplySettings()
         {
             _settings.Sanitize();
-            if (_session != null) _settings.ApplyTo(_session.Solver, _session.RestAllowance);
+            if (_session != null) _settings.ApplyTo(_session.Solver, _session.GetRestAllowance(_settings.KeepLayersApart));
             _previewKeyValid = false;
             ApplyPreviewBlend();
         }
@@ -370,6 +378,95 @@ namespace GP02.EditorTools
             return null;
         }
 
+        /// <summary>重ね着とみなす距離（メートル）の既定値（<see cref="FindLayeredRenderers"/>）。</summary>
+        public const float DefaultLayerDistance = 0.05f;
+
+        // 頂点のこの割合以上が対象の近くにあるレンダラーを、重ね着とみなす（体は一部だけが服の近くにあるので入らない）
+        const float LayerOverlapRatio = 0.5f;
+
+        /// <summary>
+        /// 同じアバター（<see cref="ClothEditSymmetry.FindAvatarRoot"/>）の下の、有効な SkinnedMeshRenderer のうち、
+        /// 今の対象と面が近い（頂点の半分以上が、対象のどれかの頂点から distance 以内にある）ものを探す。対象自身は含めない。
+        /// 「同じアバターの重ね着をまとめて追加」用。形は今のポーズ（BakeMesh）で比べる。
+        /// </summary>
+        public static List<Renderer> FindLayeredRenderers(IReadOnlyList<Renderer> targets, float distance = DefaultLayerDistance)
+        {
+            var result = new List<Renderer>();
+            if (targets == null || !(distance > 0f)) return result;
+            var roots = new List<Transform>();
+            var targetPoints = new List<Vector3>();
+            foreach (Renderer target in targets)
+            {
+                if (target == null) continue;
+                Transform root = ClothEditSymmetry.FindAvatarRoot(target.transform);
+                if (!roots.Contains(root)) roots.Add(root);
+                targetPoints.AddRange(BakeWorldVertices(target));
+            }
+            if (targetPoints.Count == 0) return result;
+            var grid = new PointGrid(distance);
+            for (int k = 0; k < targetPoints.Count; k++) grid.Add(k, new System.Numerics.Vector3(targetPoints[k].x, targetPoints[k].y, targetPoints[k].z));
+
+            var candidates = new List<int>();
+            float distanceSq = distance * distance;
+            foreach (Transform root in roots)
+            {
+                foreach (SkinnedMeshRenderer candidate in root.GetComponentsInChildren<SkinnedMeshRenderer>(false))
+                {
+                    if (!candidate.enabled || candidate.sharedMesh == null || result.Contains(candidate)) continue;
+                    bool isTarget = false;
+                    foreach (Renderer target in targets) isTarget |= target == candidate;
+                    if (isTarget || GetStartProblem(candidate) != null) continue;
+
+                    Vector3[] vertices = BakeWorldVertices(candidate);
+                    if (vertices.Length == 0) continue;
+                    int near = 0;
+                    foreach (Vector3 v in vertices)
+                    {
+                        grid.Query(new System.Numerics.Vector3(v.x, v.y, v.z), distance, candidates);
+                        foreach (int c in candidates)
+                        {
+                            if ((targetPoints[c] - v).sqrMagnitude <= distanceSq)
+                            {
+                                near++;
+                                break;
+                            }
+                        }
+                    }
+                    if (near >= LayerOverlapRatio * vertices.Length) result.Add(candidate);
+                }
+            }
+            return result;
+        }
+
+        // 今のポーズのワールド頂点（SkinnedMeshRenderer は BakeMesh。読めないメッシュは空）
+        static Vector3[] BakeWorldVertices(Renderer renderer)
+        {
+            if (renderer is SkinnedMeshRenderer skinned)
+            {
+                if (skinned.sharedMesh == null) return new Vector3[0];
+                var baked = new Mesh();
+                try
+                {
+                    // スケールを含めて焼くと、レンダラーの位置と回転だけでワールド座標になる
+                    skinned.BakeMesh(baked, true);
+                    Vector3[] vertices = baked.vertices;
+                    Matrix4x4 toWorld = Matrix4x4.TRS(skinned.transform.position, skinned.transform.rotation, Vector3.one);
+                    for (int v = 0; v < vertices.Length; v++) vertices[v] = toWorld.MultiplyPoint3x4(vertices[v]);
+                    return vertices;
+                }
+                finally
+                {
+                    Object.DestroyImmediate(baked);
+                }
+            }
+            Mesh mesh = GetMesh(renderer);
+            if (mesh == null) return new Vector3[0];
+            Vector3[] local = mesh.vertices;
+            Matrix4x4 matrix = renderer.transform.localToWorldMatrix;
+            for (int v = 0; v < local.Length; v++) local[v] = matrix.MultiplyPoint3x4(local[v]);
+            return local;
+        }
+
         /// <summary>Read/Write が無効なメッシュか。エディタ上では編集できるが、利用者に知らせるために使う。</summary>
         public static bool IsMeshUnreadable(Renderer renderer)
         {
@@ -384,7 +481,25 @@ namespace GP02.EditorTools
         /// </summary>
         public bool TryStart(Renderer target, out string error)
         {
-            _target = target;
+            return TryStartLayered(new[] { target }, out error);
+        }
+
+        /// <summary>
+        /// 複数のレンダラー（重ね着など）をまとめて1つの布として編集を始める。同じレンダラーが重なっていれば1つにする。
+        /// 保存すると、すべてのレンダラーのメッシュに同じ名前のシェイプキーが入る。
+        /// </summary>
+        public bool TryStartLayered(IReadOnlyList<Renderer> targets, out string error)
+        {
+            _targets.Clear();
+            if (targets != null)
+            {
+                foreach (Renderer renderer in targets)
+                {
+                    // null は残して、GetStartProblem で「対象が指定されていません」を出す
+                    if (renderer == null || !_targets.Contains(renderer)) _targets.Add(renderer);
+                }
+            }
+            _target = _targets.Count > 0 ? _targets[0] : null;
             // 見せ方は、編集を始めるたびに編集中の形（100%）から始める
             _settings.ShowOriginal = false;
             _settings.CompareBlend = 1f;
@@ -400,18 +515,23 @@ namespace GP02.EditorTools
             ParticleCloth reuseCloth, IReadOnlyList<int> carriedPinParticles, out string error)
         {
             End();
-            error = GetStartProblem(_target);
+            error = _targets.Count == 0 ? GetStartProblem(null) : null;
+            foreach (Renderer renderer in _targets)
+            {
+                if (error != null) break;
+                error = GetStartProblem(renderer);
+            }
             if (error != null)
             {
                 Fail(error);
                 return false;
             }
 
-            if (reuseCloth != null && !ClothEditSession.IsClothCompatible(_target, reuseCloth)) reuseCloth = null;
+            if (reuseCloth != null && !ClothEditSession.IsClothCompatible(_targets, reuseCloth)) reuseCloth = null;
             try
             {
                 if (ShowProgress) EditorUtility.DisplayProgressBar("GP02", L10n.Tr("メッシュを粒子にしています…", "Converting the mesh to particles..."), 0.5f);
-                _session = new ClothEditSession(_target, reuseCloth);
+                _session = new ClothEditSession(_targets, reuseCloth);
             }
             catch (ArgumentException ex)
             {
@@ -435,7 +555,7 @@ namespace GP02.EditorTools
                 if (ShowProgress) EditorUtility.ClearProgressBar();
             }
 
-            _settings.ApplyTo(_session.Solver, _session.RestAllowance);
+            _settings.ApplyTo(_session.Solver, _session.GetRestAllowance(_settings.KeepLayersApart));
             _session.Solver.InfluenceRadius = _influenceRadius;
             if (reuseCloth != null)
             {
@@ -465,7 +585,7 @@ namespace GP02.EditorTools
             LastError = "";
             LastStretch = 0f;
             HasHover = false;
-            Debug.Log($"[GP02] {_target.name}: 頂点 {_session.VertexCount} / 粒子 {_session.ParticleCount} / 準備 {_session.PrepareMilliseconds:F0}ms / 初回の計算 {warmUp:F0}ms");
+            Debug.Log($"[GP02] {_session.DescribeTargets()}: 頂点 {_session.VertexCount} / 粒子 {_session.ParticleCount} / 層どうしの接触 {_session.LayerContacts.Count} 組 / 準備 {_session.PrepareMilliseconds:F0}ms / 初回の計算 {warmUp:F0}ms");
             Notify();
             return true;
         }
@@ -1003,7 +1123,10 @@ namespace GP02.EditorTools
 
         void RebuildSession()
         {
-            if (_target == null || GetStartProblem(_target) != null)
+            // 消えた・編集できなくなったレンダラーは外して、残りで作り直す
+            _targets.RemoveAll(renderer => renderer == null || GetStartProblem(renderer) != null);
+            _target = _targets.Count > 0 ? _targets[0] : null;
+            if (_target == null)
             {
                 End();
                 return;
@@ -1057,7 +1180,7 @@ namespace GP02.EditorTools
                 message = L10n.Tr("シェイプキーの名前が空です。名前を入れてから保存してください。", "The shape key name is empty. Enter a name before saving.");
                 return false;
             }
-            if (_session.SourceMesh.GetBlendShapeIndex(name) >= 0)
+            if (_session.HasBlendShape(name))
             {
                 message = L10n.Tr($"同じ名前のシェイプキー「{name}」が既にあります。別の名前にして保存してください。",
                     $"A shape key named \"{name}\" already exists. Save it under a different name.");
@@ -1066,17 +1189,22 @@ namespace GP02.EditorTools
 
             // 保存の Undo（メッシュの差し替えなど）が、直前の編集と同じグループにならないようにする
             Undo.IncrementCurrentGroup();
-            Mesh saved;
+            Mesh[] savedMeshes;
             try
             {
-                // あとで一覧から再編集・分割・書き出しができるよう、データにも記録する。
+                // あとで一覧から再編集・分割・書き出しができるよう、データにも記録する（レンダラーごと）。
                 // メッシュを差し替える前に行うのは、データの元のメッシュを、差し替える前のメッシュにするため
                 if (RecordToData)
                 {
-                    GP02ShapeKeyData data = ShapeKeyLibrary.FindOrCreateData(_target, DataFolder);
-                    if (data != null && data.VertexCount == _session.VertexCount) RecordEntry(data, name, true);
+                    for (int r = 0; r < _session.RendererCount; r++)
+                    {
+                        Renderer renderer = _session.Renderers[r];
+                        GP02ShapeKeyData data = ShapeKeyLibrary.FindOrCreateData(renderer, DataFolder);
+                        _session.GetVertexRange(r, out _, out int vertexCount);
+                        if (data != null && data.VertexCount == vertexCount) RecordEntry(data, name, true, r);
+                    }
                 }
-                saved = _session.ApplyToScene(name, SaveFolder);
+                savedMeshes = _session.ApplyToSceneAll(name, SaveFolder);
             }
             catch (Exception ex)
             {
@@ -1086,9 +1214,14 @@ namespace GP02.EditorTools
                 return false;
             }
 
+            Mesh saved = savedMeshes[0];
             LastSavedMesh = saved;
-            message = L10n.Tr($"シェイプキー「{name}」を {AssetDatabase.GetAssetPath(saved)} に保存しました。",
-                $"Saved the shape key \"{name}\" to {AssetDatabase.GetAssetPath(saved)}.");
+            LastSavedMeshes = savedMeshes;
+            var paths = new string[savedMeshes.Length];
+            for (int r = 0; r < savedMeshes.Length; r++) paths[r] = AssetDatabase.GetAssetPath(savedMeshes[r]);
+            string where = string.Join(", ", paths);
+            message = L10n.Tr($"シェイプキー「{name}」を {where} に保存しました。",
+                $"Saved the shape key \"{name}\" to {where}.");
             Debug.Log("[GP02] " + message);
             // 保存の Undo が、次の編集と同じグループにならないようにする
             Undo.IncrementCurrentGroup();
@@ -1141,10 +1274,14 @@ namespace GP02.EditorTools
         /// </summary>
         public bool LoadDeltasAsOperation(Vector3[] deltas, int[] pinnedVertices)
         {
-            if (!EnsureAlive() || deltas == null || deltas.Length != _session.VertexCount) return false;
+            if (!EnsureAlive() || deltas == null) return false;
+            // 重ね着をまとめて編集しているときは、最初のレンダラーのメッシュの差分も受け付ける
+            _session.GetVertexRange(0, out _, out int firstCount);
+            bool combined = deltas.Length == _session.VertexCount;
+            if (!combined && deltas.Length != firstCount) return false;
             FinishStroke();
             BeginOperation("GP02 シェイプキーを読み込む");
-            bool loaded = _session.LoadMeshSpaceDeltas(deltas);
+            bool loaded = combined ? _session.LoadMeshSpaceDeltas(deltas) : _session.LoadMeshSpaceDeltas(0, deltas);
             if (loaded && pinnedVertices != null && pinnedVertices.Length > 0) ReplacePinsWithVertices(pinnedVertices);
             // 何も変わらなかったとき（差分が 0 など）は、Undo の記録も残さない
             CommitOperation();
@@ -1172,10 +1309,11 @@ namespace GP02.EditorTools
                 LastError = L10n.Tr("シェイプキーの名前が空です。名前を入れてから保存してください。", "The shape key name is empty. Enter a name before saving.");
                 return null;
             }
-            if (data.VertexCount != _session.VertexCount)
+            _session.GetVertexRange(0, out _, out int firstVertexCount);
+            if (data.VertexCount != firstVertexCount)
             {
-                LastError = L10n.Tr($"データの頂点数（{data.VertexCount}）が、編集中のメッシュの頂点数（{_session.VertexCount}）と違うので保存できません。",
-                    $"Cannot save: the data has {data.VertexCount} vertices but the mesh being edited has {_session.VertexCount}.");
+                LastError = L10n.Tr($"データの頂点数（{data.VertexCount}）が、編集中のメッシュの頂点数（{firstVertexCount}）と違うので保存できません。",
+                    $"Cannot save: the data has {data.VertexCount} vertices but the mesh being edited has {firstVertexCount}.");
                 return null;
             }
 
@@ -1193,14 +1331,14 @@ namespace GP02.EditorTools
         /// <summary><see cref="Save"/> でデータを新しく作るときの保存先。</summary>
         public string DataFolder { get; set; } = ShapeKeyLibrary.DataFolder;
 
-        // 今の編集をエントリとしてデータに入れる（Undo のグループは呼び出し側で区切る）
-        ShapeKeyEntry RecordEntry(GP02ShapeKeyData data, string name, bool overwrite)
+        // 今の編集を、rendererIndex 番目のレンダラーのエントリとしてデータに入れる（Undo のグループは呼び出し側で区切る）
+        ShapeKeyEntry RecordEntry(GP02ShapeKeyData data, string name, bool overwrite, int rendererIndex = 0)
         {
-            Vector3[] deltas = _session.GetMeshSpaceDeltas();
+            Vector3[] deltas = _session.GetMeshSpaceDeltas(rendererIndex);
             // 法線の差分は、元の形（データの元のメッシュ）に対して計算する
-            Mesh rest = data.SourceMesh != null && data.SourceMesh.vertexCount == deltas.Length ? data.SourceMesh : _session.SourceMesh;
+            Mesh rest = data.SourceMesh != null && data.SourceMesh.vertexCount == deltas.Length ? data.SourceMesh : _session.GetSourceMesh(rendererIndex);
             ShapeKeyEntry fresh = ShapeKeyLibrary.CreateEntryFromDeltas(rest, name, deltas);
-            fresh.PinnedVertices = CollectPinnedVertices();
+            fresh.PinnedVertices = CollectPinnedVertices(rendererIndex);
 
             ShapeKeyEntry result;
             ShapeKeyEntry existing = overwrite ? data.FindEntry(name) : null;
@@ -1231,9 +1369,10 @@ namespace GP02.EditorTools
             return ShapeKeyLibrary.FindOrCreateData(renderer);
         }
 
-        // ピン留めした粒子の近くにある頂点の番号。復元（ReplacePinsWithVertices）と同じ距離で見る
-        int[] CollectPinnedVertices()
+        // ピン留めした粒子の近くにある、rendererIndex 番目のレンダラーの頂点の番号（そのメッシュでの番号）。復元（ReplacePinsWithVertices）と同じ距離で見る
+        int[] CollectPinnedVertices(int rendererIndex)
         {
+            _session.GetVertexRange(rendererIndex, out int start, out int count);
             var pins = new List<Vector3>();
             _session.GetPinnedPositions(pins);
             if (pins.Count == 0) return new int[0];
@@ -1246,14 +1385,14 @@ namespace GP02.EditorTools
             var candidates = new List<int>();
             Vector3[] vertices = _session.CurrentWorldVertices;
             float radiusSq = radius * radius;
-            for (int v = 0; v < vertices.Length; v++)
+            for (int v = start; v < start + count; v++)
             {
                 grid.Query(new System.Numerics.Vector3(vertices[v].x, vertices[v].y, vertices[v].z), radius, candidates);
                 foreach (int c in candidates)
                 {
                     if ((pins[c] - vertices[v]).sqrMagnitude <= radiusSq)
                     {
-                        result.Add(v);
+                        result.Add(v - start);
                         break;
                     }
                 }

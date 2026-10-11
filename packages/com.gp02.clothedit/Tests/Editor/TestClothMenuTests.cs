@@ -202,18 +202,26 @@ namespace GP02.Tests
                 Assert.That(session.Cloth.ParticleIsland[grabbed], Is.Not.EqualTo(IslandOfSourceTriangle(session, petticoatTriangle)));
                 session.Release();
 
-                // 引っぱると、外側のスカートだけが動き、ペチコートは動かない
+                // 引っぱると、外側のスカートだけが引かれる。
+                // 引いた所に寄せられた周りのスカートが内へ締まると、層どうしの接触でペチコートも内へ押されるが、引いた量よりずっと小さい
                 Vector3[] before = (Vector3[])session.CurrentWorldVertices.Clone();
                 PullOuterSkirt(session);
                 int petticoatStart = skirt.sharedMesh.GetSubMesh(1).firstVertex;
                 int petticoatCount = (int)skirt.sharedMesh.GetSubMesh(1).vertexCount;
-                float skirtMove = 0f;
+                float skirtMove = 0f, petticoatMove = 0f;
                 for (int v = 0; v < petticoatStart; v++) skirtMove = Mathf.Max(skirtMove, Vector3.Distance(before[v], session.CurrentWorldVertices[v]));
+                for (int v = petticoatStart; v < petticoatStart + petticoatCount; v++) petticoatMove = Mathf.Max(petticoatMove, Vector3.Distance(before[v], session.CurrentWorldVertices[v]));
+                Assert.That(skirtMove, Is.GreaterThan(0.02f));
+                Assert.That(petticoatMove, Is.LessThan(0.5f * skirtMove), "ペチコートがスカートと一緒に動いています");
+
+                // 層どうしの接触を切れば、ペチコートはまったく動かない（つまんだのが外側のスカートだけであること）
+                session.ResetAll();
+                session.Solver.KeepLayersApart = false;
+                PullOuterSkirt(session);
                 for (int v = petticoatStart; v < petticoatStart + petticoatCount; v++)
                 {
                     Assert.That(Vector3.Distance(before[v], session.CurrentWorldVertices[v]), Is.LessThan(1e-5f), $"ペチコートの頂点 {v}");
                 }
-                Assert.That(skirtMove, Is.GreaterThan(0.02f));
             }
         }
 

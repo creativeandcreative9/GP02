@@ -27,6 +27,7 @@ public class ClothSolverKernelTests
             for (int a = 0; a < d.ActiveStretchCount; a++) d.StretchLambda[d.ActiveStretch[a]] = 0f;
             for (int a = 0; a < d.ActiveBendCount; a++) d.BendLambda[d.ActiveBend[a]] = 0f;
             if (d.KeepOutsideRestSurface) UpdateRestAnchors(d);
+            if (d.ContactCount > 0) UpdateContactPartners(d);
             for (int it = 0; it < iterations; it++)
             {
                 if (d.BrushCompliance > 0f)
@@ -49,15 +50,37 @@ public class ClothSolverKernelTests
                     int pin = d.NearestPin[i];
                     if (pin >= 0) Tether(d.Positions, i, pin, d.PinDistance[i]);
                 }
-                if (!d.KeepOutsideRestSurface) continue;
-                for (int a = 0; a < d.ActiveParticleCount; a++)
+                if (d.KeepOutsideRestSurface)
                 {
-                    int i = d.ActiveParticles[a];
-                    if (d.Grabbed >= 0 && d.InBrush[i]) continue;
-                    int r = d.RestAnchor[i];
-                    Vector3 n = d.RestNormals[r];
-                    float depth = Vector3.Dot(d.Positions[i] - d.RestPositions[r], n) + (d.RestAllowance != null ? d.RestAllowance[r] : 0f);
-                    if (depth < 0f) d.Positions[i] -= depth * n;
+                    for (int a = 0; a < d.ActiveParticleCount; a++)
+                    {
+                        int i = d.ActiveParticles[a];
+                        if (d.Grabbed >= 0 && d.InBrush[i]) continue;
+                        int r = d.RestAnchor[i];
+                        Vector3 n = d.RestNormals[r];
+                        float depth = Vector3.Dot(d.Positions[i] - d.RestPositions[r], n) + (d.RestAllowance != null ? d.RestAllowance[r] : 0f);
+                        if (depth < 0f) d.Positions[i] -= depth * n;
+                    }
+                }
+                for (int k = 0; k < d.ContactCount; k++)
+                {
+                    int i = d.ContactOuter[k], j = d.ContactInner[k];
+                    Vector3 n = d.RestNormals[j];
+                    Vector3 diff = d.Positions[i] - d.Positions[j];
+                    float along = Vector3.Dot(diff, n);
+                    float c = along - d.ContactGap[k];
+                    if (c >= 0f) continue;
+                    if (diff.LengthSquared() - along * along > d.ContactReach * d.ContactReach) continue;
+                    float wi = d.InverseMass[i], wj = d.InverseMass[j];
+                    if (d.Grabbed >= 0)
+                    {
+                        if (d.InBrush[i] && wj > 0f) wi = 0f;
+                        else if (d.InBrush[j] && wi > 0f) wj = 0f;
+                    }
+                    if (wi + wj == 0f) continue;
+                    float s = -c / (wi + wj);
+                    d.Positions[i] += wi * s * n;
+                    d.Positions[j] -= wj * s * n;
                 }
             }
             // 後処理：ワールド座標へ書き戻す
@@ -92,6 +115,33 @@ public class ClothSolverKernelTests
                     anchor = next;
                 }
                 d.RestAnchor[i] = anchor;
+            }
+        }
+
+        static void UpdateContactPartners(in ClothSolverIterationData d)
+        {
+            for (int k = 0; k < d.ContactCount; k++)
+            {
+                Vector3 p = d.Positions[d.ContactOuter[k]];
+                int partner = d.ContactInner[k];
+                float best = Vector3.DistanceSquared(p, d.Positions[partner]);
+                for (int step = 0; step < 16; step++)
+                {
+                    int next = -1;
+                    for (int e = d.GraphOffsets[partner]; e < d.GraphOffsets[partner + 1]; e++)
+                    {
+                        int candidate = d.GraphNeighbors[e];
+                        float distance = Vector3.DistanceSquared(p, d.Positions[candidate]);
+                        if (distance < best)
+                        {
+                            best = distance;
+                            next = candidate;
+                        }
+                    }
+                    if (next < 0) break;
+                    partner = next;
+                }
+                d.ContactInner[k] = partner;
             }
         }
 

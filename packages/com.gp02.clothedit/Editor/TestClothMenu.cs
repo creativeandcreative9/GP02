@@ -12,6 +12,7 @@ namespace GP02.EditorTools
     public static class TestClothMenu
     {
         public const string MenuPath = "Tools/GP02/テスト用の衣装を作る";
+        public const string LayeredMenuPath = "Tools/GP02/テスト用の衣装を作る（ペチコートを別のメッシュに）";
         public const string DefaultFolder = "Assets/GP02/TestCloth";
 
         // 体とスカートの寸法（アバター相当の実寸）
@@ -41,6 +42,13 @@ namespace GP02.EditorTools
             CreateInScene(DefaultFolder);
         }
 
+        // 重ね着をまとめて編集する機能を試すための版
+        [MenuItem(LayeredMenuPath)]
+        static void CreateLayeredFromMenu()
+        {
+            CreateInScene(DefaultFolder, true);
+        }
+
         // ---- シーンに置く処理 ----
 
         /// <summary>
@@ -50,11 +58,21 @@ namespace GP02.EditorTools
         /// <returns>全体をまとめたルート。体は "Body"、スカートは "Skirt" という名前の子</returns>
         public static GameObject CreateInScene(string assetFolder)
         {
+            return CreateInScene(assetFolder, false);
+        }
+
+        /// <summary>
+        /// <see cref="CreateInScene(string)"/> の、ペチコートを別のメッシュ（"Petticoat" という名前の子の SkinnedMeshRenderer）にできる版。
+        /// separatePetticoat なら、スカートのメッシュのサブメッシュは 0 = スカート、1 = リボン になる。
+        /// </summary>
+        public static GameObject CreateInScene(string assetFolder, bool separatePetticoat)
+        {
             bool save = !string.IsNullOrEmpty(assetFolder);
             if (save) EnsureFolder(assetFolder);
 
             Mesh bodyMesh = CreateBodyMesh();
-            Mesh skirtMesh = CreateSkirtMesh();
+            Mesh skirtMesh = CreateSkirtMesh(!separatePetticoat);
+            Mesh petticoatMesh = separatePetticoat ? CreatePetticoatMesh() : null;
             Material skin = NewMaterial("TestBody_Skin", new Color(0.96f, 0.78f, 0.66f));
             Material skirtOuter = NewMaterial("TestSkirt_Outer", new Color(0.80f, 0.20f, 0.32f));
             Material petticoat = NewMaterial("TestSkirt_Petticoat", new Color(0.94f, 0.90f, 0.70f));
@@ -64,6 +82,7 @@ namespace GP02.EditorTools
             {
                 SaveAsset(bodyMesh, assetFolder, ".asset");
                 SaveAsset(skirtMesh, assetFolder, ".asset");
+                if (petticoatMesh != null) SaveAsset(petticoatMesh, assetFolder, ".asset");
                 SaveAsset(skin, assetFolder, ".mat");
                 SaveAsset(skirtOuter, assetFolder, ".mat");
                 SaveAsset(petticoat, assetFolder, ".mat");
@@ -75,7 +94,9 @@ namespace GP02.EditorTools
 
             Transform[] bones = CreateBones(root.transform);
             GameObject body = AddSkinned(root.transform, "Body", bodyMesh, bones, new[] { skin });
-            GameObject skirt = AddSkinned(root.transform, "Skirt", skirtMesh, bones, new[] { skirtOuter, petticoat, ribbon });
+            GameObject skirt = AddSkinned(root.transform, "Skirt", skirtMesh, bones,
+                separatePetticoat ? new[] { skirtOuter, ribbon } : new[] { skirtOuter, petticoat, ribbon });
+            if (separatePetticoat) AddSkinned(root.transform, "Petticoat", petticoatMesh, bones, new[] { petticoat });
 
             // バインドポーズ（メッシュを作った姿勢）とは違う姿勢で編集できることを確かめるため、脚を回す。
             // 回すのは、バインドポーズを設定したあと
@@ -193,29 +214,53 @@ namespace GP02.EditorTools
         /// </summary>
         public static Mesh CreateSkirtMesh()
         {
-            var builder = new MeshBuilder(3);
+            return CreateSkirtMesh(true);
+        }
+
+        /// <summary>
+        /// スカートのメッシュ。includePetticoat が false なら、ペチコートを含めない（サブメッシュは 0 = スカート、1 = リボン）。
+        /// </summary>
+        public static Mesh CreateSkirtMesh(bool includePetticoat)
+        {
+            var builder = new MeshBuilder(includePetticoat ? 3 : 2);
 
             var outer = new Vector2[SkirtRows + 1];
             for (int j = 0; j <= SkirtRows; j++) outer[j] = SkirtProfile((float)j / SkirtRows, 0f);
             builder.AddLathe(0, 0f, outer, SkirtSegments, WeightForSkirt);
 
-            // 斜面の法線方向に PetticoatGap だけ内側へ寄せる。半径の差は gap / cos(斜面の傾き)
-            float slope = (SkirtBottomRadius - SkirtTopRadius) / SkirtLength;
-            float radialGap = PetticoatGap * Mathf.Sqrt(1f + slope * slope);
-            var inner = new Vector2[PetticoatRows + 1];
-            for (int j = 0; j <= PetticoatRows; j++) inner[j] = SkirtProfile(PetticoatLengthRatio * j / PetticoatRows, radialGap);
-            builder.AddLathe(1, 0f, inner, SkirtSegments, WeightForSkirt);
+            if (includePetticoat) AddPetticoat(builder, 1);
 
             // リボン：ウエストのまわりに、外向きの小さな四角形（幅 1.2cm・高さ 1cm）を並べる。それぞれが別の島になる
+            int ribbonSubMesh = includePetticoat ? 2 : 1;
             for (int k = 0; k < RibbonCount; k++)
             {
                 float angle = (30f + 360f * k / RibbonCount) * Mathf.Deg2Rad;
-                builder.AddQuad(2, angle, 0.14f, SkirtTopY, 0.012f, 0.010f, WeightForSkirt);
+                builder.AddQuad(ribbonSubMesh, angle, 0.14f, SkirtTopY, 0.012f, 0.010f, WeightForSkirt);
             }
 
             Mesh mesh = builder.ToMesh("GP02_TestSkirt");
             mesh.bindposes = BindPoses();
             return mesh;
+        }
+
+        /// <summary>ペチコートだけのメッシュ（スカートの 3mm 内側・少し短い。<see cref="CreateSkirtMesh(bool)"/> のペチコートと同じ形）。</summary>
+        public static Mesh CreatePetticoatMesh()
+        {
+            var builder = new MeshBuilder(1);
+            AddPetticoat(builder, 0);
+            Mesh mesh = builder.ToMesh("GP02_TestPetticoat");
+            mesh.bindposes = BindPoses();
+            return mesh;
+        }
+
+        static void AddPetticoat(MeshBuilder builder, int subMesh)
+        {
+            // 斜面の法線方向に PetticoatGap だけ内側へ寄せる。半径の差は gap / cos(斜面の傾き)
+            float slope = (SkirtBottomRadius - SkirtTopRadius) / SkirtLength;
+            float radialGap = PetticoatGap * Mathf.Sqrt(1f + slope * slope);
+            var inner = new Vector2[PetticoatRows + 1];
+            for (int j = 0; j <= PetticoatRows; j++) inner[j] = SkirtProfile(PetticoatLengthRatio * j / PetticoatRows, radialGap);
+            builder.AddLathe(subMesh, 0f, inner, SkirtSegments, WeightForSkirt);
         }
 
         // t = 0（上端）〜1（裾）の位置の、(半径, 高さ)

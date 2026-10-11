@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 
@@ -86,7 +87,26 @@ namespace GP02.Core
         bool _spreadPending;              // 目標が変わり、周りへまだ配っていない
         float _brushPull;                 // 範囲の粒子の、目標までの移動距離の最大
         readonly int[] _seedWork = new int[2];
-        int[] _components;                // 粒子ごとの島の番号（FindMirrorParticle で初めて使うときに作る）
+        int[] _components;                // 粒子ごとの島の番号（FindMirrorParticle などで初めて使うときに作る）
+        int _componentCount;
+
+        // 重ね着の層どうしの接触（SetLayerContacts）。外側の粒子 _contactOuter[k] が、内側の粒子 _contactInner[k] の面より内に入らない
+        int[] _contactOuter = new int[0];
+        int[] _contactInner = new int[0];  // Solve ごとに、内側の層の隣へたどって近いものに探し直す
+        float[] _contactGap = new float[0];
+        int _contactCount;
+        float _contactReach;              // 内側の粒子の面に沿ってこれより離れた外側の粒子は、組を解かない
+        bool _keepLayersApart = true;
+        bool[] _componentActive;          // 計算範囲を決めるときの作業用（島ごと）
+
+        // 集合でつまむ（Grab(int[], ...)）ときの作業用
+        int[] _selectionSet = new int[0]; // 前回つまんだ集合（同じ集合なら範囲を選び直さない）
+        int _selectionCount = -1;         // 集合でつまんでいなければ -1
+        bool[] _selectionMark;
+        int[] _selectionSources;
+        PointGrid _mirrorGrid;            // 鏡像を探すための、元の位置の格子
+        float _mirrorGridCell;
+        List<int> _queryWork;
         float[] _workDistance;            // RelaxTowardRest 用
 
         // 計算する範囲。固定の粒子（ピン、つまんだ範囲、計算範囲の外）は逆質量 0
@@ -134,6 +154,62 @@ namespace GP02.Core
         /// 内側へ押し込む編集をしたいときは false にする。<see cref="ClothModel.RestNormals"/> が無い布では効かない。
         /// </summary>
         public bool KeepOutsideRestSurface { get; set; } = true;
+
+        /// <summary>
+        /// 重ね着の層どうしの接触（<see cref="SetLayerContacts"/>）を解くか（既定は true）。
+        /// 外側の層が内側の層の面より内に入らないよう、両方を押し分ける。組が無ければ何もしない。
+        /// </summary>
+        public bool KeepLayersApart
+        {
+            get => _keepLayersApart;
+            set
+            {
+                if (value == _keepLayersApart) return;
+                _keepLayersApart = value;
+                _activeDirty = true;
+            }
+        }
+
+        /// <summary>層どうしの接触の組の数。</summary>
+        public int LayerContactCount => _contactCount;
+
+        /// <summary>接触の組 k の、外側の粒子。</summary>
+        public int LayerContactOuter(int k) => _contactOuter[k];
+
+        /// <summary>接触の組 k の、今の内側の粒子（Solve ごとに探し直す）。</summary>
+        public int LayerContactInner(int k) => _contactInner[k];
+
+        /// <summary>
+        /// 重ね着の層どうしの接触の組を設定する（<see cref="LayerContacts.Find(ParticleCloth, float, float)"/> で探したもの）。null なら無し。
+        /// 組でつながった島は、片方をつまむともう片方も計算範囲に入る（押された内側の層が動けるように）。
+        /// </summary>
+        public void SetLayerContacts(LayerContacts contacts)
+        {
+            int count = contacts != null ? contacts.Count : 0;
+            int n = _positions.Length;
+            for (int k = 0; k < count; k++)
+            {
+                if ((uint)contacts.Outer[k] >= (uint)n || (uint)contacts.Inner[k] >= (uint)n) throw new ArgumentException("粒子の番号が範囲外です。", nameof(contacts));
+            }
+            _contactOuter = count > 0 ? (int[])contacts.Outer.Clone() : new int[0];
+            _contactInner = count > 0 ? (int[])contacts.Inner.Clone() : new int[0];
+            _contactGap = count > 0 ? (float[])contacts.Gaps.Clone() : new float[0];
+            _contactCount = count;
+            _contactReach = count > 0 ? contacts.Reach : 0f;
+            if (count > 0)
+            {
+                EnsureComponents();
+                if (_componentActive == null) _componentActive = new bool[_componentCount];
+            }
+            _activeDirty = true;
+        }
+
+        void EnsureComponents()
+        {
+            if (_components != null) return;
+            _components = new int[_positions.Length];
+            _componentCount = _graph.Components(_components);
+        }
 
         /// <summary><see cref="BrushCompliance"/> の既定値。</summary>
         public const float DefaultBrushCompliance = 0.02f;
@@ -340,9 +416,252 @@ namespace GP02.Core
             SetMotion(AffineMotion.FromBrushMotion(motion, _origin));
         }
 
+        /// <summary>
+        /// 渡した粒子の集合をつまみ、motion で動かす（「頂点を選んで動かす」用）。実際に動くのは次の Solve。
+        /// 集合の粒子はすべて重み 1。options の Radius が正なら、集合の端から Radius 以内の粒子も、
+        /// 集合からの距離（DistanceMode の測り方）に応じた Falloff の重みでつまむ（ソフト選択）。Radius が 0 なら集合だけ。
+        /// 鏡の面を渡すと、集合の各粒子の鏡像（<see cref="FindMirrorParticle"/>）も鏡に映した動きで動かす。
+        /// 集合の半分以上の鏡像が集合の中にある（中央線をまたいで両側を選んだ）ときは、鏡像を使わず、
+        /// 中心の粒子 1 つでつまむときと同じく、動きを鏡の面に沿う成分だけにする。
+        /// 集合と options が前回と同じなら、範囲を選び直さずに目標だけを計算し直す。
+        /// </summary>
+        /// <param name="particles">つまむ粒子（重複してよい）。空は不可</param>
+        /// <param name="options">null なら半径 0・対称なし</param>
+        public void Grab(int[] particles, BrushMotion motion, BrushOptions options)
+        {
+            if (particles == null) throw new ArgumentNullException(nameof(particles));
+            if (particles.Length == 0) throw new ArgumentException("粒子がありません。", nameof(particles));
+            int n = _positions.Length;
+            foreach (int particle in particles)
+            {
+                if ((uint)particle >= (uint)n) throw new ArgumentOutOfRangeException(nameof(particles));
+            }
+            float radius = options != null ? options.Radius : 0f;
+            if (!(radius >= 0f) || float.IsInfinity(radius)) throw new ArgumentOutOfRangeException(nameof(options), "半径が不正です。");
+            FalloffCurve curve = options?.Falloff ?? FalloffCurve.Constant;
+            BrushDistanceMode mode = options != null ? options.DistanceMode : BrushDistanceMode.Surface;
+            MirrorPlane? mirror = options?.Mirror;
+            bool hasMirror = mirror.HasValue;
+            MirrorPlane plane = hasMirror ? mirror.Value : default;
+            if (hasMirror && !plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(options));
+            float tolerance = options != null ? options.MirrorTolerance : BrushOptions.DefaultMirrorTolerance;
+            if (hasMirror && !(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(options), "鏡像を探す許容距離が不正です。");
+
+            if (NeedsSetSelection(particles, radius, curve, mode, hasMirror, plane, tolerance))
+            {
+                SelectSet(particles, radius, curve, mode, hasMirror, plane, tolerance);
+            }
+            if (_midline) motion = SymmetrizeMotion(motion, _mirrorPlane);
+            SetMotion(AffineMotion.FromBrushMotion(motion, _origin));
+        }
+
+        bool NeedsSetSelection(int[] particles, float radius, FalloffCurve curve, BrushDistanceMode mode, bool hasMirror, MirrorPlane plane, float tolerance)
+        {
+            if (_grabbed < 0 || _selectionCount != particles.Length) return true;
+            if (radius != _brushRadius || mode != _brushMode || hasMirror != _hasMirror || !curve.SameAs(_brushCurve)) return true;
+            if (hasMirror && (plane.Point != _mirrorPlane.Point || plane.Normal != _mirrorPlane.Normal || tolerance != _mirrorTolerance)) return true;
+            for (int k = 0; k < particles.Length; k++)
+            {
+                if (particles[k] != _selectionSet[k]) return true;
+            }
+            return false;
+        }
+
+        // 集合でつまむ範囲を選ぶ。集合（と鏡像）を起点に距離を測り、範囲の粒子・重み・属する側を決める
+        void SelectSet(int[] particles, float radius, FalloffCurve curve, BrushDistanceMode mode, bool hasMirror, MirrorPlane plane, float tolerance)
+        {
+            for (int k = 0; k < _brushCount; k++)
+            {
+                int i = _brushList[k];
+                _inBrush[i] = false;
+                _brushWeight[i] = 0f;
+                _brushMirrored[i] = false;
+            }
+            _brushCount = 0;
+
+            int n = _positions.Length;
+            if (_selectionMark == null)
+            {
+                _selectionMark = new bool[n];
+                _selectionSources = new int[n];
+            }
+            if (_selectionSet.Length != particles.Length) _selectionSet = new int[particles.Length];
+            Array.Copy(particles, _selectionSet, particles.Length);
+            _selectionCount = particles.Length;
+            _brushRadius = radius;
+            _brushCurve = curve;
+            _brushMode = mode;
+            _hasMirror = hasMirror;
+            _mirrorPlane = plane;
+            _mirrorTolerance = tolerance;
+
+            // 集合（重複を除く）
+            bool[] mark = _selectionMark;
+            int[] sources = _selectionSources;
+            int setCount = 0;
+            foreach (int particle in particles)
+            {
+                if (mark[particle]) continue;
+                mark[particle] = true;
+                sources[setCount++] = particle;
+            }
+
+            // 鏡像。集合の外にある鏡像だけを、鏡に映した動きで動かす起点にする（加えた鏡像の印は、範囲を選ぶまでの間 _brushMirrored に付ける）
+            int sourceCount = setCount;
+            int mirrorSeed = -1;
+            bool midline = false;
+            if (hasMirror)
+            {
+                int inside = 0;
+                for (int k = 0; k < setCount; k++)
+                {
+                    int m = FindMirrorNear(sources[k], plane, tolerance);
+                    if (m < 0) continue;
+                    if (mark[m])
+                    {
+                        inside++;
+                        continue;
+                    }
+                    if (_brushMirrored[m]) continue;
+                    _brushMirrored[m] = true;
+                    sources[sourceCount++] = m;
+                }
+                if (2 * inside >= setCount) midline = true;
+                for (int k = setCount; k < sourceCount; k++) _brushMirrored[sources[k]] = false;
+                if (midline) sourceCount = setCount;
+                else if (sourceCount > setCount) mirrorSeed = sources[setCount];
+            }
+
+            // 起点からの距離。範囲の距離はテザーの距離の配列を作業場所として使う（あとで範囲全体からの距離で上書きする）
+            float[] distance = _grabDistance;
+            int[] nearest = _grabSource;
+            Vector3[] p = _positions;
+            if (radius > 0f && mode == BrushDistanceMode.Surface)
+            {
+                _graph.ShortestDistances(sources, sourceCount, distance, nearest, radius);
+            }
+            else if (radius > 0f)
+            {
+                if (_queryWork == null) _queryWork = new List<int>();
+                var grid = new PointGrid(radius);
+                for (int k = 0; k < sourceCount; k++) grid.Add(sources[k], p[sources[k]]);
+                for (int i = 0; i < n; i++)
+                {
+                    distance[i] = float.PositiveInfinity;
+                    nearest[i] = -1;
+                    grid.Query(p[i], radius, _queryWork);
+                    for (int c = 0; c < _queryWork.Count; c++)
+                    {
+                        int source = _queryWork[c];
+                        float d = MathF.Sqrt(DistanceSquared(p[i].X, p[i].Y, p[i].Z, p[source]));
+                        if (d < distance[i])
+                        {
+                            distance[i] = d;
+                            nearest[i] = source;
+                        }
+                    }
+                }
+                for (int k = 0; k < sourceCount; k++)
+                {
+                    distance[sources[k]] = 0f;
+                    nearest[sources[k]] = sources[k];
+                }
+            }
+            else
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    distance[i] = float.PositiveInfinity;
+                    nearest[i] = -1;
+                }
+                for (int k = 0; k < sourceCount; k++)
+                {
+                    distance[sources[k]] = 0f;
+                    nearest[sources[k]] = sources[k];
+                }
+            }
+
+            // 印を、集合から鏡像の起点に付け替える（範囲の粒子が、どちらの起点に属するかを見るため）
+            for (int k = 0; k < setCount; k++) mark[sources[k]] = false;
+            for (int k = setCount; k < sourceCount; k++) mark[sources[k]] = true;
+            for (int i = 0; i < n; i++)
+            {
+                float d = distance[i];
+                if (!(d <= radius)) continue;
+                float w = d <= 0f ? 1f : curve.Evaluate(d / radius);
+                if (!(w > 0f)) continue;
+                _brushList[_brushCount++] = i;
+                _inBrush[i] = true;
+                _brushWeight[i] = w;
+                _brushMirrored[i] = mirrorSeed >= 0 && nearest[i] >= 0 && mark[nearest[i]];
+                _brushStart[i] = p[i];
+                _brushGoal[i] = p[i];
+                _brushApplied[i] = p[i];
+                _brushLambda[i] = Vector3.Zero;
+                _goalAnchor[i] = _restAnchor[i];
+            }
+            for (int k = setCount; k < sourceCount; k++) mark[sources[k]] = false;
+
+            _grabbed = particles[0];
+            _clampedCount = 0;
+            _mirrorSeed = mirrorSeed;
+            _midline = midline;
+            _grabOrigin = p[_grabbed];
+            _graph.ShortestDistances(_brushList, _brushCount, _grabDistance, _grabSource, float.PositiveInfinity);
+            _activePull = 0f;
+            _brushPull = 0f;
+            _motionValid = false;
+            _spreadPending = false;
+            _activeDirty = true;
+        }
+
+        // FindMirrorParticle と同じ選び方を、元の位置の格子で近くの粒子だけ調べて行う（集合の粒子ごとに全粒子を調べると遅いため）
+        int FindMirrorNear(int particle, MirrorPlane plane, float tolerance)
+        {
+            EnsureComponents();
+            Vector3[] rest = _model.RestPositions;
+            float cell = MathF.Max(tolerance, 1e-4f);
+            if (_mirrorGrid == null || _mirrorGridCell != cell)
+            {
+                _mirrorGrid = new PointGrid(cell);
+                for (int i = 0; i < rest.Length; i++) _mirrorGrid.Add(i, rest[i]);
+                _mirrorGridCell = cell;
+            }
+            if (_queryWork == null) _queryWork = new List<int>();
+
+            Vector3 target = plane.Reflect(rest[particle]);
+            Vector3 normal = _restNormals != null ? plane.ReflectDirection(_restNormals[particle]) : Vector3.Zero;
+            bool useNormal = normal != Vector3.Zero;
+            int island = _components[particle];
+            float limit = tolerance * tolerance;
+            int bestSame = -1, bestOther = -1;
+            float bestSameSq = float.MaxValue, bestOtherSq = float.MaxValue;
+            _mirrorGrid.Query(target, tolerance, _queryWork);
+            for (int c = 0; c < _queryWork.Count; c++)
+            {
+                int j = _queryWork[c];
+                float sq = DistanceSquared(rest[j].X, rest[j].Y, rest[j].Z, target);
+                if (sq > limit) continue;
+                if (_components[j] == island)
+                {
+                    if (sq < bestSameSq || (sq == bestSameSq && j < bestSame))
+                    {
+                        bestSameSq = sq;
+                        bestSame = j;
+                    }
+                }
+                else if (useNormal && Vector3.Dot(_restNormals[j], normal) > 0.5f && (sq < bestOtherSq || (sq == bestOtherSq && j < bestOther)))
+                {
+                    bestOtherSq = sq;
+                    bestOther = j;
+                }
+            }
+            return bestSame >= 0 ? bestSame : bestOther;
+        }
+
         bool NeedsSelection(int particle, float radius, FalloffCurve curve, BrushDistanceMode mode, bool hasMirror, MirrorPlane plane, float tolerance)
         {
-            if (particle != _grabbed || radius != _brushRadius || mode != _brushMode || hasMirror != _hasMirror) return true;
+            if (_selectionCount >= 0 || particle != _grabbed || radius != _brushRadius || mode != _brushMode || hasMirror != _hasMirror) return true;
             if (!curve.SameAs(_brushCurve)) return true;
             return hasMirror && (plane.Point != _mirrorPlane.Point || plane.Normal != _mirrorPlane.Normal || tolerance != _mirrorTolerance);
         }
@@ -359,6 +678,7 @@ namespace GP02.Core
             }
             _brushCount = 0;
 
+            _selectionCount = -1;
             _grabbed = seed;
             _brushRadius = radius;
             _brushCurve = curve;
@@ -592,11 +912,7 @@ namespace GP02.Core
             if ((uint)particle >= (uint)_positions.Length) throw new ArgumentOutOfRangeException(nameof(particle));
             if (!plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(plane));
             if (!(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(tolerance));
-            if (_components == null)
-            {
-                _components = new int[_positions.Length];
-                _graph.Components(_components);
-            }
+            EnsureComponents();
 
             Vector3[] rest = _model.RestPositions;
             Vector3 target = plane.Reflect(rest[particle]);
@@ -1010,6 +1326,7 @@ namespace GP02.Core
 
             bool keepOutside = KeepOutsideRestSurface && _restNormals != null;
             bool softBrush = _grabbed >= 0 && _brushCompliance > 0f;
+            int contactCount = SolvesLayerContacts ? _contactCount : 0;
 
             IClothSolverKernel kernel = Kernel;
             if (kernel != null && iterations > 0)
@@ -1020,7 +1337,8 @@ namespace GP02.Core
                     stretchPairs, stretchRest, _stretchLambda, _activeStretch, _activeStretchCount, StretchCompliance,
                     _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _grabSource, _nearestPin, _pinDistance,
                     keepOutside, _restInternal, _restNormals, _restAnchor, _restAllowance,
-                    softBrush ? _brushCompliance : 0f, _brushGoal, _brushLambda), iterations);
+                    softBrush ? _brushCompliance : 0f, _brushGoal, _brushLambda,
+                    contactCount, _contactOuter, _contactInner, _contactGap, _contactReach), iterations);
                 if (keepOutside && iterations > 0) PushClampedBrushOutside();
                 return;
             }
@@ -1028,6 +1346,7 @@ namespace GP02.Core
             for (int a = 0; a < _activeStretchCount; a++) _stretchLambda[_activeStretch[a]] = 0f;
             for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
             if (keepOutside && iterations > 0) UpdateRestAnchors();
+            if (contactCount > 0 && iterations > 0) UpdateContactPartners();
 
             for (int it = 0; it < iterations; it++)
             {
@@ -1038,6 +1357,7 @@ namespace GP02.Core
 
                 SolveTethers();
                 if (keepOutside) SolveRestSurface();
+                if (contactCount > 0) SolveLayerContacts();
             }
             if (keepOutside && iterations > 0) PushClampedBrushOutside();
 
@@ -1125,11 +1445,13 @@ namespace GP02.Core
             // 距離はつまんだ範囲の端から測るので、ブラシ半径は足さない（中心から測っていたときと同じ範囲になる）
             float limit = _influenceRadius + _activeMargin + _activePull;
             int n = _positions.Length;
+            bool linked = _grabbed >= 0 && SolvesLayerContacts && MarkContactLinkedComponents();
             _activeParticleCount = 0;
             for (int i = 0; i < n; i++)
             {
-                // つながっていない部品（距離が無限大）は計算しない
-                bool active = _grabbed < 0 || (!float.IsInfinity(_grabDistance[i]) && _grabDistance[i] <= limit);
+                // つながっていない部品（距離が無限大）は計算しない。ただし接触の組でつながった層は、押されて動けるよう計算する
+                bool active = _grabbed < 0 || (!float.IsInfinity(_grabDistance[i]) && _grabDistance[i] <= limit)
+                    || (linked && float.IsInfinity(_grabDistance[i]) && _componentActive[_components[i]]);
                 // つまんだ範囲は、柔らかい制約で引き寄せるときは動ける（BrushCompliance を参照）
                 bool fixedParticle = _pinned[i] || (IsGrabbed(i) && _brushCompliance <= 0f) || !active;
                 _inverseMass[i] = fixedParticle ? 0f : 1f;
@@ -1139,6 +1461,33 @@ namespace GP02.Core
 
             _activeStretchCount = CollectActive(_model.StretchPairs, _activeStretch);
             _activeBendCount = CollectActive(_model.BendPairs, _activeBend);
+        }
+
+        bool SolvesLayerContacts => _keepLayersApart && _contactCount > 0 && _restNormals != null;
+
+        // つまんだ範囲のある島から、接触の組でたどれる島に印を付ける。印の付いた島があれば true。
+        // 計算範囲を決め直すときだけ呼ばれる（毎回の Solve ではない）
+        bool MarkContactLinkedComponents()
+        {
+            bool[] marked = _componentActive;
+            Array.Clear(marked, 0, marked.Length);
+            for (int k = 0; k < _brushCount; k++) marked[_components[_brushList[k]]] = true;
+            bool changed = true;
+            bool any = false;
+            while (changed)
+            {
+                changed = false;
+                for (int k = 0; k < _contactCount; k++)
+                {
+                    int a = _components[_contactOuter[k]], b = _components[_contactInner[k]];
+                    if (marked[a] == marked[b]) continue;
+                    marked[a] = true;
+                    marked[b] = true;
+                    changed = true;
+                    any = true;
+                }
+            }
+            return any;
         }
 
         // 少なくとも一方の粒子が動ける制約だけを集める
@@ -1265,6 +1614,73 @@ namespace GP02.Core
                     anchor = next;
                 }
                 _restAnchor[i] = anchor;
+            }
+        }
+
+        // 接触の組の内側の粒子を、内側の層の隣へ、外側の粒子の今の位置に近くなる限りたどって探し直す（最大16歩）。
+        // 層が互いにずれても、外側の粒子のすぐ下の粒子を相手にするため
+        void UpdateContactPartners()
+        {
+            int[] offsets = _graph.Offsets;
+            int[] neighbors = _graph.Neighbors;
+            Vector3[] p = _positions;
+            for (int k = 0; k < _contactCount; k++)
+            {
+                int i = _contactOuter[k];
+                int partner = _contactInner[k];
+                float px = p[i].X, py = p[i].Y, pz = p[i].Z;
+                float best = DistanceSquared(px, py, pz, p[partner]);
+                for (int step = 0; step < 16; step++)
+                {
+                    int next = -1;
+                    int end = offsets[partner + 1];
+                    for (int e = offsets[partner]; e < end; e++)
+                    {
+                        int candidate = neighbors[e];
+                        float d = DistanceSquared(px, py, pz, p[candidate]);
+                        if (d < best)
+                        {
+                            best = d;
+                            next = candidate;
+                        }
+                    }
+                    if (next < 0) break;
+                    partner = next;
+                }
+                _contactInner[k] = partner;
+            }
+        }
+
+        // 外側の粒子 i が、内側の粒子 j の元の形の面（外向き n_j）から、保つ隙間より内に入っていれば、両方を逆質量で押し分ける。
+        // つまんでいる粒子は押す側として動かさない（相手が動けないときだけ動かす）。外の布を内へ押すと、内の布が押されて動くように。
+        // i が j の面に沿って _contactReach より離れていれば（内側の層の縁の外）、解かない
+        void SolveLayerContacts()
+        {
+            Vector3[] p = _positions;
+            Vector3[] normals = _restNormals;
+            float[] inverseMass = _inverseMass;
+            bool grabbing = _grabbed >= 0;
+            float reachSquared = _contactReach * _contactReach;
+            for (int k = 0; k < _contactCount; k++)
+            {
+                int i = _contactOuter[k], j = _contactInner[k];
+                float nx = normals[j].X, ny = normals[j].Y, nz = normals[j].Z;
+                float dx = p[i].X - p[j].X, dy = p[i].Y - p[j].Y, dz = p[i].Z - p[j].Z;
+                float along = dx * nx + dy * ny + dz * nz;
+                float c = along - _contactGap[k];
+                if (c >= 0f) continue;
+                if (dx * dx + dy * dy + dz * dz - along * along > reachSquared) continue;
+                float wi = inverseMass[i], wj = inverseMass[j];
+                if (grabbing)
+                {
+                    if (_inBrush[i] && wj > 0f) wi = 0f;
+                    else if (_inBrush[j] && wi > 0f) wj = 0f;
+                }
+                float w = wi + wj;
+                if (w == 0f) continue;
+                float s = -c / w;
+                p[i].X += wi * s * nx; p[i].Y += wi * s * ny; p[i].Z += wi * s * nz;
+                p[j].X -= wj * s * nx; p[j].Y -= wj * s * ny; p[j].Z -= wj * s * nz;
             }
         }
 

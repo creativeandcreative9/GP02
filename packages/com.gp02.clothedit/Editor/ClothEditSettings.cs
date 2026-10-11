@@ -128,6 +128,12 @@ namespace GP02.EditorTools
         /// </summary>
         public bool UseRestSurfaceAllowance = true;
 
+        /// <summary>
+        /// 重ね着の層どうしを押し分けるか（<see cref="ClothSolver.KeepLayersApart"/>）。オンなら、外の布を内へ押すと内の布も押され、外の布が内の布を突き抜けない。
+        /// 内側の層も一緒に計算するので、重ね着のある布では計算が重くなる。
+        /// </summary>
+        public bool KeepLayersApart = true;
+
         // ---- 道具・ブラシ・対称・向き・表示（ウィンドウの各区切り） ----
 
         /// <summary>今の道具。</summary>
@@ -347,6 +353,7 @@ namespace GP02.EditorTools
             KeepOutsideRestSurface = true;
             BrushCompliance = DefaultBrushCompliance;
             UseRestSurfaceAllowance = true;
+            KeepLayersApart = true;
         }
 
         /// <summary>負の値や、計算を壊す値を直す。</summary>
@@ -394,6 +401,7 @@ namespace GP02.EditorTools
             solver.KeepOutsideRestSurface = KeepOutsideRestSurface;
             solver.BrushCompliance = BrushCompliance;
             solver.SetRestSurfaceAllowance(UseRestSurfaceAllowance ? restAllowance : null);
+            solver.KeepLayersApart = KeepLayersApart;
         }
 
         public static ClothEditSettings Load(string keyPrefix = DefaultKeyPrefix)
@@ -410,6 +418,7 @@ namespace GP02.EditorTools
                 KeepOutsideRestSurface = EditorPrefs.GetBool(keyPrefix + "KeepOutsideRestSurface", true),
                 BrushCompliance = EditorPrefs.GetFloat(keyPrefix + "BrushCompliance", DefaultBrushCompliance),
                 UseRestSurfaceAllowance = EditorPrefs.GetBool(keyPrefix + "UseRestSurfaceAllowance", true),
+                KeepLayersApart = EditorPrefs.GetBool(keyPrefix + "KeepLayersApart", true),
                 Tool = (ClothEditMode)EditorPrefs.GetInt(keyPrefix + "Tool", (int)ClothEditMode.Grab),
                 Falloff = (FalloffPreset)EditorPrefs.GetInt(keyPrefix + "Falloff", (int)FalloffPreset.Constant),
                 CustomFalloff = CurveFromString(EditorPrefs.GetString(keyPrefix + "CustomFalloff", "")),
@@ -440,6 +449,7 @@ namespace GP02.EditorTools
             EditorPrefs.SetBool(keyPrefix + "KeepOutsideRestSurface", KeepOutsideRestSurface);
             EditorPrefs.SetFloat(keyPrefix + "BrushCompliance", BrushCompliance);
             EditorPrefs.SetBool(keyPrefix + "UseRestSurfaceAllowance", UseRestSurfaceAllowance);
+            EditorPrefs.SetBool(keyPrefix + "KeepLayersApart", KeepLayersApart);
             EditorPrefs.SetInt(keyPrefix + "Tool", (int)Tool);
             EditorPrefs.SetInt(keyPrefix + "Falloff", (int)Falloff);
             EditorPrefs.SetString(keyPrefix + "CustomFalloff", CurveToString(CustomFalloff ?? DefaultCustomFalloff()));
@@ -462,7 +472,7 @@ namespace GP02.EditorTools
             {
                 "BendCompliance", "StretchCompliance", "SettleTolerance", "SettleTimeoutSeconds",
                 "SolveMilliseconds", "CoarseIterations", "UseAcceleration", "KeepOutsideRestSurface",
-                "BrushCompliance", "UseRestSurfaceAllowance",
+                "BrushCompliance", "UseRestSurfaceAllowance", "KeepLayersApart",
                 "Tool", "Falloff", "CustomFalloff", "DistanceMode", "SymmetryEnabled", "SymmetryAxis", "SymmetryOffset",
                 "MoveDirection", "DirectionSpace", "RotateAxis", "RelaxStrength", "ShowBrushPreview", "ShowStretchHeatmap",
             })

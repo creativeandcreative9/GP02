@@ -16,8 +16,20 @@ namespace GP02.Core
         /// </summary>
         public static int[] Weld(Vector3[] vertices, float tolerance, out Vector3[] particlePositions)
         {
+            return Weld(vertices, tolerance, null, out particlePositions);
+        }
+
+        /// <summary>
+        /// <see cref="Weld(Vector3[], float, out Vector3[])"/> の、まとめてよい頂点の組を指定する版。
+        /// groups[v] が同じ頂点どうしだけをまとめる（別々のレンダラーを1つの布にしたとき、たまたま同じ位置にある頂点で部品がつながらないように）。
+        /// </summary>
+        /// <param name="groups">頂点ごとの組の番号。null なら全頂点を1つの組とみなす</param>
+        public static int[] Weld(Vector3[] vertices, float tolerance, int[] groups, out Vector3[] particlePositions)
+        {
             if (vertices == null) throw new ArgumentNullException(nameof(vertices));
             if (tolerance <= 0f) throw new ArgumentOutOfRangeException(nameof(tolerance));
+            if (groups != null && groups.Length != vertices.Length) throw new ArgumentException("頂点数が一致しません。", nameof(groups));
+            var particleGroup = groups != null ? new List<int>(vertices.Length) : null;
 
             var vertexToParticle = new int[vertices.Length];
             var positions = new List<Vector3>(vertices.Length);
@@ -38,6 +50,7 @@ namespace GP02.Core
                     if (!cells.TryGetValue((cell.Item1 + dx, cell.Item2 + dy, cell.Item3 + dz), out var list)) continue;
                     foreach (int particle in list)
                     {
+                        if (particleGroup != null && particleGroup[particle] != groups[v]) continue;
                         if (Vector3.DistanceSquared(positions[particle], p) <= toleranceSq)
                         {
                             found = particle;
@@ -50,6 +63,7 @@ namespace GP02.Core
                 {
                     found = positions.Count;
                     positions.Add(p);
+                    particleGroup?.Add(groups[v]);
                     if (!cells.TryGetValue(cell, out var list))
                     {
                         list = new List<int>();

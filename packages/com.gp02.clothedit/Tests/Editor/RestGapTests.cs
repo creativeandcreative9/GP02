@@ -58,7 +58,7 @@ namespace GP02.Tests
         }
 
         [Test]
-        public void TestCloth_OuterSkirtGapIsDistanceToPetticoat_AndPetticoatGapIsDistanceToBody()
+        public void TestCloth_OuterSkirtPassesThroughPetticoat_AndPetticoatGapIsDistanceToBody()
         {
             GameObject root = CreateTestCloth();
             SkinnedMeshRenderer skirt = root.transform.Find("Skirt").GetComponent<SkinnedMeshRenderer>();
@@ -78,10 +78,11 @@ namespace GP02.Tests
                 NVector3[] normals = session.Cloth.Model.RestNormals;
                 float[] gaps = session.RestAllowance;
 
-                // 外側のスカート：上から半分までの粒子は、3mm 内側のペチコートに当たる（隙間 = 3mm - 余白）
-                float expectedOuter = TestClothMenu.PetticoatGap - RestGapMeasurer.Margin;
-                int outerCount = 0;
-                float outerSum = 0f, outerMax = 0f;
+                // 外側のスカート：上から半分までの粒子は、3mm 内側のペチコートと接触の組になり、
+                // ペチコートは押せば動くので、隙間はペチコートを通り越して体まで（または上限）を測る
+                LayerContacts contacts = session.LayerContacts;
+                int outerCount = 0, paired = 0, through = 0;
+                float outerSum = 0f;
                 for (int i = 0; i < gaps.Length; i++)
                 {
                     if (particleIsland[i] != outerIsland) continue;
@@ -89,12 +90,26 @@ namespace GP02.Tests
                     if (t < 0.05f || t > 0.5f) continue;
                     outerCount++;
                     outerSum += gaps[i];
-                    outerMax = Mathf.Max(outerMax, gaps[i]);
+                    if (!contacts.HasInnerLayer[i]) continue;
+                    paired++;
+                    if (gaps[i] > TestClothMenu.PetticoatGap + 0.002f) through++;
                 }
                 Assert.That(outerCount, Is.GreaterThan(500));
-                Debug.Log($"[GP02] 外側のスカートの隙間（上から 5〜50%）: 平均 {outerSum / outerCount * 1000f:F2} mm / 最大 {outerMax * 1000f:F2} mm（期待 {expectedOuter * 1000f:F1} mm）");
-                Assert.That(outerSum / outerCount, Is.EqualTo(expectedOuter).Within(0.0005f));
-                Assert.That(outerMax, Is.LessThan(0.003f));
+                Debug.Log($"[GP02] 外側のスカートの隙間（上から 5〜50%）: 平均 {outerSum / outerCount * 1000f:F2} mm / ペチコートと組になった粒子 {paired} / 体まで測った粒子 {through}");
+                Assert.That(paired, Is.GreaterThan(outerCount * 0.95f), "ペチコートと組になっていない粒子が多い");
+                Assert.That(through, Is.GreaterThan(paired * 0.95f), "ペチコートを通り越して測れていない");
+                float restGapSum = 0f, restGapMin = float.MaxValue;
+                for (int k = 0; k < contacts.Count; k++)
+                {
+                    Assert.That(particleIsland[contacts.Outer[k]], Is.EqualTo(outerIsland));
+                    Assert.That(particleIsland[contacts.Inner[k]], Is.EqualTo(petticoatIsland));
+                    restGapSum += contacts.RestGaps[k];
+                    restGapMin = Mathf.Min(restGapMin, contacts.RestGaps[k]);
+                }
+                // ポーズで少し形が変わり、相手の粒子は当たった所に一番近い粒子なので、元の隙間は 3mm から少しずれる
+                Debug.Log($"[GP02] スカートとペチコートの元の隙間: 平均 {restGapSum / contacts.Count * 1000f:F2} mm / 最小 {restGapMin * 1000f:F2} mm");
+                Assert.That(restGapSum / contacts.Count, Is.EqualTo(TestClothMenu.PetticoatGap).Within(0.0005f));
+                Assert.That(restGapMin, Is.GreaterThan(0f));
 
                 // ペチコート：前（+z）と後ろの、ウエストに近い粒子は、胴体に当たる。胴体の半径から距離を求めて比べる
                 int petticoatCount = 0;

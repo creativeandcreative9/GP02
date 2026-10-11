@@ -179,6 +179,24 @@ namespace GP02.EditorTools
 
         // ---- 対象 ----
 
+        // 重ね着をまとめて編集するときの、2つ目以降の対象（1つ目は _target）
+        [SerializeField] List<Renderer> _extraTargets = new List<Renderer>();
+        readonly List<Renderer> _warningOwners = new List<Renderer>();   // _warnings と同じ順の、警告の対象
+        readonly List<TargetWarning> _warningWork = new List<TargetWarning>();
+        int _warningsTargetCount;
+
+        // 今の対象（1つ目と、2つ目以降）。null は除く
+        List<Renderer> CollectTargets()
+        {
+            var targets = new List<Renderer>();
+            if (_target != null) targets.Add(_target);
+            foreach (Renderer extra in _extraTargets)
+            {
+                if (extra != null && !targets.Contains(extra)) targets.Add(extra);
+            }
+            return targets;
+        }
+
         void DrawTargetSection()
         {
             _foldTarget = Section(_foldTarget, L10n.Tr("対象", "Target"));
@@ -188,19 +206,72 @@ namespace GP02.EditorTools
             using (new EditorGUI.DisabledScope(editing))
             {
                 EditorGUI.BeginChangeCheck();
-                _target = (Renderer)EditorGUILayout.ObjectField(L10n.Tr("対象", "Target"), _target, typeof(Renderer), true);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    _target = (Renderer)EditorGUILayout.ObjectField(L10n.Tr("対象", "Target"), _target, typeof(Renderer), true);
+                    if (_extraTargets.Count > 0 && GUILayout.Button(new GUIContent(L10n.Tr("外す", "Remove"), L10n.Tr("この対象を一覧から外す", "Remove this target from the list")), GUILayout.Width(48f)))
+                    {
+                        _target = _extraTargets[0];
+                        _extraTargets.RemoveAt(0);
+                    }
+                }
+                for (int i = 0; i < _extraTargets.Count; i++)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        _extraTargets[i] = (Renderer)EditorGUILayout.ObjectField(L10n.Tr($"対象 {i + 2}", $"Target {i + 2}"), _extraTargets[i], typeof(Renderer), true);
+                        if (GUILayout.Button(new GUIContent(L10n.Tr("外す", "Remove"), L10n.Tr("この対象を一覧から外す", "Remove this target from the list")), GUILayout.Width(48f)))
+                        {
+                            _extraTargets.RemoveAt(i);
+                            GUIUtility.ExitGUI();
+                        }
+                    }
+                }
                 if (EditorGUI.EndChangeCheck()) _warningsDirty = true;
+
                 if (GUILayout.Button(L10n.Tr("選択中のオブジェクトから設定", "Set from Selection")))
                 {
                     PickFromSelection();
                     _warningsDirty = true;
                 }
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("選択中のオブジェクトを追加", "Add Selection"),
+                        L10n.Tr("選んだオブジェクトの布を対象に加えます。重ね着をまとめて1つの布として編集し、保存すると全部に同じ名前のシェイプキーが入ります",
+                            "Adds the selected objects' cloth to the targets. Layers are edited together as one cloth, and saving adds a shape key with the same name to all of them"))))
+                    {
+                        AddSelectionToTargets();
+                        _warningsDirty = true;
+                    }
+                    using (new EditorGUI.DisabledScope(_target == null))
+                    {
+                        if (GUILayout.Button(new GUIContent(L10n.Tr("同じアバターの重ね着をまとめて追加", "Add Layers of the Same Avatar"),
+                            L10n.Tr($"同じアバターの SkinnedMeshRenderer のうち、今の対象と重なっているもの（頂点の半分以上が {ClothEditController.DefaultLayerDistance * 100f:F0}cm 以内）を加えます",
+                                $"Adds the SkinnedMeshRenderers of the same avatar that overlap the current targets (at least half of the vertices within {ClothEditController.DefaultLayerDistance * 100f:F0} cm)"))))
+                        {
+                            AddLayeredTargets();
+                            _warningsDirty = true;
+                        }
+                    }
+                }
             }
 
-            if (Event.current.type == EventType.Layout && (_warningsDirty || _warningsTarget != _target))
+            List<Renderer> targets = CollectTargets();
+            if (Event.current.type == EventType.Layout && (_warningsDirty || _warningsTarget != _target || _warningsTargetCount != targets.Count))
             {
-                ClothEditWarnings.Collect(_target, _warnings);
+                _warnings.Clear();
+                _warningOwners.Clear();
+                foreach (Renderer renderer in targets)
+                {
+                    ClothEditWarnings.Collect(renderer, _warningWork);
+                    foreach (TargetWarning warning in _warningWork)
+                    {
+                        _warnings.Add(warning);
+                        _warningOwners.Add(renderer);
+                    }
+                }
                 _warningsTarget = _target;
+                _warningsTargetCount = targets.Count;
                 _warningsDirty = false;
             }
             bool blocked = false;
@@ -213,7 +284,7 @@ namespace GP02.EditorTools
                     EditorGUILayout.HelpBox(warning.Message, warning.Severity);
                     if (warning.CanAutoFix && GUILayout.Button(L10n.Tr("Read/Write を有効にする", "Enable Read/Write")))
                     {
-                        FixReadWrite();
+                        FixReadWrite(i < _warningOwners.Count ? _warningOwners[i] : _target);
                         GUIUtility.ExitGUI();
                     }
                 }
@@ -237,6 +308,10 @@ namespace GP02.EditorTools
             if (editing && session != null)
             {
                 EditorGUILayout.Space();
+                if (session.RendererCount > 1)
+                {
+                    EditorGUILayout.LabelField(L10n.Tr("まとめて編集", "Editing Together"), L10n.Tr($"{session.RendererCount} 個（層どうしの接触 {session.LayerContacts.Count:N0} 組）", $"{session.RendererCount} renderers ({session.LayerContacts.Count:N0} layer contacts)"));
+                }
                 EditorGUILayout.LabelField(L10n.Tr("粒子の数", "Particles"), session.ParticleCount.ToString("N0"));
                 EditorGUILayout.LabelField(L10n.Tr("ピンの数", "Pins"), session.PinnedCount.ToString("N0"));
                 EditorGUILayout.LabelField(L10n.Tr("最大の伸び", "Max Stretch"), $"{_controller.LastStretch * 100f:F1} %");
@@ -253,8 +328,14 @@ namespace GP02.EditorTools
             if (found != null)
             {
                 _target = found;
+                _extraTargets.Clear();
                 return;
             }
+            ShowNoRendererMessage(selected);
+        }
+
+        static void ShowNoRendererMessage(GameObject selected)
+        {
             string message = selected == null
                 ? L10n.Tr("オブジェクトが選ばれていません。Hierarchy で布のオブジェクトを選んでから押してください。",
                     "No object is selected. Select the cloth object in the Hierarchy first.")
@@ -263,16 +344,52 @@ namespace GP02.EditorTools
             EditorUtility.DisplayDialog("GP02", message, "OK");
         }
 
-        void FixReadWrite()
+        // 選んだオブジェクト（複数可）の布を、対象の一覧の最後に加える
+        void AddSelectionToTargets()
         {
-            ClothEditWarnings.TryEnableReadWrite(_target, out string message);
+            GameObject[] selected = Selection.gameObjects;
+            int added = 0;
+            foreach (GameObject go in selected)
+            {
+                Renderer found = ClothEditController.FindRenderer(go);
+                if (found == null) continue;
+                if (AddTarget(found)) added++;
+            }
+            if (added == 0 && (selected.Length == 0 || ClothEditController.FindRenderer(selected[0]) == null)) ShowNoRendererMessage(selected.Length > 0 ? selected[0] : null);
+        }
+
+        bool AddTarget(Renderer renderer)
+        {
+            if (renderer == null || CollectTargets().Contains(renderer)) return false;
+            if (_target == null) _target = renderer;
+            else _extraTargets.Add(renderer);
+            return true;
+        }
+
+        void AddLayeredTargets()
+        {
+            List<Renderer> found = ClothEditController.FindLayeredRenderers(CollectTargets());
+            int added = 0;
+            foreach (Renderer renderer in found)
+            {
+                if (AddTarget(renderer)) added++;
+            }
+            if (added == 0)
+            {
+                EditorUtility.DisplayDialog("GP02", L10n.Tr("今の対象と重なっている、同じアバターの布は見つかりませんでした。", "No cloth of the same avatar overlapping the current targets was found."), "OK");
+            }
+        }
+
+        void FixReadWrite(Renderer renderer)
+        {
+            ClothEditWarnings.TryEnableReadWrite(renderer, out string message);
             _warningsDirty = true;
             EditorUtility.DisplayDialog("GP02", message, "OK");
         }
 
         void StartEdit()
         {
-            if (!_controller.TryStart(_target, out string error))
+            if (!_controller.TryStartLayered(CollectTargets(), out string error))
             {
                 EditorUtility.DisplayDialog("GP02", error, "OK");
                 return;

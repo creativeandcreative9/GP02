@@ -63,12 +63,16 @@ namespace GP02.Core
             _particleBarycentric = particleBarycentric;
         }
 
+        /// <param name="vertexGroups">
+        /// 頂点ごとの組の番号（複数のレンダラーをまとめた布では、レンダラーの番号）。同じ位置の頂点をまとめるのは同じ組の中だけにする。
+        /// null なら全部を1つの組とみなす
+        /// </param>
         public static ParticleCloth Build(Vector3[] vertices, int[] triangles, float spacing = DefaultSpacing,
-            uint seed = 1, int coarseLevels = DefaultCoarseLevels)
+            uint seed = 1, int coarseLevels = DefaultCoarseLevels, int[] vertexGroups = null)
         {
             if (coarseLevels < 0) throw new ArgumentOutOfRangeException(nameof(coarseLevels));
 
-            var topology = MeshTopology.Build(vertices, triangles);
+            var topology = MeshTopology.Build(vertices, triangles, MeshTopology.DefaultWeldTolerance, vertexGroups);
             Vector3[] particles = ParticleSampler.Sample(topology, spacing, seed, out int[] particleTriangle);
             SortSpatially(particles, particleTriangle, spacing);
             var search = new SurfaceSearch(topology);

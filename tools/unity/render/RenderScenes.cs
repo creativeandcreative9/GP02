@@ -21,8 +21,12 @@ public static class RenderScenes
             EditAndSaveScenes();
             ClearScene();
             ToolScenes();
+            ClearScene();
+            LayerScenes();
         });
     }
+
+    public static void Layers() => Run(LayerScenes);
 
     public static void EditAndSave() => Run(EditAndSaveScenes);
 
@@ -190,6 +194,100 @@ public static class RenderScenes
         SaveGrid(shots, 3, "tools");
     }
 
+    // ---- 重ね着（スカートとペチコートを別のレンダラーにしたもの）をまとめて編集する ----
+    // 上の段はスカートだけを編集（ペチコートは体の扱い）、下の段はスカートとペチコートをまとめて編集。
+    // 回す・縮める・両側を外へ引くの3つを比べ、最大の伸びと、スカートがペチコートに入った深さをログに出す。
+    // まとめて編集すると計算する粒子が約2倍になり、描画用の作業プロジェクトには Burst が無いので、
+    // 仕上げの時間切れを長めにして、時間切れではなく形の違いを比べる
+    const float LayerSettleSeconds = 10f;
+
+    static void LayerScenes()
+    {
+        Camera camera = SetUpCamera(new Vector3(0f, 0.62f, -1.25f), new Vector3(0f, 0.58f, 0f));
+        GameObject root = TestClothMenu.CreateInScene(null, true);
+        var skirt = root.transform.Find("Skirt").GetComponent<SkinnedMeshRenderer>();
+        var petticoat = root.transform.Find("Petticoat").GetComponent<SkinnedMeshRenderer>();
+        foreach (Transform bone in skirt.bones) bone.localRotation = Quaternion.identity;
+        Texture2D before = Shot(camera, "layer_0_before");
+        var shots = new List<Texture2D>();
+
+        foreach (bool layered in new[] { false, true })
+        {
+            Renderer[] targets = layered ? new Renderer[] { skirt, petticoat } : new Renderer[] { skirt };
+            string prefix = layered ? "layer_together" : "layer_skirt_only";
+            shots.Add(before);
+            shots.Add(Scenario(camera, targets, prefix + "_1_rotate",
+                new ClothEditSettings { RotateAxis = RotateAxisMode.SurfaceNormal, Falloff = FalloffPreset.Smooth, SettleTimeoutSeconds = LayerSettleSeconds },
+                c => RotateOrScale(c, ClothEditMode.Rotate, 120f), petticoat));
+            shots.Add(Scenario(camera, targets, prefix + "_2_shrink",
+                new ClothEditSettings { Falloff = FalloffPreset.Smooth, SettleTimeoutSeconds = LayerSettleSeconds },
+                c => RotateOrScale(c, ClothEditMode.Scale, -90f), petticoat));
+            shots.Add(Scenario(camera, targets, prefix + "_3_pull_both_sides",
+                new ClothEditSettings { SymmetryEnabled = true, MoveDirection = MoveDirection.AxisX, Falloff = FalloffPreset.Smooth, SettleTimeoutSeconds = LayerSettleSeconds },
+                c => PullSideways(c, camera, 0.12f), petticoat));
+        }
+        SaveGrid(shots, 4, "layers");
+    }
+
+    // 前の裾寄りを、面の法線まわりに回す（pixels が回す量）か、拡大縮小する（負で縮める）
+    static void RotateOrScale(ClothEditController c, ClothEditMode mode, float pixels)
+    {
+        c.Mode = mode;
+        c.BrushRadius = 0.12f;
+        Ray ray = FrontRay(0f, 0.5f);
+        c.PointerDown(ray, Vector3.forward, 100f);
+        for (int k = 1; k <= 20; k++)
+        {
+            c.PointerDrag(ray, 100f + pixels * k / 20f, false, false);
+            c.Tick(NextTime());
+        }
+        c.PointerUp();
+        Settle(c);
+    }
+
+    // スカートの頂点が、ペチコートの面より内に入った最大の深さ（メートル）。同じ高さの軸から頂点へ向かう水平なレイで比べる。
+    // まとめて編集しているときは編集中のペチコートの形、そうでなければ元のペチコートの形と比べる
+    static float SkirtPenetration(ClothEditSession session, SkinnedMeshRenderer petticoat)
+    {
+        Vector3[] world = session.CurrentWorldVertices;
+        session.GetVertexRange(0, out int skirtStart, out int skirtCount);
+        System.Numerics.Vector3[] petticoatVertices;
+        if (session.RendererCount > 1)
+        {
+            session.GetVertexRange(1, out int start, out int count);
+            petticoatVertices = new System.Numerics.Vector3[count];
+            for (int v = 0; v < count; v++) petticoatVertices[v] = new System.Numerics.Vector3(world[start + v].x, world[start + v].y, world[start + v].z);
+        }
+        else
+        {
+            var baked = new Mesh();
+            petticoat.BakeMesh(baked, true);
+            Matrix4x4 toWorld = Matrix4x4.TRS(petticoat.transform.position, petticoat.transform.rotation, Vector3.one);
+            Vector3[] local = baked.vertices;
+            Object.DestroyImmediate(baked);
+            petticoatVertices = new System.Numerics.Vector3[local.Length];
+            for (int v = 0; v < local.Length; v++)
+            {
+                Vector3 w = toWorld.MultiplyPoint3x4(local[v]);
+                petticoatVertices[v] = new System.Numerics.Vector3(w.x, w.y, w.z);
+            }
+        }
+        var bvh = new GP02.Core.TriangleBvh(petticoatVertices, petticoat.sharedMesh.triangles);
+        Mesh skirtMesh = session.GetSourceMesh(0);
+        int[] skirtTriangles = skirtMesh.GetTriangles(0);   // サブメッシュ 0 がスカート（1 はリボン）
+        float worst = float.MinValue;
+        foreach (int k in skirtTriangles)
+        {
+            Vector3 p = world[skirtStart + k];
+            if (p.y > TestClothMenu.SkirtTopY - 0.02f || p.y < TestClothMenu.SkirtTopY - 0.85f * TestClothMenu.SkirtLength) continue;
+            var radial = new System.Numerics.Vector3(p.x, 0f, p.z);
+            float radius = radial.Length();
+            if (!bvh.Raycast(new System.Numerics.Vector3(0f, p.y, 0f), radial / radius, petticoatVertices, out float inner, out _)) continue;
+            worst = Mathf.Max(worst, inner - radius);
+        }
+        return worst;
+    }
+
     static double _time = 100.0;
 
     static double NextTime()
@@ -224,16 +322,22 @@ public static class RenderScenes
 
     static void Settle(ClothEditController c)
     {
-        for (int i = 0; i < 400 && c.IsBusy; i++) c.Tick(NextTime());
+        for (int i = 0; i < 1000 && c.IsBusy; i++) c.Tick(NextTime());
     }
 
     // 新しい編集を始め（ウエストをピン留め）、act で操作して、結果を撮る
     static Texture2D Scenario(Camera camera, SkinnedMeshRenderer skirt, string name, ClothEditSettings settings, Action<ClothEditController> act)
     {
+        return Scenario(camera, new Renderer[] { skirt }, name, settings, act, null);
+    }
+
+    // targets をまとめて編集する版。petticoat を渡すと、スカートがペチコートに入った深さもログに出す
+    static Texture2D Scenario(Camera camera, Renderer[] targets, string name, ClothEditSettings settings, Action<ClothEditController> act, SkinnedMeshRenderer petticoat)
+    {
         var controller = new ClothEditController(settings) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
         try
         {
-            if (!controller.TryStart(skirt, out string error)) throw new InvalidOperationException(error);
+            if (!controller.TryStartLayered(targets, out string error)) throw new InvalidOperationException(error);
             ClothEditSession session = controller.Session;
 
             // 実際の使い方に合わせて、ウエスト（一番上の段）をピン留めする
@@ -246,10 +350,14 @@ public static class RenderScenes
             }
             session.PinNear(waist, 0.004f);
 
+            var timer = System.Diagnostics.Stopwatch.StartNew();
             act(controller);
+            timer.Stop();
+            session = controller.Session;
             session.UpdateCurrentShape();
             session.DrawPreview(camera);
-            Debug.Log($"[GP02描画] {name}: 最大の伸び {controller.LastStretch:P1} / ピン {session.PinnedCount} / 粒子 {session.ParticleCount}");
+            string penetration = petticoat != null ? $" / スカートがペチコートに入った最大 {SkirtPenetration(session, petticoat) * 1000f:F1} mm" : "";
+            Debug.Log($"[GP02描画] {name}: 最大の伸び {controller.LastStretch:P1}{penetration} / ピン {session.PinnedCount} / 粒子 {session.ParticleCount} / 層どうしの接触 {session.LayerContacts.Count} 組 / 操作 {timer.ElapsedMilliseconds} ms");
             return Shot(camera, name);
         }
         finally

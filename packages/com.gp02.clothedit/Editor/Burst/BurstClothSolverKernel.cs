@@ -35,7 +35,8 @@ namespace GP02.EditorTools
             fixed (bool* inBrush = d.InBrush)
             fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals, brushGoal = d.BrushGoal, brushLambda = d.BrushLambda)
             fixed (int* restAnchor = d.RestAnchor)
-            fixed (float* restAllowance = d.RestAllowance)
+            fixed (float* restAllowance = d.RestAllowance, contactGap = d.ContactGap)
+            fixed (int* contactOuter = d.ContactOuter, contactInner = d.ContactInner)
             {
                 var args = new BurstClothKernels.IterationArgs
                 {
@@ -78,6 +79,12 @@ namespace GP02.EditorTools
                     BrushCompliance = brushGoal != null && brushLambda != null ? d.BrushCompliance : 0f,
                     BrushGoal = (float*)brushGoal,
                     BrushLambda = (float*)brushLambda,
+                    // 接触の段は、元の形の面の向きが無ければ使えない
+                    ContactCount = restNormals != null && contactOuter != null && contactInner != null && contactGap != null ? d.ContactCount : 0,
+                    ContactOuter = contactOuter,
+                    ContactInner = contactInner,
+                    ContactGap = contactGap,
+                    ContactReach = d.ContactReach,
                 };
                 BurstClothKernels.Iterate(&args, iterations);
             }

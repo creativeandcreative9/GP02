@@ -50,6 +50,11 @@ namespace GP02.EditorTools
             public float BrushCompliance;        // 0 以下なら、つまんだ範囲を引き寄せない
             public float* BrushGoal;             // 粒子ごとの目標（内部の座標）
             public float* BrushLambda;
+            public int ContactCount;             // 0 なら層どうしの接触の段は何もしない
+            public int* ContactOuter;
+            public int* ContactInner;            // 前処理で探し直す
+            public float* ContactGap;
+            public float ContactReach;           // 内側の粒子の面に沿ってこれより離れた組は解かない
         }
 
         public struct CoarseLevelArgs
@@ -112,6 +117,7 @@ namespace GP02.EditorTools
             for (int n = 0; n < a->ActiveStretchCount; n++) a->StretchLambda[a->ActiveStretch[n]] = 0f;
             for (int n = 0; n < a->ActiveBendCount; n++) a->BendLambda[a->ActiveBend[n]] = 0f;
             if (a->KeepOutsideRestSurface != 0) UpdateRestAnchors(a);
+            if (a->ContactCount > 0) UpdateContactPartners(a);
 
             for (int it = 0; it < iterations; it++)
             {
@@ -121,6 +127,7 @@ namespace GP02.EditorTools
                 SolveDistances(a->Positions, a->InverseMass, a->ActiveStretch, a->ActiveStretchCount, a->StretchPairs, a->StretchRest, a->StretchLambda, a->StretchCompliance);
                 SolveTethers(a);
                 if (a->KeepOutsideRestSurface != 0) SolveRestSurface(a);
+                if (a->ContactCount > 0) SolveLayerContacts(a);
             }
 
             // 後処理：動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）。ワールド座標へ書き戻す
@@ -167,6 +174,72 @@ namespace GP02.EditorTools
                     anchor = next;
                 }
                 a->RestAnchor[i] = anchor;
+            }
+        }
+
+        // 接触の組の内側の粒子を、内側の層の隣へ、外側の粒子の今の位置に近くなる限りたどって探し直す（最大16歩）。ClothSolver の C# 版と同じ
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void UpdateContactPartners(IterationArgs* a)
+        {
+            int* offsets = a->GraphOffsets;
+            int* neighbors = a->GraphNeighbors;
+            float* p = a->Positions;
+            for (int k = 0; k < a->ContactCount; k++)
+            {
+                int i = a->ContactOuter[k];
+                int partner = a->ContactInner[k];
+                float px = p[3 * i], py = p[3 * i + 1], pz = p[3 * i + 2];
+                float best = DistanceSquared(px, py, pz, p, partner);
+                for (int step = 0; step < 16; step++)
+                {
+                    int next = -1;
+                    int end = offsets[partner + 1];
+                    for (int e = offsets[partner]; e < end; e++)
+                    {
+                        int candidate = neighbors[e];
+                        float d = DistanceSquared(px, py, pz, p, candidate);
+                        if (d < best)
+                        {
+                            best = d;
+                            next = candidate;
+                        }
+                    }
+                    if (next < 0) break;
+                    partner = next;
+                }
+                a->ContactInner[k] = partner;
+            }
+        }
+
+        // 外側の粒子が、内側の粒子の元の形の面から、保つ隙間より内に入っていれば、両方を逆質量で押し分ける（ClothSolver の C# 版と同じ）
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void SolveLayerContacts(IterationArgs* a)
+        {
+            float* p = a->Positions;
+            float* normals = a->RestNormals;
+            float* inverseMass = a->InverseMass;
+            bool grabbing = a->Grabbed >= 0;
+            float reachSquared = a->ContactReach * a->ContactReach;
+            for (int k = 0; k < a->ContactCount; k++)
+            {
+                int i = a->ContactOuter[k], j = a->ContactInner[k];
+                float nx = normals[3 * j], ny = normals[3 * j + 1], nz = normals[3 * j + 2];
+                float dx = p[3 * i] - p[3 * j], dy = p[3 * i + 1] - p[3 * j + 1], dz = p[3 * i + 2] - p[3 * j + 2];
+                float along = dx * nx + dy * ny + dz * nz;
+                float c = along - a->ContactGap[k];
+                if (c >= 0f) continue;
+                if (dx * dx + dy * dy + dz * dz - along * along > reachSquared) continue;
+                float wi = inverseMass[i], wj = inverseMass[j];
+                if (grabbing)
+                {
+                    if (a->InBrush[i] != 0 && wj > 0f) wi = 0f;
+                    else if (a->InBrush[j] != 0 && wi > 0f) wj = 0f;
+                }
+                float w = wi + wj;
+                if (w == 0f) continue;
+                float s = -c / w;
+                p[3 * i] += wi * s * nx; p[3 * i + 1] += wi * s * ny; p[3 * i + 2] += wi * s * nz;
+                p[3 * j] -= wj * s * nx; p[3 * j + 1] -= wj * s * ny; p[3 * j + 2] -= wj * s * nz;
             }
         }
 

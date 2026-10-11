@@ -12,7 +12,12 @@ using Object = UnityEngine.Object;
 namespace GP02.EditorTools
 {
     /// <summary>
-    /// 1つのレンダラーに対する編集の本体。画面（ウィンドウ）を持たないので、EditMode テストで確かめられる。
+    /// 1つ（または重ね着の複数）のレンダラーに対する編集の本体。画面（ウィンドウ）を持たないので、EditMode テストで確かめられる。
+    ///
+    /// 複数のレンダラーを渡すと、ポーズ済みのワールド座標の頂点と三角形をつないで1つの布にする（島はレンダラーごとに分かれる）。
+    /// 頂点の番号（<see cref="CurrentWorldVertices"/> など）は、レンダラーの順に頂点を並べたもの、
+    /// 三角形の番号（<see cref="Raycast(Ray, out Vector3, out Vector3, out int)"/> の hitTriangle）は、レンダラーの順に mesh.triangles を並べたもの。
+    /// 重ね着の層どうしは、接触の制約（<see cref="LayerContacts"/>）で、外の布を内へ押すと内の布も押されるようにする。
     ///
     /// 編集はワールド座標（現在のポーズ、実寸のメートル）で行う。粒子の 1cm 間隔をアバターの実寸にするためと、
     /// シーンに見えている形のまま触れるようにするため。
@@ -23,8 +28,23 @@ namespace GP02.EditorTools
         const string ShapeNamePrefix = "GP02_";
         const string MeshSuffix = "_GP02";
 
-        readonly Renderer _renderer;
-        readonly Mesh _sourceMesh;
+        // まとめて編集するレンダラーごとの情報
+        sealed class Part
+        {
+            public Renderer Renderer;
+            public Mesh SourceMesh;
+            public int VertexStart;               // まとめた頂点の配列（_baseWorld など）での先頭
+            public int VertexCount;
+            public int TriangleStart;             // まとめた三角形（mesh.triangles を並べたもの）での先頭の3つ組の番号
+            public int TriangleCount;
+            public float[] CreatedWeights;        // セッション作成時のシェイプキーの重み（保存の取り消しを見つけるため）
+            public Mesh PreviewMesh;
+            public Material[] Materials;
+        }
+
+        readonly Part[] _parts;
+        readonly Renderer[] _renderers;
+        readonly int _vertexCount;
         readonly Vector3[] _baseWorld;            // 編集前のワールド頂点
         readonly Matrix4x4[] _vertexMatrices;     // 頂点ごとの、メッシュ座標 → ワールド座標
         readonly Matrix4x4[] _inverseMatrices;    // 上の 3x3 部分の逆行列（特異なら 0）
@@ -36,9 +56,6 @@ namespace GP02.EditorTools
         readonly TriangleBvh _bvh;                // レイキャスト用。まとめた後の三角形（_welded の位置）を入れてある
         bool _bvhDirty;                           // 形が変わったあと、次のレイキャストの前に箱を更新する
         readonly int[] _vertexToWelded;
-        readonly float[] _createdWeights;         // セッション作成時のシェイプキーの重み（保存の取り消しを見つけるため）
-        readonly Mesh _previewMesh;
-        readonly Material[] _materials;
         NVector3[] _stateWork;
         float[] _stretchWork;                     // 粒子ごとの伸び（ヒートマップ用）
         int _shapeVersion;                        // 形が変わるたびに増やす。伸びを測り直すかどうかの判断に使う
@@ -57,8 +74,31 @@ namespace GP02.EditorTools
 
         int _pinnedCount;
 
-        public Renderer Renderer => _renderer;
-        public Mesh SourceMesh => _sourceMesh;
+        /// <summary>対象のレンダラー（複数のときは最初のもの）。</summary>
+        public Renderer Renderer => _parts[0].Renderer;
+
+        /// <summary>対象のメッシュ（複数のときは最初のレンダラーのもの）。</summary>
+        public Mesh SourceMesh => _parts[0].SourceMesh;
+
+        /// <summary>まとめて編集しているレンダラー（作ったときの順）。</summary>
+        public IReadOnlyList<Renderer> Renderers => _renderers;
+
+        /// <summary>まとめて編集しているレンダラーの数。</summary>
+        public int RendererCount => _parts.Length;
+
+        /// <summary>index 番目のレンダラーの、編集を始めたときのメッシュ。</summary>
+        public Mesh GetSourceMesh(int rendererIndex) => _parts[rendererIndex].SourceMesh;
+
+        /// <summary>index 番目のレンダラーの頂点が、まとめた頂点（<see cref="CurrentWorldVertices"/> など）のどこから何個並んでいるか。</summary>
+        public void GetVertexRange(int rendererIndex, out int start, out int count)
+        {
+            start = _parts[rendererIndex].VertexStart;
+            count = _parts[rendererIndex].VertexCount;
+        }
+
+        /// <summary>重ね着の層どうしの接触の組（無ければ組の数が 0）。</summary>
+        public LayerContacts LayerContacts { get; }
+
         public ParticleCloth Cloth => _cloth;
         public ClothSolver Solver => _solver;
 
@@ -83,21 +123,47 @@ namespace GP02.EditorTools
         /// </summary>
         public float[] RestAllowance { get; }
 
+        /// <summary>
+        /// <see cref="RestAllowance"/> の、内側の層を通り越さずに測ったもの。層どうしの接触を解かないとき
+        /// （<see cref="ClothEditSettings.KeepLayersApart"/> がオフ）に使う。重ね着が無ければ RestAllowance と同じ。
+        /// </summary>
+        public float[] RestAllowanceWithoutLayers { get; }
+
+        /// <summary>設定に合う、ソルバーに渡す隙間（<see cref="ClothEditSettings.ApplyTo"/> に渡す）。</summary>
+        public float[] GetRestAllowance(bool keepLayersApart) => keepLayersApart ? RestAllowance : RestAllowanceWithoutLayers;
+
         /// <summary>隙間を測った結果（平均・最小・最大、かかった時間など）。測れなかったときは null。</summary>
         public RestGapMeasurer.Result RestGap { get; }
         public int ParticleCount => _cloth.Model.ParticleCount;
-        public int VertexCount => _sourceMesh.vertexCount;
 
-        /// <summary>現在の形のワールド頂点（元メッシュの頂点数）。UpdateCurrentShape で更新される。</summary>
+        /// <summary>頂点の数（複数のレンダラーのときは合計）。</summary>
+        public int VertexCount => _vertexCount;
+
+        /// <summary>現在の形のワールド頂点（元メッシュの頂点数。複数のレンダラーのときは順に並べたもの）。UpdateCurrentShape で更新される。</summary>
         public Vector3[] CurrentWorldVertices { get; }
 
         public int PinnedCount => _pinnedCount;
         public bool IsGrabbing => _grabParticle >= 0;
 
-        /// <summary>対象のレンダラーが消されていないか。</summary>
-        public bool IsTargetAlive => _renderer != null;
+        /// <summary>対象のレンダラーが（すべて）消されていないか。</summary>
+        public bool IsTargetAlive
+        {
+            get
+            {
+                foreach (Part part in _parts)
+                {
+                    if (part.Renderer == null) return false;
+                }
+                return true;
+            }
+        }
 
         public ClothEditSession(Renderer renderer) : this(renderer, null)
+        {
+        }
+
+        /// <summary>複数のレンダラー（重ね着など）をまとめて1つの布として編集する。</summary>
+        public ClothEditSession(IReadOnlyList<Renderer> renderers) : this(renderers, null)
         {
         }
 
@@ -109,78 +175,179 @@ namespace GP02.EditorTools
         /// <param name="cloth">このメッシュに合う布。null なら <see cref="ParticleCloth.Build"/> で作る</param>
         /// <exception cref="ArgumentException">布がこのメッシュに合わない（頂点数・三角形数が違う）とき</exception>
         public ClothEditSession(Renderer renderer, ParticleCloth cloth)
+            : this(new[] { renderer ?? throw new ArgumentNullException(nameof(renderer)) }, cloth)
         {
-            if (renderer == null) throw new ArgumentNullException(nameof(renderer));
-            _renderer = renderer;
-            _sourceMesh = GetMesh(renderer);
-            if (_sourceMesh == null) throw new ArgumentException(L10n.Tr("メッシュがありません。MeshFilter か SkinnedMeshRenderer のメッシュを確認してください。", "There is no mesh. Check the mesh of the MeshFilter or SkinnedMeshRenderer."), nameof(renderer));
-            if (cloth != null && !IsClothCompatible(_sourceMesh, cloth))
+        }
+
+        /// <summary>
+        /// 複数のレンダラーをまとめて、既存の布を使ってセッションを作る（<see cref="ClothEditSession(Renderer, ParticleCloth)"/> の複数版）。
+        /// 布は、レンダラーの順に頂点と三角形を並べたメッシュに合うこと。
+        /// </summary>
+        /// <param name="cloth">まとめたメッシュに合う布。null なら <see cref="ParticleCloth.Build"/> で作る</param>
+        public ClothEditSession(IReadOnlyList<Renderer> renderers, ParticleCloth cloth)
+        {
+            if (renderers == null) throw new ArgumentNullException(nameof(renderers));
+            if (renderers.Count == 0) throw new ArgumentException(L10n.Tr("対象のレンダラーがありません。", "There are no target renderers."), nameof(renderers));
+            _parts = new Part[renderers.Count];
+            _renderers = new Renderer[renderers.Count];
+            var timer = Stopwatch.StartNew();
+            var baseVerticesPerPart = new Vector3[renderers.Count][];
+            int vertexTotal = 0, triangleTotal = 0;
+            for (int r = 0; r < renderers.Count; r++)
+            {
+                Renderer renderer = renderers[r];
+                if (renderer == null) throw new ArgumentNullException(nameof(renderers));
+                for (int q = 0; q < r; q++)
+                {
+                    if (renderers[q] == renderer) throw new ArgumentException(L10n.Tr($"「{renderer.name}」が2回指定されています。", $"\"{renderer.name}\" is specified twice."), nameof(renderers));
+                }
+                Mesh mesh = GetMesh(renderer);
+                if (mesh == null) throw new ArgumentException(L10n.Tr("メッシュがありません。MeshFilter か SkinnedMeshRenderer のメッシュを確認してください。", "There is no mesh. Check the mesh of the MeshFilter or SkinnedMeshRenderer."), nameof(renderers));
+                int triangles = (int)CountTriangles(mesh);
+                if (cloth == null && triangles == 0)
+                {
+                    throw new ArgumentException(L10n.Tr($"「{mesh.name}」には三角形（面）がありません。面のあるメッシュを指定してください。", $"\"{mesh.name}\" has no triangles (faces). Choose a mesh that has faces."), nameof(renderers));
+                }
+                _parts[r] = new Part
+                {
+                    Renderer = renderer,
+                    SourceMesh = mesh,
+                    VertexStart = vertexTotal,
+                    VertexCount = mesh.vertexCount,
+                    TriangleStart = triangleTotal,
+                    TriangleCount = triangles,
+                    CreatedWeights = ReadBlendShapeWeights(renderer),
+                };
+                _renderers[r] = renderer;
+                vertexTotal += mesh.vertexCount;
+                triangleTotal += triangles;
+            }
+            _vertexCount = vertexTotal;
+            if (cloth != null && !IsClothCompatible(cloth, vertexTotal, triangleTotal))
             {
                 throw new ArgumentException(L10n.Tr("布がこのメッシュに合いません（頂点数か三角形数が違います）。", "The cloth does not match this mesh (different vertex or triangle count)."), nameof(cloth));
             }
-            if (cloth == null && CountTriangles(_sourceMesh) == 0)
-            {
-                throw new ArgumentException(L10n.Tr($"「{_sourceMesh.name}」には三角形（面）がありません。面のあるメッシュを指定してください。", $"\"{_sourceMesh.name}\" has no triangles (faces). Choose a mesh that has faces."), nameof(renderer));
-            }
-            _createdWeights = ReadBlendShapeWeights(renderer);
 
-            var timer = Stopwatch.StartNew();
-            Vector3[] baseVertices = _sourceMesh.vertices;
-            // エディタでは Read/Write が無効なメッシュも読めるが、読めない環境では空の配列が返る
-            if (baseVertices.Length != _sourceMesh.vertexCount)
+            _vertexMatrices = new Matrix4x4[vertexTotal];
+            _baseWorld = new Vector3[vertexTotal];
+            _inverseMatrices = new Matrix4x4[vertexTotal];
+            _inverseScale = new float[vertexTotal];
+            for (int r = 0; r < _parts.Length; r++)
             {
-                throw new ArgumentException(L10n.Tr($"「{_sourceMesh.name}」の頂点を読み取れません。モデルの Import Settings で Read/Write を有効にしてください。", $"Cannot read the vertices of \"{_sourceMesh.name}\". Enable Read/Write in the model's Import Settings."), nameof(renderer));
-            }
-            if (renderer is SkinnedMeshRenderer skinned) ApplyBlendShapeWeights(skinned, _sourceMesh, baseVertices);
-
-            _vertexMatrices = ComputeVertexMatrices(renderer, _sourceMesh);
-            _baseWorld = new Vector3[baseVertices.Length];
-            _inverseMatrices = new Matrix4x4[baseVertices.Length];
-            _inverseScale = new float[baseVertices.Length];
-            // MeshFilter はシェイプキーを描かないので、保存した形がレンダラーからは分からない。
-            // 渡された布の静止状態（保存した形）を基準にして、編集中の形を保存前と同じにする。
-            // まとめた頂点どうしの位置の差は許容距離（1e-6）以下
-            bool baseFromCloth = cloth != null && !(renderer is SkinnedMeshRenderer);
-            for (int v = 0; v < baseVertices.Length; v++)
-            {
-                if (baseFromCloth)
+                Part part = _parts[r];
+                Renderer renderer = part.Renderer;
+                Vector3[] baseVertices = part.SourceMesh.vertices;
+                // エディタでは Read/Write が無効なメッシュも読めるが、読めない環境では空の配列が返る
+                if (baseVertices.Length != part.VertexCount)
                 {
-                    NVector3 p = cloth.Topology.Positions[cloth.Topology.VertexToWelded[v]];
-                    _baseWorld[v] = new Vector3(p.X, p.Y, p.Z);
+                    throw new ArgumentException(L10n.Tr($"「{part.SourceMesh.name}」の頂点を読み取れません。モデルの Import Settings で Read/Write を有効にしてください。", $"Cannot read the vertices of \"{part.SourceMesh.name}\". Enable Read/Write in the model's Import Settings."), nameof(renderers));
                 }
-                else
+                if (renderer is SkinnedMeshRenderer skinned) ApplyBlendShapeWeights(skinned, part.SourceMesh, baseVertices);
+                baseVerticesPerPart[r] = baseVertices;
+
+                Matrix4x4[] matrices = ComputeVertexMatrices(renderer, part.SourceMesh);
+                // MeshFilter はシェイプキーを描かないので、保存した形がレンダラーからは分からない。
+                // 渡された布の静止状態（保存した形）を基準にして、編集中の形を保存前と同じにする。
+                // まとめた頂点どうしの位置の差は許容距離（1e-6）以下
+                bool baseFromCloth = cloth != null && !(renderer is SkinnedMeshRenderer);
+                for (int k = 0; k < baseVertices.Length; k++)
                 {
-                    _baseWorld[v] = _vertexMatrices[v].MultiplyPoint3x4(baseVertices[v]);
+                    int v = part.VertexStart + k;
+                    _vertexMatrices[v] = matrices[k];
+                    if (baseFromCloth)
+                    {
+                        NVector3 p = cloth.Topology.Positions[cloth.Topology.VertexToWelded[v]];
+                        _baseWorld[v] = new Vector3(p.X, p.Y, p.Z);
+                    }
+                    else
+                    {
+                        _baseWorld[v] = matrices[k].MultiplyPoint3x4(baseVertices[k]);
+                    }
+                    _inverseScale[v] = Invert3x3(matrices[k], out _inverseMatrices[v]);
                 }
-                _inverseScale[v] = Invert3x3(_vertexMatrices[v], out _inverseMatrices[v]);
             }
 
-            // 全サブメッシュの三角形を順に並べたもの。布を渡されたときは使わないので読まない
-            _cloth = cloth ?? ParticleCloth.Build(MeshBridge.ToNumerics(_baseWorld, Vector3.one), _sourceMesh.triangles);
+            if (cloth == null)
+            {
+                // 全サブメッシュの三角形を順に並べたもの（レンダラーごとに頂点の番号をずらしてつなぐ）。
+                // 同じ位置の頂点をまとめるのはレンダラーの中だけにして、島がレンダラーごとに分かれるようにする
+                var allTriangles = new int[3 * triangleTotal];
+                int[] groups = _parts.Length > 1 ? new int[vertexTotal] : null;
+                for (int r = 0; r < _parts.Length; r++)
+                {
+                    Part part = _parts[r];
+                    int[] triangles = part.SourceMesh.triangles;
+                    for (int k = 0; k < triangles.Length; k++) allTriangles[3 * part.TriangleStart + k] = triangles[k] + part.VertexStart;
+                    if (groups != null)
+                    {
+                        for (int k = 0; k < part.VertexCount; k++) groups[part.VertexStart + k] = r;
+                    }
+                }
+                cloth = ParticleCloth.Build(MeshBridge.ToNumerics(_baseWorld, Vector3.one), allTriangles, vertexGroups: groups);
+            }
+            _cloth = cloth;
             _solver = _cloth.CreateSolver();
             _toposRest = _cloth.Topology.Positions;
             _welded = (NVector3[])_toposRest.Clone();
             _bvh = new TriangleBvh(_welded, _cloth.Topology.Triangles);
             _vertexToWelded = _cloth.Topology.VertexToWelded;
             CurrentWorldVertices = (Vector3[])_baseWorld.Clone();
+
+            // 重ね着の層どうしの接触。同じメッシュの別の島（スカートとペチコートなど）も、別のレンダラーの布も同じに扱う
+            LayerContacts = LayerContacts.Find(_cloth, _bvh, _welded);
+            _solver.SetLayerContacts(LayerContacts);
             timer.Stop();
             PrepareMilliseconds = timer.Elapsed.TotalMilliseconds;
 
-            // 体や内側の布までの隙間。布を渡されたとき（保存後の作り直し）も、今の形で測り直す
-            RestGap = RestGapMeasurer.Measure(_cloth, _bvh, _welded, renderer);
+            // 体や内側の布までの隙間。布を渡されたとき（保存後の作り直し）も、今の形で測り直す。
+            // まとめて編集するレンダラーは動けるので「体」から外し、内側の層と組になった粒子は、内側の層を通り越して体までを測る
+            RestGap = RestGapMeasurer.Measure(_cloth, _bvh, _welded, _renderers, LayerContacts.HasInnerLayer);
             RestAllowance = RestGap?.Gaps;
+            RestAllowanceWithoutLayers = RestGap?.GapsWithoutPassThrough;
             _solver.SetRestSurfaceAllowance(RestAllowance);
-            if (RestGap != null) UnityEngine.Debug.Log("[GP02] " + renderer.name + ": " + RestGap);
+            if (RestGap != null) UnityEngine.Debug.Log("[GP02] " + DescribeTargets() + ": " + RestGap + $"（層どうしの接触 {LayerContacts.Count} 組）");
 
-            _previewMesh = Object.Instantiate(_sourceMesh);
-            _previewMesh.name = _sourceMesh.name + "_Preview";
-            _previewMesh.hideFlags = HideFlags.HideAndDontSave;
-            // Graphics.DrawMesh は頂点をそのまま描くので、スキニングとシェイプキーは使わない
-            _previewMesh.ClearBlendShapes();
-            _previewMesh.boneWeights = new BoneWeight[0];
-            _materials = renderer.sharedMaterials;
+            foreach (Part part in _parts)
+            {
+                part.PreviewMesh = Object.Instantiate(part.SourceMesh);
+                part.PreviewMesh.name = part.SourceMesh.name + "_Preview";
+                part.PreviewMesh.hideFlags = HideFlags.HideAndDontSave;
+                // Graphics.DrawMesh は頂点をそのまま描くので、スキニングとシェイプキーは使わない
+                part.PreviewMesh.ClearBlendShapes();
+                part.PreviewMesh.boneWeights = new BoneWeight[0];
+                part.Materials = part.Renderer.sharedMaterials;
+                part.Renderer.forceRenderingOff = true;
+            }
+        }
 
-            renderer.forceRenderingOff = true;
+        /// <summary>対象の名前（複数のときは「、」でつなぐ）。ログ用。</summary>
+        public string DescribeTargets()
+        {
+            var names = new string[_parts.Length];
+            for (int r = 0; r < _parts.Length; r++) names[r] = _parts[r].Renderer != null ? _parts[r].Renderer.name : "(missing)";
+            return string.Join("、", names);
+        }
+
+        static bool IsClothCompatible(ParticleCloth cloth, long vertexCount, long triangleCount)
+        {
+            return cloth.Topology.VertexToWelded.Length == vertexCount && cloth.Topology.SourceToTriangle.Length == triangleCount;
+        }
+
+        /// <summary>
+        /// 布が、レンダラーのメッシュを順に並べたものに合うか（<see cref="ClothEditSession(IReadOnlyList{Renderer}, ParticleCloth)"/> に渡せるか）。
+        /// </summary>
+        public static bool IsClothCompatible(IReadOnlyList<Renderer> renderers, ParticleCloth cloth)
+        {
+            if (renderers == null || cloth == null) return false;
+            long vertices = 0, triangles = 0;
+            foreach (Renderer renderer in renderers)
+            {
+                Mesh mesh = renderer != null ? GetMesh(renderer) : null;
+                if (mesh == null) return false;
+                vertices += mesh.vertexCount;
+                triangles += CountTriangles(mesh);
+            }
+            return IsClothCompatible(cloth, vertices, triangles);
         }
 
         /// <summary>
@@ -189,8 +356,7 @@ namespace GP02.EditorTools
         public static bool IsClothCompatible(Mesh mesh, ParticleCloth cloth)
         {
             if (mesh == null || cloth == null) return false;
-            return cloth.Topology.VertexToWelded.Length == mesh.vertexCount
-                && cloth.Topology.SourceToTriangle.Length == CountTriangles(mesh);
+            return IsClothCompatible(cloth, mesh.vertexCount, CountTriangles(mesh));
         }
 
         /// <summary>全サブメッシュの三角形の数（<c>mesh.triangles</c> の3つ組の数）。</summary>
@@ -221,12 +387,16 @@ namespace GP02.EditorTools
         /// </summary>
         public bool IsTargetUnchanged()
         {
-            if (!IsTargetAlive || GetMesh(_renderer) != _sourceMesh) return false;
-            float[] now = ReadBlendShapeWeights(_renderer);
-            if (now.Length != _createdWeights.Length) return false;
-            for (int k = 0; k < now.Length; k++)
+            if (!IsTargetAlive) return false;
+            foreach (Part part in _parts)
             {
-                if (now[k] != _createdWeights[k]) return false;
+                if (GetMesh(part.Renderer) != part.SourceMesh) return false;
+                float[] now = ReadBlendShapeWeights(part.Renderer);
+                if (now.Length != part.CreatedWeights.Length) return false;
+                for (int k = 0; k < now.Length; k++)
+                {
+                    if (now[k] != part.CreatedWeights[k]) return false;
+                }
             }
             return true;
         }
@@ -409,7 +579,8 @@ namespace GP02.EditorTools
         /// 面積のない三角形（頂点が同じ位置に潰れたもの）には当たらない。
         /// </summary>
         /// <param name="hitTriangle">
-        /// 当たった三角形の番号。元メッシュの <c>mesh.triangles</c> の3つ組の番号（全サブメッシュを順に並べたもの）。
+        /// 当たった三角形の番号。元メッシュの <c>mesh.triangles</c> の3つ組の番号（全サブメッシュを順に並べたもの。
+        /// 複数のレンダラーのときは、レンダラーの順に並べたもの。<see cref="TryGetMeshTriangle"/> でレンダラーごとの番号に直せる）。
         /// BeginGrab・PaintPins に渡すと、同じ部品（島）の粒子だけを対象にできる。当たらなかったときは -1。
         /// </param>
         public bool Raycast(Ray ray, out Vector3 hitPoint, out Vector3 hitNormal, out int hitTriangle)
@@ -439,6 +610,26 @@ namespace GP02.EditorTools
             hitNormal = Vector3.Dot(normal, ray.direction) > 0f ? -normal : normal;
             hitTriangle = topology.TriangleToSource[triangle];
             return true;
+        }
+
+        /// <summary>
+        /// Raycast が返した三角形の番号を、レンダラーの番号と、そのメッシュの <c>mesh.triangles</c> の3つ組の番号に直す。範囲外なら false。
+        /// </summary>
+        public bool TryGetMeshTriangle(int hitTriangle, out int rendererIndex, out int meshTriangle)
+        {
+            for (int r = 0; r < _parts.Length; r++)
+            {
+                Part part = _parts[r];
+                if (hitTriangle >= part.TriangleStart && hitTriangle < part.TriangleStart + part.TriangleCount)
+                {
+                    rendererIndex = r;
+                    meshTriangle = hitTriangle - part.TriangleStart;
+                    return true;
+                }
+            }
+            rendererIndex = -1;
+            meshTriangle = -1;
+            return false;
         }
 
         // 元メッシュの三角形が乗っている島。三角形が無い・潰れて計算から外れている・範囲外なら -1（絞り込まない）
@@ -970,7 +1161,7 @@ namespace GP02.EditorTools
         }
 
         /// <summary>
-        /// 現在の形を、元メッシュの頂点ごとのシェイプキーの差分（メッシュ座標）にする。
+        /// 現在の形を、元メッシュの頂点ごとのシェイプキーの差分（メッシュ座標）にする（複数のレンダラーのときは、頂点を順に並べたもの）。
         /// 線形ブレンドスキニングでは、メッシュ座標の差分 d を足すとワールドで M(3x3) * d だけ動くので、
         /// 位置は M(3x3) の逆行列を掛けると見た目どおりに戻る。法線は相似変換とみなした近似。
         /// </summary>
@@ -979,19 +1170,42 @@ namespace GP02.EditorTools
             int count = VertexCount;
             if (deltaVertices == null || deltaVertices.Length != count) throw new ArgumentException("頂点数が一致しません。", nameof(deltaVertices));
             if (deltaNormals == null || deltaNormals.Length != count) throw new ArgumentException("頂点数が一致しません。", nameof(deltaNormals));
+            ComputeWorldDeltas();
+            ToMeshSpace(0, count, deltaVertices, deltaNormals);
+        }
 
+        /// <summary>
+        /// <see cref="BuildMeshSpaceDeltas(Vector3[], Vector3[])"/> の、レンダラー1つ分。配列はそのメッシュの頂点数。
+        /// </summary>
+        public void BuildMeshSpaceDeltas(int rendererIndex, Vector3[] deltaVertices, Vector3[] deltaNormals)
+        {
+            Part part = _parts[rendererIndex];
+            if (deltaVertices == null || deltaVertices.Length != part.VertexCount) throw new ArgumentException("頂点数が一致しません。", nameof(deltaVertices));
+            if (deltaNormals == null || deltaNormals.Length != part.VertexCount) throw new ArgumentException("頂点数が一致しません。", nameof(deltaNormals));
+            ComputeWorldDeltas();
+            ToMeshSpace(part.VertexStart, part.VertexCount, deltaVertices, deltaNormals);
+        }
+
+        // 頂点ごとのワールドの差分（位置と法線）を、作業用の配列に入れる
+        void ComputeWorldDeltas()
+        {
             if (_deltaVerticesWork == null)
             {
-                _deltaVerticesWork = new NVector3[count];
-                _deltaNormalsWork = new NVector3[count];
+                _deltaVerticesWork = new NVector3[VertexCount];
+                _deltaNormalsWork = new NVector3[VertexCount];
             }
             BlendShapeBuilder.Build(_cloth, _solver.Positions, _deltaVerticesWork, _deltaNormalsWork);
+        }
 
-            for (int v = 0; v < count; v++)
+        // 作業用の配列の、まとめた頂点 start から count 個を、メッシュ座標に直して先頭から入れる
+        void ToMeshSpace(int start, int count, Vector3[] deltaVertices, Vector3[] deltaNormals)
+        {
+            for (int k = 0; k < count; k++)
             {
+                int v = start + k;
                 Matrix4x4 inv = _inverseMatrices[v];
                 NVector3 dw = _deltaVerticesWork[v];
-                deltaVertices[v] = new Vector3(
+                deltaVertices[k] = new Vector3(
                     inv.m00 * dw.X + inv.m01 * dw.Y + inv.m02 * dw.Z,
                     inv.m10 * dw.X + inv.m11 * dw.Y + inv.m12 * dw.Z,
                     inv.m20 * dw.X + inv.m21 * dw.Y + inv.m22 * dw.Z);
@@ -1000,7 +1214,7 @@ namespace GP02.EditorTools
                 Matrix4x4 m = _vertexMatrices[v];
                 NVector3 nw = _deltaNormalsWork[v];
                 float s = _inverseScale[v];
-                deltaNormals[v] = new Vector3(
+                deltaNormals[k] = new Vector3(
                     (m.m00 * nw.X + m.m10 * nw.Y + m.m20 * nw.Z) * s,
                     (m.m01 * nw.X + m.m11 * nw.Y + m.m21 * nw.Z) * s,
                     (m.m02 * nw.X + m.m12 * nw.Y + m.m22 * nw.Z) * s);
@@ -1008,7 +1222,7 @@ namespace GP02.EditorTools
         }
 
         /// <summary>
-        /// 今の編集を、元メッシュの頂点ごとのメッシュ空間の差分で返す（シェイプキーのデータ用）。
+        /// 今の編集を、元メッシュの頂点ごとのメッシュ空間の差分で返す（シェイプキーのデータ用。複数のレンダラーのときは頂点を順に並べたもの）。
         /// <see cref="BuildMeshSpaceDeltas"/> の位置の差分だけを新しい配列に入れて返す。
         /// </summary>
         public Vector3[] GetMeshSpaceDeltas()
@@ -1016,6 +1230,16 @@ namespace GP02.EditorTools
             var deltaVertices = new Vector3[VertexCount];
             var deltaNormals = new Vector3[VertexCount];
             BuildMeshSpaceDeltas(deltaVertices, deltaNormals);
+            return deltaVertices;
+        }
+
+        /// <summary><see cref="GetMeshSpaceDeltas()"/> の、レンダラー1つ分（そのメッシュの頂点数）。</summary>
+        public Vector3[] GetMeshSpaceDeltas(int rendererIndex)
+        {
+            int count = _parts[rendererIndex].VertexCount;
+            var deltaVertices = new Vector3[count];
+            var deltaNormals = new Vector3[count];
+            BuildMeshSpaceDeltas(rendererIndex, deltaVertices, deltaNormals);
             return deltaVertices;
         }
 
@@ -1029,7 +1253,24 @@ namespace GP02.EditorTools
         public bool LoadMeshSpaceDeltas(Vector3[] deltas)
         {
             if (deltas == null || deltas.Length != VertexCount) return false;
+            return LoadDeltas(deltas);
+        }
 
+        /// <summary>
+        /// <see cref="LoadMeshSpaceDeltas(Vector3[])"/> の、レンダラー1つ分（そのメッシュの頂点数の差分）。ほかのレンダラーは編集前の形にする。
+        /// </summary>
+        public bool LoadMeshSpaceDeltas(int rendererIndex, Vector3[] deltas)
+        {
+            if ((uint)rendererIndex >= (uint)_parts.Length) return false;
+            Part part = _parts[rendererIndex];
+            if (deltas == null || deltas.Length != part.VertexCount) return false;
+            var all = new Vector3[VertexCount];
+            Array.Copy(deltas, 0, all, part.VertexStart, part.VertexCount);
+            return LoadDeltas(all);
+        }
+
+        bool LoadDeltas(Vector3[] deltas)
+        {
             // まとめる前の頂点が同じ位置に複数あるとき（継ぎ目）は、ワールドの差分を平均する
             int weldedCount = _toposRest.Length;
             var sum = new NVector3[weldedCount];
@@ -1057,76 +1298,103 @@ namespace GP02.EditorTools
             return true;
         }
 
-        /// <summary>元メッシュの複製に、現在の形をシェイプキーとして加えたメッシュを作る（アセットには保存しない）。</summary>
+        /// <summary>元メッシュの複製に、現在の形をシェイプキーとして加えたメッシュを作る（アセットには保存しない）。複数のレンダラーのときは最初のもの。</summary>
         public Mesh CreateMeshWithBlendShape(string shapeName)
         {
-            var deltaVertices = new Vector3[VertexCount];
-            var deltaNormals = new Vector3[VertexCount];
-            BuildMeshSpaceDeltas(deltaVertices, deltaNormals);
+            return CreateMeshWithBlendShape(0, shapeName);
+        }
 
-            Mesh mesh = Object.Instantiate(_sourceMesh);
-            string sourceName = _sourceMesh.name;
+        /// <summary>index 番目のレンダラーの元メッシュの複製に、現在の形をシェイプキーとして加えたメッシュを作る（アセットには保存しない）。</summary>
+        public Mesh CreateMeshWithBlendShape(int rendererIndex, string shapeName)
+        {
+            Part part = _parts[rendererIndex];
+            var deltaVertices = new Vector3[part.VertexCount];
+            var deltaNormals = new Vector3[part.VertexCount];
+            BuildMeshSpaceDeltas(rendererIndex, deltaVertices, deltaNormals);
+            return CreateMeshWithBlendShape(part, shapeName, deltaVertices, deltaNormals);
+        }
+
+        static Mesh CreateMeshWithBlendShape(Part part, string shapeName, Vector3[] deltaVertices, Vector3[] deltaNormals)
+        {
+            Mesh mesh = Object.Instantiate(part.SourceMesh);
+            string sourceName = part.SourceMesh.name;
             mesh.name = sourceName.EndsWith(MeshSuffix) ? sourceName : sourceName + MeshSuffix;
             MeshBridge.AddBlendShape(mesh, shapeName, deltaVertices, deltaNormals);
             return mesh;
         }
 
         /// <summary>
-        /// 現在の形をシェイプキーとして保存し、シーンのレンダラーに反映する。保存したメッシュを返す。
+        /// 現在の形をシェイプキーとして保存し、シーンのレンダラーに反映する。保存したメッシュ（複数のレンダラーのときは最初のもの）を返す。
         /// 以降のセッションは、返したメッシュを元として作り直すこと（シェイプキー 100 込みのワールド形状が新しい基準になる）。
         /// </summary>
         public Mesh ApplyToScene(string shapeName, string folder = "Assets/GP02/Meshes")
         {
-            if (!IsTargetAlive) throw new InvalidOperationException(L10n.Tr("対象のレンダラーがありません。", "The target renderer is missing."));
-            folder = folder.TrimEnd('/');
-
-            Mesh result;
-            string sourcePath = AssetDatabase.GetAssetPath(_sourceMesh);
-            bool isOwnAsset = !string.IsNullOrEmpty(sourcePath) && sourcePath.EndsWith(".asset")
-                && sourcePath.StartsWith(folder + "/") && AssetDatabase.IsMainAsset(_sourceMesh);
-
-            if (isOwnAsset)
-            {
-                // GP02 が作ったメッシュには、そのままシェイプキーを足す（複製が増え続けないように）
-                var deltaVertices = new Vector3[VertexCount];
-                var deltaNormals = new Vector3[VertexCount];
-                BuildMeshSpaceDeltas(deltaVertices, deltaNormals);
-                UnityEditor.Undo.RegisterCompleteObjectUndo(_sourceMesh, "GP02 シェイプキーを追加");
-                MeshBridge.AddBlendShape(_sourceMesh, shapeName, deltaVertices, deltaNormals);
-                EditorUtility.SetDirty(_sourceMesh);
-                AssetDatabase.SaveAssets();
-                result = _sourceMesh;
-            }
-            else
-            {
-                Mesh created = CreateMeshWithBlendShape(shapeName);
-                EnsureFolder(folder);
-                string path = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{SanitizeFileName(created.name)}.asset");
-                AssetDatabase.CreateAsset(created, path);
-
-                UnityEditor.Undo.RecordObject(GetMeshOwner(), "GP02 メッシュを差し替え");
-                SetMesh(created);
-                EditorUtility.SetDirty(GetMeshOwner());
-                AssetDatabase.SaveAssets();
-                result = created;
-            }
-
-            if (_renderer is SkinnedMeshRenderer skinned)
-            {
-                int index = result.GetBlendShapeIndex(shapeName);
-                UnityEditor.Undo.RecordObject(skinned, "GP02 シェイプキーの重み");
-                skinned.SetBlendShapeWeight(index, 100f);
-                EditorUtility.SetDirty(skinned);
-            }
-            return result;
+            return ApplyToSceneAll(shapeName, folder)[0];
         }
 
-        Object GetMeshOwner() => _renderer is SkinnedMeshRenderer ? (Object)_renderer : _renderer.GetComponent<MeshFilter>();
-
-        void SetMesh(Mesh mesh)
+        /// <summary>
+        /// 現在の形を、まとめて編集しているすべてのレンダラーに、同じ名前のシェイプキーとして保存する（動いていないレンダラーにも、差分 0 で入れる）。
+        /// レンダラーの順に、保存したメッシュを返す。Unity の Undo の記録は、呼び出し側の今のグループに積む（まとめて1段で戻る）。
+        /// </summary>
+        public Mesh[] ApplyToSceneAll(string shapeName, string folder = "Assets/GP02/Meshes")
         {
-            if (_renderer is SkinnedMeshRenderer skinned) skinned.sharedMesh = mesh;
-            else _renderer.GetComponent<MeshFilter>().sharedMesh = mesh;
+            if (!IsTargetAlive) throw new InvalidOperationException(L10n.Tr("対象のレンダラーがありません。", "The target renderer is missing."));
+            folder = folder.TrimEnd('/');
+            ComputeWorldDeltas();
+
+            var results = new Mesh[_parts.Length];
+            for (int r = 0; r < _parts.Length; r++)
+            {
+                Part part = _parts[r];
+                var deltaVertices = new Vector3[part.VertexCount];
+                var deltaNormals = new Vector3[part.VertexCount];
+                ToMeshSpace(part.VertexStart, part.VertexCount, deltaVertices, deltaNormals);
+
+                Mesh result;
+                string sourcePath = AssetDatabase.GetAssetPath(part.SourceMesh);
+                bool isOwnAsset = !string.IsNullOrEmpty(sourcePath) && sourcePath.EndsWith(".asset")
+                    && sourcePath.StartsWith(folder + "/") && AssetDatabase.IsMainAsset(part.SourceMesh);
+
+                if (isOwnAsset)
+                {
+                    // GP02 が作ったメッシュには、そのままシェイプキーを足す（複製が増え続けないように）
+                    UnityEditor.Undo.RegisterCompleteObjectUndo(part.SourceMesh, "GP02 シェイプキーを追加");
+                    MeshBridge.AddBlendShape(part.SourceMesh, shapeName, deltaVertices, deltaNormals);
+                    EditorUtility.SetDirty(part.SourceMesh);
+                    result = part.SourceMesh;
+                }
+                else
+                {
+                    Mesh created = CreateMeshWithBlendShape(part, shapeName, deltaVertices, deltaNormals);
+                    EnsureFolder(folder);
+                    string path = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{SanitizeFileName(created.name)}.asset");
+                    AssetDatabase.CreateAsset(created, path);
+
+                    UnityEditor.Undo.RecordObject(GetMeshOwner(part.Renderer), "GP02 メッシュを差し替え");
+                    SetMesh(part.Renderer, created);
+                    EditorUtility.SetDirty(GetMeshOwner(part.Renderer));
+                    result = created;
+                }
+
+                if (part.Renderer is SkinnedMeshRenderer skinned)
+                {
+                    int index = result.GetBlendShapeIndex(shapeName);
+                    UnityEditor.Undo.RecordObject(skinned, "GP02 シェイプキーの重み");
+                    skinned.SetBlendShapeWeight(index, 100f);
+                    EditorUtility.SetDirty(skinned);
+                }
+                results[r] = result;
+            }
+            AssetDatabase.SaveAssets();
+            return results;
+        }
+
+        static Object GetMeshOwner(Renderer renderer) => renderer is SkinnedMeshRenderer ? (Object)renderer : renderer.GetComponent<MeshFilter>();
+
+        static void SetMesh(Renderer renderer, Mesh mesh)
+        {
+            if (renderer is SkinnedMeshRenderer skinned) skinned.sharedMesh = mesh;
+            else renderer.GetComponent<MeshFilter>().sharedMesh = mesh;
         }
 
         static void EnsureFolder(string folder)
@@ -1143,14 +1411,24 @@ namespace GP02.EditorTools
             return name;
         }
 
-        /// <summary>"GP02_1", "GP02_2" … のうち、元メッシュのシェイプキーと重ならない名前。</summary>
+        /// <summary>"GP02_1", "GP02_2" … のうち、元メッシュ（複数のときはどれか）のシェイプキーと重ならない名前。</summary>
         public string SuggestShapeName()
         {
             for (int n = 1; ; n++)
             {
                 string name = ShapeNamePrefix + n;
-                if (_sourceMesh.GetBlendShapeIndex(name) < 0) return name;
+                if (!HasBlendShape(name)) return name;
             }
+        }
+
+        /// <summary>まとめて編集しているメッシュのどれかに、その名前のシェイプキーがあるか。</summary>
+        public bool HasBlendShape(string name)
+        {
+            foreach (Part part in _parts)
+            {
+                if (part.SourceMesh != null && part.SourceMesh.GetBlendShapeIndex(name) >= 0) return true;
+            }
+            return false;
         }
 
         /// <summary>編集中の形をシーンに描く（元のレンダラーは隠してある）。サブメッシュごとにマテリアルを割り当てる。</summary>
@@ -1159,19 +1437,27 @@ namespace GP02.EditorTools
             if (_disposed || !IsTargetAlive) return;
             if (_previewDirty)
             {
-                _previewMesh.vertices = GetPreviewVertices();
-                _previewMesh.RecalculateNormals();
-                _previewMesh.RecalculateBounds();
+                Vector3[] vertices = GetPreviewVertices();
+                foreach (Part part in _parts)
+                {
+                    part.PreviewMesh.SetVertices(vertices, part.VertexStart, part.VertexCount);
+                    part.PreviewMesh.RecalculateNormals();
+                    part.PreviewMesh.RecalculateBounds();
+                }
                 _previewDirty = false;
             }
 
-            int layer = _renderer.gameObject.layer;
-            for (int sub = 0; sub < _previewMesh.subMeshCount; sub++)
+            foreach (Part part in _parts)
             {
-                if (_materials.Length == 0) break;
-                Material material = _materials[Mathf.Min(sub, _materials.Length - 1)];
-                if (material == null) continue;
-                Graphics.DrawMesh(_previewMesh, Matrix4x4.identity, material, layer, camera, sub);
+                int layer = part.Renderer.gameObject.layer;
+                Material[] materials = part.Materials;
+                for (int sub = 0; sub < part.PreviewMesh.subMeshCount; sub++)
+                {
+                    if (materials.Length == 0) break;
+                    Material material = materials[Mathf.Min(sub, materials.Length - 1)];
+                    if (material == null) continue;
+                    Graphics.DrawMesh(part.PreviewMesh, Matrix4x4.identity, material, layer, camera, sub);
+                }
             }
         }
 
@@ -1179,8 +1465,11 @@ namespace GP02.EditorTools
         {
             if (_disposed) return;
             _disposed = true;
-            if (_renderer != null) _renderer.forceRenderingOff = false;
-            if (_previewMesh != null) Object.DestroyImmediate(_previewMesh);
+            foreach (Part part in _parts)
+            {
+                if (part.Renderer != null) part.Renderer.forceRenderingOff = false;
+                if (part.PreviewMesh != null) Object.DestroyImmediate(part.PreviewMesh);
+            }
         }
     }
 }

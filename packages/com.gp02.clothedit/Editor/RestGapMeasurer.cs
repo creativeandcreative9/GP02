@@ -13,8 +13,11 @@ namespace GP02.EditorTools
     /// 衣装はもともと体や内側の布の外側にあるが、ふんわりした服では間に空気の隙間がある。
     /// 隙間の分だけは内側へ動けるようにすると（<see cref="ClothSolver.SetRestSurfaceAllowance"/>）、布が融通できて伸びが残りにくい。
     /// 測り方：粒子の元の位置から、元の形の面の内向きへレイを飛ばし、最初に当たる体や内側の布までの距離を使う。
-    /// 当たる対象は、(a) 同じメッシュの別の島（重ね着の内側の布など。自分の島は除く）と、
+    /// 当たる対象は、(a) 同じ布の別の島（重ね着の内側の布など。自分の島は除く）と、
     /// (b) 同じアバター（<c>transform.root</c> の下）の、対象以外の有効なレンダラー。
+    /// 複数のレンダラーをまとめて1つの布にしたときは、まとめたレンダラーはすべて (b) から外す（布として動けるので）。
+    /// 層どうしの接触（<see cref="LayerContacts"/>）ですぐ内側の層と組になった粒子は、(a) を数えず、内側の層を通り越して体までを測る。
+    /// 内側の層は押せば動くので、外側の層は内側の層ごと体の手前まで動ける。
     /// </summary>
     public static class RestGapMeasurer
     {
@@ -32,6 +35,12 @@ namespace GP02.EditorTools
         {
             /// <summary>粒子ごとの隙間（メートル）。元の形の面の向きが決まらない粒子は 0。</summary>
             public float[] Gaps;
+
+            /// <summary>
+            /// 内側の層を通り越さずに測った、粒子ごとの隙間（層どうしの接触を解かないときに使う）。
+            /// 通り越して測った粒子が無ければ <see cref="Gaps"/> と同じ配列。
+            /// </summary>
+            public float[] GapsWithoutPassThrough;
 
             /// <summary>隙間を測った粒子の数（向きが決まった粒子）。</summary>
             public int MeasuredCount;
@@ -67,17 +76,28 @@ namespace GP02.EditorTools
         /// <returns>外向きが無い布（<see cref="ClothModel.RestNormals"/> が null）では null</returns>
         public static Result Measure(ParticleCloth cloth, TriangleBvh bvh, NVector3[] positions, Renderer target)
         {
+            return Measure(cloth, bvh, positions, new[] { target }, null);
+        }
+
+        /// <summary>
+        /// 隙間を測る（複数のレンダラーをまとめた布用）。
+        /// </summary>
+        /// <param name="targets">まとめて編集するレンダラー。それぞれのアバターの、これら以外のレンダラーが「体」になる</param>
+        /// <param name="passThroughLayers">粒子ごとに、同じ布の別の島を数えないか（<see cref="LayerContacts.HasInnerLayer"/>）。null なら全粒子で数える</param>
+        public static Result Measure(ParticleCloth cloth, TriangleBvh bvh, NVector3[] positions, IReadOnlyList<Renderer> targets, bool[] passThroughLayers)
+        {
             NVector3[] normals = cloth.Model.RestNormals;
             if (normals == null) return null;
 
             var timer = Stopwatch.StartNew();
             var result = new Result();
-            TriangleBvh otherBvh = BuildOthers(target, out NVector3[] otherPositions, out result.OtherRendererCount, out result.OtherTriangleCount);
+            TriangleBvh otherBvh = BuildOthers(targets, out NVector3[] otherPositions, out result.OtherRendererCount, out result.OtherTriangleCount);
 
             NVector3[] rest = cloth.Model.RestPositions;
             int[] particleIsland = cloth.ParticleIsland;
             int[] triangleIsland = cloth.Topology.TriangleIsland;
             var gaps = new float[rest.Length];
+            float[] blockedGaps = null;
             double sum = 0.0;
             float min = float.MaxValue, max = 0f;
             int measured = 0, hit = 0;
@@ -91,7 +111,8 @@ namespace GP02.EditorTools
                 NVector3 direction = -n / length;
                 float distance = float.MaxValue;
 
-                // (a) 同じメッシュの別の島。自分の島に当たったら、その先からやり直す
+                // (a) 同じ布の別の島。自分の島に当たったら、その先からやり直す
+                float layerDistance = float.MaxValue;
                 float traveled = 0f;
                 for (int skip = 0; skip <= MaxOwnIslandSkips; skip++)
                 {
@@ -100,23 +121,31 @@ namespace GP02.EditorTools
                     float total = traveled + d;
                     if (triangleIsland[triangle] != particleIsland[i])
                     {
-                        distance = total;
+                        layerDistance = total;
                         break;
                     }
                     traveled = total + 1e-5f;
                 }
+                bool passThrough = passThroughLayers != null && passThroughLayers[i];
+                if (!passThrough) distance = layerDistance;
 
                 // (b) 同じアバターの、ほかのレンダラー
                 if (otherBvh != null && otherBvh.Raycast(rest[i], direction, otherPositions, out float otherDistance, out _))
                 {
                     if (otherDistance < distance) distance = otherDistance;
+                    if (otherDistance < layerDistance) layerDistance = otherDistance;
                 }
 
-                float gap = MaxGap;
-                if (distance != float.MaxValue)
+                float gap = GapFromDistance(distance);
+                if (distance != float.MaxValue) hit++;
+                if (passThrough)
                 {
-                    hit++;
-                    gap = System.Math.Min(MaxGap, System.Math.Max(0f, distance - Margin));
+                    if (blockedGaps == null) blockedGaps = (float[])gaps.Clone();
+                    blockedGaps[i] = GapFromDistance(layerDistance);
+                }
+                else if (blockedGaps != null)
+                {
+                    blockedGaps[i] = gap;
                 }
                 gaps[i] = gap;
                 sum += gap;
@@ -127,6 +156,7 @@ namespace GP02.EditorTools
 
             timer.Stop();
             result.Gaps = gaps;
+            result.GapsWithoutPassThrough = blockedGaps ?? gaps;
             result.MeasuredCount = measured;
             result.HitCount = hit;
             result.Mean = measured > 0 ? (float)(sum / measured) : 0f;
@@ -136,26 +166,41 @@ namespace GP02.EditorTools
             return result;
         }
 
+        static float GapFromDistance(float distance)
+        {
+            return distance == float.MaxValue ? MaxGap : System.Math.Min(MaxGap, System.Math.Max(0f, distance - Margin));
+        }
+
         /// <summary>
-        /// target と同じアバター（transform.root の下）の、ほかの有効なレンダラーの三角形を、ワールド座標で1つの木にまとめる。
+        /// targets と同じアバター（transform.root の下）の、targets 以外の有効なレンダラーの三角形を、ワールド座標で1つの木にまとめる。
         /// SkinnedMeshRenderer は BakeMesh で今のポーズの形にする。なければ null。
         /// </summary>
-        static TriangleBvh BuildOthers(Renderer target, out NVector3[] positions, out int rendererCount, out int triangleCount)
+        static TriangleBvh BuildOthers(IReadOnlyList<Renderer> targets, out NVector3[] positions, out int rendererCount, out int triangleCount)
         {
             positions = null;
             rendererCount = 0;
             triangleCount = 0;
-            if (target == null) return null;
+            if (targets == null) return null;
 
             var allPositions = new List<NVector3>();
             var allTriangles = new List<int>();
             var vertices = new List<Vector3>();
             var triangles = new List<int>();
 
-            // 有効なレンダラーだけ（非アクティブなオブジェクトは含まれない）
-            foreach (Renderer renderer in target.transform.root.GetComponentsInChildren<Renderer>(false))
+            // 有効なレンダラーだけ（非アクティブなオブジェクトは含まれない）。まとめたレンダラーが別々のアバターにあれば、それぞれの下を見る
+            var excluded = new HashSet<Renderer>();
+            var roots = new List<Transform>();
+            foreach (Renderer target in targets)
             {
-                if (renderer == target || !renderer.enabled) continue;
+                if (target == null) continue;
+                excluded.Add(target);
+                if (!roots.Contains(target.transform.root)) roots.Add(target.transform.root);
+            }
+            var others = new List<Renderer>();
+            foreach (Transform root in roots) others.AddRange(root.GetComponentsInChildren<Renderer>(false));
+            foreach (Renderer renderer in others)
+            {
+                if (excluded.Contains(renderer) || !renderer.enabled) continue;
 
                 Mesh mesh;
                 Matrix4x4 toWorld;
