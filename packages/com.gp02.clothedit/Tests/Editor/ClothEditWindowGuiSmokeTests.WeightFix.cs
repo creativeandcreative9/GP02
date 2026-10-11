@@ -9,9 +9,10 @@ namespace GP02.Tests
 {
     public partial class ClothEditWindowGuiSmokeTests
     {
-        // 動作チェックの第2段: テスト用アバターのタイツを編集し、かんたん表示の「ウェイトを体に寄せる」（体どうしの重なりの知らせと一緒に）、
+        // 動作チェックの第2段: テスト用アバターのタイツを編集し、かんたん表示の「おすすめの直し方」の「ウェイトを体に寄せる」（体どうしの重なりの知らせと一緒に）、
         // 候補の確認（前後の件数・伸び）、適用のあと、寄せたあとのしゃがんだポーズのシーン、
-        // くわしく表示（強さ・周りへの広がり・データから外す・手持ちの AnimationClip）を描く
+        // くわしく表示（強さ・周りへの広がり・データから外す・手持ちの AnimationClip）を描く。
+        // しゃがむ・座る（大きく動くポーズ）のひざを直すので、「大きく動くポーズも直す」をオンにする（既定の範囲の画面も1枚撮る）
         [UnityTest]
         public IEnumerator Window_And_SceneView_ShowTheWeightFit()
         {
@@ -60,10 +61,15 @@ namespace GP02.Tests
                 controller.ApplySettings();
 
                 // 調べると、ひざの貫通（ウェイトが原因）と、手が太ももに入る体どうしの重なりが出る
+                controller.Settings.FixLargePoses = false;
                 PoseCheckResult result = controller.RunPoseCheck();
                 Assert.That(result, Is.Not.Null, controller.LastPoseCheckError);
-                Assert.That(controller.WeightCausedRegionCount, Is.GreaterThan(0));
                 Assert.That(result.OverlapRegionCount, Is.GreaterThan(0));
+                yield return Pump(10);
+                Shot(window, "weightfit_window_simple_default");
+                controller.Settings.FixLargePoses = true;
+                controller.ApplyPoseFixScope();
+                Assert.That(controller.WeightCausedRegionCount, Is.GreaterThan(0));
                 yield return Pump(10);
                 Shot(window, "weightfit_window_simple_result");
 

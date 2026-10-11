@@ -101,19 +101,28 @@ namespace GP02.EditorTools
             }
         }
 
-        public int PosesBefore => Before != null ? Before.PenetratingPoseCount : 0;
-        public int PosesAfter => After != null ? After.PenetratingPoseCount : 0;
-        public int RegionsBefore => Before != null ? Before.TotalRegionCount : 0;
-        public int RegionsAfter => After != null ? After.TotalRegionCount : 0;
-        public float MaxDepthBefore => Before != null ? Before.MaxDepth : 0f;
-        public float MaxDepthAfter => After != null ? After.MaxDepth : 0f;
+        /// <summary>直す範囲に、大きく動くポーズも入っているか（前後の数は、この範囲のポーズで数える）。</summary>
+        public bool IncludesLargePoses => Before != null && Before.IncludesLargePoses;
 
-        /// <summary>ウェイトが原因のか所の数の前後（調べ直した結果でも、同じ決め方で数えたもの）。</summary>
+        static PoseCheckSummary ScopeOf(PoseCheckResult result) => result != null ? result.FixSummary : null;
+
+        /// <summary>直す範囲のポーズでの、貫通したポーズ・か所の数と、一番深い所の前後。</summary>
+        public int PosesBefore => ScopeOf(Before) != null ? ScopeOf(Before).PenetratingGroupCount : 0;
+        public int PosesAfter => ScopeOf(After) != null ? ScopeOf(After).PenetratingGroupCount : 0;
+        public int RegionsBefore => ScopeOf(Before) != null ? ScopeOf(Before).TotalRegionCount : 0;
+        public int RegionsAfter => ScopeOf(After) != null ? ScopeOf(After).TotalRegionCount : 0;
+        public float MaxDepthBefore => ScopeOf(Before) != null ? ScopeOf(Before).MaxDepth : 0f;
+        public float MaxDepthAfter => ScopeOf(After) != null ? ScopeOf(After).MaxDepth : 0f;
+
+        /// <summary>ウェイトが原因のか所の数の前後（調べ直した結果でも、同じ範囲・同じ決め方で数えたもの）。</summary>
         public int WeightRegionsBefore => Before != null ? Before.WeightCausedRegionCount : 0;
         public int WeightRegionsAfter => After != null ? After.WeightCausedRegionCount : 0;
 
-        /// <summary>体どうしの重なりの所の数（服では直せないので、前後で変わらないはず）。</summary>
-        public int OverlapRegions => Before != null ? Before.OverlapRegionCount : 0;
+        /// <summary>直す範囲のポーズでの、体どうしの重なりの所の数（服では直せないので、前後で変わらないはず）。</summary>
+        public int OverlapRegions => Before != null ? Before.FixOverlapRegionCount : 0;
+
+        /// <summary>直す範囲の呼び名（よく使うポーズ・すべてのポーズ）。</summary>
+        public string ScopeLabel => IncludesLargePoses ? L10n.Tr("すべてのポーズ", "All poses") : PoseLibrary.CommonLabel;
 
         /// <summary>
         /// 伸びの目安が一番増えたポーズ（結果の番号。増えたポーズが無ければ -1）と、そのポーズでの前後の伸び。
@@ -162,23 +171,24 @@ namespace GP02.EditorTools
         /// <summary>効いたか: 対象のか所の深さの平均が 6 割以下になり、全体の深さの合計も減った。</summary>
         public bool Improved => Effect != null && Effect.Improved(0.6f);
 
-        /// <summary>前後の要約（画面・ダイアログ用）。</summary>
+        /// <summary>前後の要約（画面・ダイアログ用）。数は直す範囲のポーズ（<see cref="ScopeLabel"/>）で数える。</summary>
         public string Describe()
         {
+            string scope = ScopeLabel;
             string text = L10n.Tr(
                 $"ウェイトを変える頂点: {ChangedVertices}" + (AddedBoneCount > 0 ? $"（足すボーン {AddedBoneCount}）" : "") +
-                $"\n貫通したポーズ: {PosesBefore} → {PosesAfter}、か所: {RegionsBefore} → {RegionsAfter}、最大の深さ: {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
+                $"\n{scope}の突き抜け: {PosesBefore} → {PosesAfter} ポーズ、{RegionsBefore} → {RegionsAfter} か所、いちばん深い所 {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
                 $"\nウェイトが原因の所: {WeightRegionsBefore} → {WeightRegionsAfter} か所" +
                 (Effect != null && Effect.TargetPairs > 0 ? $"（深さの平均 {Effect.TargetDepthBefore * 1000f:F1} → {Effect.TargetDepthAfter * 1000f:F1} mm、直った割合 {Effect.ClearedRatio * 100f:F0}%）" : "") +
                 (StretchEntry >= 0 ? $"\n体から離れた所の布の伸び: {StretchPoseName}で {StretchBefore * 100f:F0}% → {StretchAfter * 100f:F0}%" : "\n体から離れた所の布の伸び: 増えません"),
                 $"Vertices whose weights change: {ChangedVertices}" + (AddedBoneCount > 0 ? $" ({AddedBoneCount} bone(s) added)" : "") +
-                $"\nPoses with penetration: {PosesBefore} → {PosesAfter}, places: {RegionsBefore} → {RegionsAfter}, deepest: {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
+                $"\n{scope}, poke-through: {PosesBefore} → {PosesAfter} poses, {RegionsBefore} → {RegionsAfter} places, deepest {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
                 $"\nPlaces caused by weights: {WeightRegionsBefore} → {WeightRegionsAfter}" +
                 (Effect != null && Effect.TargetPairs > 0 ? $" (average depth {Effect.TargetDepthBefore * 1000f:F1} → {Effect.TargetDepthAfter * 1000f:F1} mm, {Effect.ClearedRatio * 100f:F0}% cleared)" : "") +
                 (StretchEntry >= 0 ? $"\nStretch of the cloth away from the body: {StretchBefore * 100f:F0}% → {StretchAfter * 100f:F0}% in {StretchPoseName}" : "\nStretch of the cloth away from the body: no increase"));
             if (OverlapRegions > 0)
             {
-                text += L10n.Tr($"\n体どうしの重なり: {OverlapRegions} か所（体どうしの重なりで、服では直せません。そのままにします）", $"\nBody overlaps: {OverlapRegions} (overlaps of the body itself, which cannot be fixed in the outfit; left as they are)");
+                text += L10n.Tr($"\n体どうしの重なり: {OverlapRegions} か所（服では直せません。そのままにします）", $"\nBody overlaps: {OverlapRegions} (cannot be fixed in the outfit; left as they are)");
             }
             if (StretchesTooMuch)
             {
@@ -191,7 +201,8 @@ namespace GP02.EditorTools
         public override string ToString()
         {
             return $"ウェイトを変える頂点 {ChangedVertices}（足すボーン {AddedBoneCount}、体が無い {MissingAnchors}、ボーンが対応しない {Unmapped}）/ 強さ {Strength * 100f:F0}%・半径 {Radius * 100f:F1}cm" +
-                $" / 貫通したポーズ {PosesBefore} → {PosesAfter}、か所 {RegionsBefore} → {RegionsAfter}、最大 {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
+                $" / 直す範囲 {(IncludesLargePoses ? "すべてのポーズ" : "よく使うポーズ")}: 貫通したポーズ {PosesBefore} → {PosesAfter}、か所 {RegionsBefore} → {RegionsAfter}、最大 {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
+                $"（すべてのポーズ: か所 {(Before != null ? Before.TotalRegionCount : 0)} → {(After != null ? After.TotalRegionCount : 0)}）" +
                 $" / ウェイトが原因 {WeightRegionsBefore} → {WeightRegionsAfter}" +
                 (Effect != null ? $"（対象の頂点 {Effect.TargetPairs}: 深さの平均 {Effect.TargetDepthBefore * 1000f:F1} → {Effect.TargetDepthAfter * 1000f:F1} mm、直った {Effect.ClearedPairs}、全ポーズの深さの合計 {Effect.TotalDepthBefore * 1000.0:F0} → {Effect.TotalDepthAfter * 1000.0:F0} mm）" : "") +
                 $" / 体どうしの重なり {OverlapRegions} / 体から離れた所の伸び {(StretchEntry >= 0 ? $"{StretchPoseName} {StretchBefore * 100f:F1}% → {StretchAfter * 100f:F1}%" : "増えない")}" +

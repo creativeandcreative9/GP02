@@ -20,8 +20,18 @@ namespace GP02.EditorTools
         /// <summary>試さないポーズの名前（<see cref="PosePreset.Id"/>）を「,」でつないだもの。既定はすべて試す。</summary>
         public string PoseCheckDisabled = "";
 
-        /// <summary>編集の姿勢で、動作チェックの全ポーズでの最悪の深さで粒子を色分けするか。</summary>
+        /// <summary>
+        /// 動作チェックの結果が出たら、編集の姿勢で、最悪の深さで色分けした点を出すか（好み）。
+        /// ほかの操作を始めると一時的に消え、区切りの「突き抜ける所を色の点で示す」で出し直せる（<see cref="ClothEditController.IsPoseCheckDepthShown"/>）。
+        /// </summary>
         public bool ShowPoseCheckDepth = true;
+
+        /// <summary>
+        /// 大きく動くポーズ（座る・しゃがむ・足を上げる・開く。<see cref="PoseCategory.Large"/>）も直す範囲に入れるか。既定はオフ。
+        /// オフなら、色分けの点・悪い順・外へ逃がす・ウェイトを体に寄せるを、よく使うポーズの結果だけで決める（ポーズは全部試す）。
+        /// スカートなどでは大きく動くポーズで突き抜けるのが普通で、全部を直そうとすると服が大きく膨らんだり脚に貼り付いたりするため。
+        /// </summary>
+        public bool FixLargePoses;
 
         /// <summary>ポーズを試すか。</summary>
         public bool IsPoseEnabled(string id)
@@ -79,6 +89,7 @@ namespace GP02.EditorTools
             PoseCheckBothStages = true;
             PoseCheckDisabled = "";
             ShowPoseCheckDepth = true;
+            FixLargePoses = false;
         }
 
         void SanitizePoseCheck()
@@ -94,6 +105,7 @@ namespace GP02.EditorTools
             PoseCheckBothStages = EditorPrefs.GetBool(keyPrefix + "PoseCheckBothStages", true);
             PoseCheckDisabled = EditorPrefs.GetString(keyPrefix + "PoseCheckDisabled", "");
             ShowPoseCheckDepth = EditorPrefs.GetBool(keyPrefix + "ShowPoseCheckDepth", true);
+            FixLargePoses = EditorPrefs.GetBool(keyPrefix + "PoseCheckFixLargePoses", false);
         }
 
         void SavePoseCheck(string keyPrefix)
@@ -102,11 +114,12 @@ namespace GP02.EditorTools
             EditorPrefs.SetBool(keyPrefix + "PoseCheckBothStages", PoseCheckBothStages);
             EditorPrefs.SetString(keyPrefix + "PoseCheckDisabled", PoseCheckDisabled ?? "");
             EditorPrefs.SetBool(keyPrefix + "ShowPoseCheckDepth", ShowPoseCheckDepth);
+            EditorPrefs.SetBool(keyPrefix + "PoseCheckFixLargePoses", FixLargePoses);
         }
 
         static void DeletePoseCheck(string keyPrefix)
         {
-            foreach (string key in new[] { "PoseCheckTolerance", "PoseCheckBothStages", "PoseCheckDisabled", "ShowPoseCheckDepth" }) EditorPrefs.DeleteKey(keyPrefix + key);
+            foreach (string key in new[] { "PoseCheckTolerance", "PoseCheckBothStages", "PoseCheckDisabled", "ShowPoseCheckDepth", "PoseCheckFixLargePoses" }) EditorPrefs.DeleteKey(keyPrefix + key);
         }
     }
 }

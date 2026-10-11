@@ -71,9 +71,11 @@ namespace GP02.Tests
             return null;
         }
 
+        // これらのテストは、外へ逃がす・ウェイトの判定の仕組みを、大きく動くポーズ（座る・しゃがむなど）も直す範囲に入れて確かめる
+        // （既定のよく使うポーズだけの範囲は PoseCheckScopeTests で確かめる）
         ClothEditController Start(params Renderer[] targets)
         {
-            var c = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f, RecordToData = false, SaveFolder = TempFolder };
+            var c = new ClothEditController(new ClothEditSettings { FixLargePoses = true }) { BrushRadius = 0.05f, InfluenceRadius = 0.3f, RecordToData = false, SaveFolder = TempFolder };
             _controllers.Add(c);
             Assert.That(c.TryStartLayered(targets, out string error), Is.True, error);
             return c;
@@ -498,7 +500,7 @@ namespace GP02.Tests
             Assert.That(skirt.forceRenderingOff, Is.True, "編集中は元の衣装を隠してある（プレビューで描く）");
 
             int next = c.ShowNextPenetratingPose();
-            Assert.That(next, Is.EqualTo(result.RankEntries()[0]), "順に見るは、一番悪いポーズから");
+            Assert.That(next, Is.EqualTo(result.RankForBrowsing()[0]), "順に見るは、一番悪いポーズから（直す範囲のポーズが先）");
             Assert.That(c.IsPosePreviewActive, Is.True);
             Assert.That(c.PoseCheckRig.IsShown, Is.True);
             foreach (Renderer r in renderers) Assert.That(r.forceRenderingOff, Is.True, r.name);

@@ -131,6 +131,7 @@ namespace GP02.EditorTools
         public WeightFixPreview PreviewWeightFix()
         {
             LastWeightFixError = "";
+            if (_session != null) ApplyPoseFixScope();
             if (!EnsureAlive() || !CanPreviewWeightFix)
             {
                 LastWeightFixError = _session == null ? L10n.Tr("編集中ではありません。", "You are not editing.")
@@ -138,7 +139,7 @@ namespace GP02.EditorTools
                     : L10n.Tr("もう一度、動作チェックをしてください。", "Run the motion check again.");
                 return null;
             }
-            FinishStroke();
+            FinishStrokeKeepingPoseDepth();
             DiscardWeightFixPreview();
             var timer = Stopwatch.StartNew();
             PoseCheckResult before = _poseCheck;
@@ -167,7 +168,8 @@ namespace GP02.EditorTools
                 }
                 preview.After = after;
                 preview.Rig = rig;
-                preview.Effect = before.WeightPlan.MeasureEffect(before.Summary, after.Summary, PoseEscapeOptions.DefaultMaxPush);
+                // 候補で調べ直した結果も、同じ直す範囲のポーズで比べる
+                preview.Effect = before.WeightPlan.MeasureEffect(before.FixSummary, after.FixSummary, PoseEscapeOptions.DefaultMaxPush);
             }
             finally
             {
@@ -393,8 +395,7 @@ namespace GP02.EditorTools
             {
                 after.Session = _session;
                 after.ShapeVersion = _session.ShapeVersion;
-                after.ParticleDepth = new float[_session.ParticleCount];
-                after.Summary.ToParticleDepth(_session.Cloth, after.ParticleDepth);
+                after.UpdateParticleDepth(_session.Cloth);
                 InstallPoseCheck(after, afterRig);
                 LastPoseEscape = null;
             }

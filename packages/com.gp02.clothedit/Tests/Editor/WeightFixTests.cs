@@ -70,9 +70,11 @@ namespace GP02.Tests
             return null;
         }
 
+        // これらのテストは、ウェイトを寄せる仕組みを、大きく動くポーズ（座る・しゃがむなど）も直す範囲に入れて確かめる
+        // （既定のよく使うポーズだけの範囲は PoseCheckScopeTests で確かめる）
         ClothEditController Start(Renderer target, bool recordToData = false)
         {
-            var c = new ClothEditController(new ClothEditSettings())
+            var c = new ClothEditController(new ClothEditSettings { FixLargePoses = true })
             {
                 BrushRadius = 0.05f, InfluenceRadius = 0.3f, RecordToData = recordToData, SaveFolder = TempFolder, DataFolder = TempFolder,
             };

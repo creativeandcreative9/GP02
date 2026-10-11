@@ -12,7 +12,8 @@ namespace GP02.EditorTools
     // 動作チェック: いろいろなポーズを自動で試して、体が服を突き抜ける所を見つける。見つけた所を元のポーズで外へ逃がす（第1段の修正）。
     // アバターの複製（PoseRig）にポーズを付けて調べるので、シーンのアバターは触らない。画面に依存しないので、EditMode テストから動かせる。
     // 調べるのは EditorApplication.update ごとに少しずつ（Tick）。テストと「外へ逃がす」のあとの調べ直しは、一度に最後まで（RunPoseCheck）。
-    // ほかの操作をしたら（FinishStroke・Undo・編集の終了）、調べている途中ならやめ、見せているポーズは元の姿勢に戻す
+    // ほかの操作をしたら（FinishStroke・Undo・編集の終了）、調べている途中ならやめ、見せているポーズは元の姿勢に戻し、色分けの点も消す。
+    // ポーズは全部試すが、直す範囲（色分けの点・悪い順・外へ逃がす・ウェイトを寄せる）は、設定の「大きく動くポーズも直す」で決める（既定はよく使うポーズだけ）
     public sealed partial class ClothEditController
     {
         /// <summary>動作チェックで、1回の更新（Tick）に使う時間の目安（ミリ秒）。最低でも1ポーズは調べる。</summary>
@@ -46,6 +47,7 @@ namespace GP02.EditorTools
             public bool[] Covered;          // 基準の姿勢で、布に覆われていた体の頂点（覆われていなかった部品が布の外に来ても、布を通り抜けたのではないので数えない）
             public bool[] Loose;            // 基準の姿勢で体から離れている、布の頂点（伸びの目安はここだけで測る。体にぴったりの所は体と一緒に伸びてよい）
             public NVector3[] RestWelded;   // 基準の姿勢の、まとめた後の頂点の位置（伸びの基準）
+            public bool IncludeLargePoses;  // 直す範囲に、大きく動くポーズも入れるか（調べ終わったときの計画に使う）
 
             public bool Done => Next >= Steps.Count;
         }
@@ -58,6 +60,12 @@ namespace GP02.EditorTools
         bool _posePlayClockPending;
         double _posePlayStart;
         readonly List<int> _posePlayList = new List<int>();
+
+        // 色分けの点を今見せているか（一時的なもの。設定の ShowPoseCheckDepth は、結果が出たときに見せるかの好み）。
+        // ほかの操作（ブラシ・選ぶ・ハンドル・ピン留め・Undo など）を始めたとき、結果が古くなったときに消す
+        bool _poseDepthShown;
+        int _poseDepthSelection;          // 見せ始めたときの選択の版（選ぶ操作を始めたら消すため）
+        bool _poseDepthAllowStale;        // 古い結果のときに、利用者が出し直した（古くなったことでは消さない）
 
         /// <summary>最後の動作チェックの結果。まだ調べていなければ null（形を変えたあとも残る。<see cref="IsPoseCheckStale"/> を見ること）。</summary>
         public PoseCheckResult LastPoseCheck => _session != null ? _poseCheck : null;
@@ -92,7 +100,8 @@ namespace GP02.EditorTools
         }
 
         /// <summary>
-        /// 粒子ごとの、全ポーズでの最悪の深さ（メートル）。結果が無い・粒子の数が合わないときは null。書き換えないこと。
+        /// 粒子ごとの、直す範囲のポーズでの最悪の深さ（メートル）。結果が無い・粒子の数が合わないときは null。書き換えないこと。
+        /// 直す範囲を変えると（<see cref="ApplyPoseFixScope"/>）別の配列になる。
         /// </summary>
         public float[] PoseCheckParticleDepth
         {
@@ -101,6 +110,63 @@ namespace GP02.EditorTools
                 if (_session == null || _poseCheck == null || _poseCheck.ParticleDepth == null) return null;
                 return _poseCheck.ParticleDepth.Length == _session.ParticleCount ? _poseCheck.ParticleDepth : null;
             }
+        }
+
+        /// <summary>
+        /// 編集の姿勢で、色分けの点（<see cref="PoseCheckParticleDepth"/>）を今見せるか。結果が出たときは設定の <see cref="ClothEditSettings.ShowPoseCheckDepth"/> に従い、
+        /// ほかの操作を始めたとき・結果が古くなったときに消える（<see cref="TickPoseCheck"/> で選ぶ操作と古くなったことを見る）。
+        /// <see cref="SetPoseCheckDepthShown"/> で、いつでも出し直せる。
+        /// </summary>
+        public bool IsPoseCheckDepthShown => _poseDepthShown && PoseCheckParticleDepth != null;
+
+        /// <summary>色分けの点を出す・消す（動作チェックの区切りのトグルから）。出すときは、結果が古くても出す（どこを直すかの目安として）。</summary>
+        public void SetPoseCheckDepthShown(bool shown)
+        {
+            if (shown == _poseDepthShown) return;
+            _poseDepthShown = shown;
+            _poseDepthSelection = _selectionVersion;
+            _poseDepthAllowStale = shown && IsPoseCheckStale;
+            Notify();
+        }
+
+        void HidePoseCheckDepth()
+        {
+            if (!_poseDepthShown) return;
+            _poseDepthShown = false;
+            Notify();
+        }
+
+        // 結果が出た・入れ替わったときに、好みの設定に従って色分けの点を出す
+        void ShowPoseCheckDepthForNewResult()
+        {
+            _poseDepthShown = _settings.ShowPoseCheckDepth;
+            _poseDepthSelection = _selectionVersion;
+            _poseDepthAllowStale = false;
+        }
+
+        // 動作チェックの操作の前に、途中の操作を確定する（FinishStroke）。動作チェックの中の操作なので、色分けの点は消さない
+        void FinishStrokeKeepingPoseDepth()
+        {
+            bool shown = _poseDepthShown;
+            FinishStroke();
+            _poseDepthShown = shown;
+            _poseDepthSelection = _selectionVersion;
+        }
+
+        /// <summary>
+        /// 設定の「大きく動くポーズも直す」（<see cref="ClothEditSettings.FixLargePoses"/>）を、今の結果に当てる。
+        /// 範囲が変わっていれば、保存してある各ポーズの結果から、色分けの点・悪い順・外へ逃がす量・ウェイトを寄せる対象を作り直す（調べ直しはしない）。
+        /// 前の範囲で作ったウェイトの確認（候補）は捨てる。範囲を変えたら true。
+        /// </summary>
+        public bool ApplyPoseFixScope()
+        {
+            PoseCheckResult result = _poseCheck;
+            if (result == null || result.Summary == null || result.IncludesLargePoses == _settings.FixLargePoses) return false;
+            // 色分けの点は、今の編集の粒子で作り直す（保存して作り直した編集でも、頂点の並びは同じ）
+            result.BuildPlans(_settings.FixLargePoses, _session != null ? _session.Cloth : null);
+            DiscardWeightFixPreview();
+            Notify();
+            return true;
         }
 
         /// <summary>
@@ -118,7 +184,7 @@ namespace GP02.EditorTools
                 LastPoseCheckError = error;
                 return false;
             }
-            FinishStroke();
+            FinishStrokeKeepingPoseDepth();
             error = GetPoseCheckProblem();
             List<PosePreset> poses = sameAs != null ? sameAs.GetPoses() : _settings.GetEnabledPoses();
             bool hasClips = sameAs != null ? sameAs.ClipSampleCount > 0 : _settings.GetPoseCheckClips().Count > 0;
@@ -188,6 +254,8 @@ namespace GP02.EditorTools
                 BodyVertices = new NVector3[rig.BodyVertexCount],
                 Baseline = new float[session.WeldedVertexCount],
                 Timer = timer,
+                // 調べ直し（外へ逃がしたあと・ウェイトの候補）は、前の結果と同じ範囲で比べる
+                IncludeLargePoses = sameAs != null ? sameAs.IncludesLargePoses : _settings.FixLargePoses,
             };
             if (rig.HasProbes)
             {
@@ -366,23 +434,17 @@ namespace GP02.EditorTools
             return job.Done;
         }
 
-        // 調べ終わった結果の仕上げ（粒子ごとの最悪の深さ、外へ逃がす量、ウェイトを体に寄せる対象）。結果を今の結果にはしない
+        // 調べ終わった結果の仕上げ（よく使う・大きく動くポーズに分けた集計と、直す範囲の粒子ごとの最悪の深さ、外へ逃がす量、ウェイトを体に寄せる対象）。
+        // 結果を今の結果にはしない
         static void FinalizePoseCheck(PoseCheckJob job)
         {
             job.Rig.ApplyBase();
             PoseCheckResult result = job.Result;
-            ParticleCloth cloth = job.Session.Cloth;
-            result.ParticleDepth = new float[cloth.Model.ParticleCount];
-            result.Summary.ToParticleDepth(cloth, result.ParticleDepth);
             result.Anchors = job.Anchors;
             result.Body = job.Body;
             result.RestWelded = job.RestWelded;
-            if (result.HasBody)
-            {
-                var defaults = new PoseEscapeOptions();
-                result.EscapePlan = result.Summary.PlanEscape(defaults.Extra, defaults.MaxPush, defaults.MinGain, job.Anchors, WeightTransferOptions.DefaultFullDistance);
-                result.WeightPlan = result.Summary.PlanWeightFix(defaults.Extra, defaults.MaxPush, defaults.MinGain, job.Anchors, WeightTransferOptions.DefaultFullDistance);
-            }
+            result.BuildScopes();
+            result.BuildPlans(job.IncludeLargePoses, job.Session.Cloth);
             result.Milliseconds = job.Timer.Elapsed.TotalMilliseconds;
         }
 
@@ -393,22 +455,24 @@ namespace GP02.EditorTools
             _poseJob = null;
             InstallPoseCheck(result, job.Rig);
             int steps = Math.Max(1, result.Entries.Count);
-            ClothEditLog.Info($"[GP02] {job.Session.DescribeTargets()}: 動作チェック {result.DescribeSummary()} / ポーズ {result.PoseCount} × {result.StageCount} 段階（うちクリップのコマ {result.ClipSampleCount}）" +
+            ClothEditLog.Info($"[GP02] {job.Session.DescribeTargets()}: 動作チェック {result.DescribeSummary()} / {result.DescribeCommon()} / {result.DescribeLarge()}" +
+                $" / 直す範囲 {(result.IncludesLargePoses ? "すべてのポーズ" : "よく使うポーズ")} / ポーズ {result.PoseCount} × {result.StageCount} 段階（うちクリップのコマ {result.ClipSampleCount}）" +
                 $" / 時間 合計 {result.Milliseconds:F0} ms（準備 {result.PrepareMilliseconds:F0} ms、1ポーズ平均 {(result.Milliseconds - result.PrepareMilliseconds) / steps:F0} ms）" +
                 $" / {result.BodyDescription} / 服のボーン: アバターの動きをうつす {result.FollowerCount}、親に付いていく {result.UnmatchedBoneCount}" +
                 (result.EscapePlan != null ? $" / 外へ逃がせるか所 {result.EscapePlan.PushedRegions}（ウェイトが原因 {result.EscapePlan.LowGainRegions}、深すぎる {result.EscapePlan.TooFarRegions}、体にぴったり {result.EscapePlan.TightRegions}）" : "") +
-                $" / 体どうしの重なり {result.OverlapRegionCount} か所（{result.OverlapPoseCount} ポーズ）/ 体から離れた所の伸び（上位1%）{result.HighStretch * 100f:F1}%（最大 {result.MaxStretch * 100f:F1}%）" +
+                $" / 体どうしの重なり {result.OverlapRegionCount} か所（{result.OverlapPoseCount} ポーズ。直す範囲 {result.FixOverlapRegionCount} か所）/ 体から離れた所の伸び（上位1%）{result.HighStretch * 100f:F1}%（最大 {result.MaxStretch * 100f:F1}%）" +
                 (result.Anchors != null ? $" / 体の点が見つかった頂点 {result.Anchors.Count} / {result.Anchors.VertexCount}" : "") +
                 $" / 基準の姿勢の貫通: {result.Baseline}" + (result.ClipNotes.Count > 0 ? " / " + string.Join(" ", result.ClipNotes) : ""));
             Notify();
         }
 
-        // 結果とアバターの複製を、今の結果にする（前の複製は消す）
+        // 結果とアバターの複製を、今の結果にする（前の複製は消す）。色分けの点は、好みの設定に従って出す
         void InstallPoseCheck(PoseCheckResult result, PoseRig rig)
         {
             if (_poseRig != null && _poseRig != rig) _poseRig.Dispose();
             _poseRig = rig;
             _poseCheck = result;
+            ShowPoseCheckDepthForNewResult();
         }
 
         // 今の結果を変えずに、最後まで調べる（ウェイトを体に寄せる前の確認）。調べたアバターの複製は rig に返す（消すのは呼び出し側）。調べられなければ null
@@ -489,13 +553,19 @@ namespace GP02.EditorTools
         {
             if (_poseJob != null) AdvancePoseCheck(PoseCheckFrameMilliseconds);
             if (_posePlaying) TickPosePlayback(now);
+            ApplyPoseFixScope();
+            // 選ぶ操作（塗る・四角で囲む・部品ごとなど）を始めたとき、結果が古くなったとき（形が変わった）は、色分けの点を消す
+            // （古い結果のまま利用者が出し直したときは、古いことでは消さない）
+            if (_poseDepthShown && (_selectionVersion != _poseDepthSelection || (IsPoseCheckStale && !_poseDepthAllowStale))) HidePoseCheckDepth();
         }
 
-        // ほかの操作の前に呼ぶ: 調べている途中ならやめ、見せているポーズは元の姿勢に戻す
+        // ほかの操作の前に呼ぶ: 調べている途中ならやめ、見せているポーズは元の姿勢に戻し、色分けの点を消す
+        // （ブラシ・ピン留め・ハンドル・Undo・保存などは FinishStroke からここに来る。選ぶ操作は TickPoseCheck で選択の版を見る）
         void StopPoseActivity()
         {
             CancelPoseCheck();
             EndPosePreview();
+            HidePoseCheckDepth();
         }
 
         // 編集を終えるときに呼ぶ: アバターの複製を消す（結果は、同じ衣装の編集を作り直したとき（保存など）のために残す）
@@ -558,12 +628,15 @@ namespace GP02.EditorTools
             return true;
         }
 
-        /// <summary>「順に見る」: 貫通が見つかったポーズを、悪い順に1つずつ見せる（最後まで行ったら最初へ）。見せた結果の番号を返す。無ければ -1。</summary>
+        /// <summary>
+        /// 「順に見る」: 貫通が見つかったポーズを、悪い順に1つずつ見せる（最後まで行ったら最初へ）。見せた結果の番号を返す。無ければ -1。
+        /// 直す範囲のポーズを先に、そのあと範囲の外（大きく動くポーズを直さないときの、大きく動くポーズ）を見せる（<see cref="PoseCheckResult.RankForBrowsing"/>。画面の一覧と同じ順）。
+        /// </summary>
         public int ShowNextPenetratingPose()
         {
             if (!CanPreviewPoses) return -1;
             _posePlaying = false;
-            int[] ranked = _poseCheck.RankEntries();
+            int[] ranked = _poseCheck.RankForBrowsing();
             if (ranked.Length == 0) return -1;
             int position = Array.IndexOf(ranked, _posePreviewEntry);
             int next = ranked[(position + 1) % ranked.Length];
@@ -626,19 +699,25 @@ namespace GP02.EditorTools
         /// <summary>
         /// 動作チェックで見つかった所を、編集の姿勢で、そのポーズで足りる量（深さ÷ポーズで動く割合）だけ外向きに逃がす（布の長さを保って周りも付いてくる）。
         /// 編集の姿勢で動かしてもポーズではほとんど動かない所（ウェイトが原因）と、深すぎる所は逃がさない（<see cref="PoseCheckSummary.PlanEscape"/>）。
+        /// 逃がすのは直す範囲のポーズ（設定の「大きく動くポーズも直す」）で見つかった所だけ。
         /// Unity の Undo の1段。終わったら、もう一度チェックして前後の件数を返す。逃がせなければ null。
-        /// もう一度チェックして、逃がした所が浅くならない・全体の貫通が減らないときは、逃がす前の形に戻す（<see cref="PoseEscapeReport.Reverted"/>。
+        /// もう一度チェックして、直す範囲のポーズで、逃がした所が浅くならない・貫通が減らないときは、逃がす前の形に戻す（<see cref="PoseEscapeReport.Reverted"/>。
         /// ぴったりの服で布に余裕が無いと、外へ出した分だけ周りが引かれて、かえって増えることがあるため）。
         /// </summary>
         public PoseEscapeReport EscapePoseCheckPenetration()
         {
-            if (!EnsureAlive() || !CanEscapePoseCheck) return null;
-            FinishStroke();
+            if (!EnsureAlive()) return null;
+            ApplyPoseFixScope();
+            if (!CanEscapePoseCheck) return null;
+            FinishStrokeKeepingPoseDepth();
             PoseEscapePlan plan = _poseCheck.EscapePlan;
             var push = new float[_session.ParticleCount];
             PoseCheckSummary.ToParticles(_session.Cloth, plan.WeldedPush, push);
+            PoseCheckSummary scopeBefore = _poseCheck.FixSummary;
             var report = new PoseEscapeReport
             {
+                Before = _poseCheck,
+                IncludesLargePoses = _poseCheck.IncludesLargePoses,
                 PushedRegions = plan.PushedRegions,
                 LowGainRegions = plan.LowGainRegions,
                 TightRegions = plan.TightRegions,
@@ -647,6 +726,8 @@ namespace GP02.EditorTools
                 RegionsBefore = _poseCheck.TotalRegionCount,
                 VerticesBefore = _poseCheck.PenetratingVertexCount,
                 MaxDepthBefore = _poseCheck.MaxDepth,
+                ScopePosesBefore = scopeBefore.PenetratingGroupCount,
+                ScopeRegionsBefore = scopeBefore.TotalRegionCount,
             };
             var options = new PoseEscapeOptions
             {
@@ -690,10 +771,13 @@ namespace GP02.EditorTools
                 report.RegionsAfter = after.TotalRegionCount;
                 report.VerticesAfter = after.PenetratingVertexCount;
                 report.MaxDepthAfter = after.MaxDepth;
-                // 同じポーズ・段階を同じ順に調べ直したので、逃がしたか所を結果の番号で比べられる
-                report.Effect = plan.MeasureEffect(previous.Summary, after.Summary, PoseEscapeOptions.DefaultMaxPush);
+                PoseCheckSummary scopeAfter = after.FixSummary;
+                report.ScopePosesAfter = scopeAfter.PenetratingGroupCount;
+                report.ScopeRegionsAfter = scopeAfter.TotalRegionCount;
+                // 同じポーズ・段階を同じ順に、同じ直す範囲で調べ直したので、逃がしたか所を結果の番号で比べられる（範囲の外のポーズは比べない）
+                report.Effect = plan.MeasureEffect(scopeBefore, scopeAfter, PoseEscapeOptions.DefaultMaxPush);
 
-                // 逃がした所が浅くならない・全体の貫通が減らないなら、逃がす前に戻す（Undo の記録も消す。形は前と同じなので、前の結果をそのまま使う）
+                // 逃がした所が浅くならない・直す範囲の貫通が減らないなら、逃がす前に戻す（Undo の記録も消す。形は前と同じなので、前の結果をそのまま使う）
                 if (!report.Effect.Improved(MinEscapeImprovement) && _session != null)
                 {
                     RevertRecords(group);
@@ -701,6 +785,7 @@ namespace GP02.EditorTools
                     AfterShapeChanged();
                     previous.ShapeVersion = _session.ShapeVersion;
                     _poseCheck = previous;
+                    ShowPoseCheckDepthForNewResult();
                     if (_poseRig != null && !_poseRig.IsDisposed)
                     {
                         for (int r = 0; r < _session.RendererCount && r < _poseRig.TargetCount; r++) _poseRig.SetTargetMesh(r, _session.CreateEditedMesh(r));

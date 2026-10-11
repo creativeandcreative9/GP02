@@ -32,11 +32,14 @@ namespace GP02.EditorTools
         /// <summary>手持ちの AnimationClip のコマか。</summary>
         public bool IsClip => Clip != null;
 
+        /// <summary>大きく動くポーズ（座る・しゃがむ・足を上げる・開く）の結果か。手持ちの AnimationClip のコマは、よく使うポーズとみなす。</summary>
+        public bool IsLargeMotion => Pose != null && Pose.IsLargeMotion;
+
         /// <summary>ポーズの名前（設定の保存に使うもの）。クリップのコマなら空。</summary>
         public string PoseId => Pose != null ? Pose.Id : "";
 
-        /// <summary>段階の名前（半分・全部）。</summary>
-        public static string StageName(float stage) => stage < 0.75f ? L10n.Tr("半分", "half") : L10n.Tr("全部", "full");
+        /// <summary>段階の名前（途中まで・最後まで）。「半分」「全部」だと何の半分か分かりにくいので、ポーズのどこまでかで言う。</summary>
+        public static string StageName(float stage) => stage < 0.75f ? L10n.Tr("途中まで", "halfway") : L10n.Tr("最後まで", "full");
 
         /// <summary>クリップのコマの名前（例: Sit 0.5秒）。</summary>
         public static string ClipSampleName(AnimationClip clip, float time)
@@ -45,7 +48,7 @@ namespace GP02.EditorTools
             return L10n.Tr($"{name} {time:0.##}秒", $"{name} {time:0.##} s");
         }
 
-        /// <summary>画面に出す名前（例: 座る（全部）、Sit 0.5秒）。</summary>
+        /// <summary>画面に出す名前（例: 座る（最後まで）、Sit 0.5秒）。</summary>
         public string Name => Clip != null ? ClipSampleName(Clip, ClipTime) : Pose.Name + L10n.Tr($"（{StageName(Stage)}）", $" ({StageName(Stage)})");
 
         /// <summary>結果の短い説明（例: 3 か所・最大 12.3 mm）。体どうしの重なりがあれば、別に添える。</summary>
@@ -56,21 +59,34 @@ namespace GP02.EditorTools
                 : "";
             if (Result == null || !Result.IsPenetrating)
             {
-                return overlap.Length > 0 ? L10n.Tr($"貫通なし（{overlap}）", $"no penetration ({overlap})") : L10n.Tr("貫通なし", "no penetration");
+                return overlap.Length > 0 ? L10n.Tr($"突き抜けなし（{overlap}）", $"no poke-through ({overlap})") : L10n.Tr("突き抜けなし", "no poke-through");
             }
             string main = L10n.Tr($"{Result.RegionCount} か所・最大 {Result.MaxDepth * 1000f:F1} mm", $"{Result.RegionCount} place(s), up to {Result.MaxDepth * 1000f:F1} mm");
             return overlap.Length > 0 ? main + L10n.Tr($"（ほかに{overlap}）", $" (plus {overlap})") : main;
         }
     }
 
-    /// <summary>動作チェックの結果（試したすべてのポーズ）。</summary>
+    /// <summary>
+    /// 動作チェックの結果（試したすべてのポーズ）。ポーズは全部試し、結果は「よく使うポーズ」と「大きく動くポーズ」に分けて集計する。
+    /// 直す範囲（<see cref="IncludesLargePoses"/>。設定の「大きく動くポーズも直す」）のポーズの集計（<see cref="FixSummary"/>）から、
+    /// 色分けの点・悪い順・外へ逃がす量・ウェイトを寄せる対象を作る（<see cref="BuildPlans"/>。設定を変えたら作り直す。調べ直しはしない）。
+    /// </summary>
     public sealed class PoseCheckResult
     {
         /// <summary>ポーズ・段階ごとの結果（試した順。<see cref="Summary"/> の結果の番号と同じ）。</summary>
         public readonly List<PoseCheckEntry> Entries = new List<PoseCheckEntry>();
 
-        /// <summary>集計（頂点ごとの最悪の深さなど）。</summary>
+        /// <summary>集計（すべてのポーズ。頂点ごとの最悪の深さなど）。</summary>
         public PoseCheckSummary Summary;
+
+        /// <summary>よく使うポーズ（手持ちの AnimationClip のコマを含む）だけの集計と、大きく動くポーズだけの集計（結果の番号は <see cref="Summary"/> と同じ）。</summary>
+        public PoseCheckSummary CommonSummary, LargeSummary;
+
+        /// <summary>直す範囲に、大きく動くポーズも入れたか（<see cref="BuildPlans"/> で決める）。</summary>
+        public bool IncludesLargePoses;
+
+        /// <summary>直す範囲のポーズの集計（大きく動くポーズも直すなら <see cref="Summary"/>、そうでなければ <see cref="CommonSummary"/>）。</summary>
+        public PoseCheckSummary FixSummary => IncludesLargePoses || CommonSummary == null ? Summary : CommonSummary;
 
         /// <summary>
         /// 基準の姿勢（今の姿勢をポーズとして付け直したもの）の貫通。ポーズの結果からは、この深さを引いて数えている
@@ -78,17 +94,17 @@ namespace GP02.EditorTools
         /// </summary>
         public PosePenetration Baseline = new PosePenetration();
 
-        /// <summary>粒子ごとの、全ポーズでの最悪の深さ（メートル）。編集の姿勢での色分けに使う。</summary>
+        /// <summary>粒子ごとの、直す範囲のポーズでの最悪の深さ（メートル）。編集の姿勢での色分けに使う。作り直すと別の配列になる。</summary>
         public float[] ParticleDepth;
 
         /// <summary>
-        /// 「元のポーズで外へ逃がす」の量（既定の設定で決めたもの）。逃がせるか所と、ウェイトが原因・深すぎるので逃がさないか所の数を持つ。
+        /// 「元のポーズで外へ逃がす」の量（既定の設定で、直す範囲のポーズから決めたもの）。逃がせるか所と、ウェイトが原因・深すぎるので逃がさないか所の数を持つ。
         /// 体が無ければ null。
         /// </summary>
         public PoseEscapePlan EscapePlan;
 
         /// <summary>
-        /// 「ウェイトを体に寄せる」の対象（外へ逃がしても直らない、ウェイトが原因のか所の頂点）と、体どうしの重なりの数。体が無ければ null。
+        /// 「ウェイトを体に寄せる」の対象（直す範囲のポーズで、外へ逃がしても直らない、ウェイトが原因のか所の頂点）と、体どうしの重なりの数。体が無ければ null。
         /// </summary>
         public WeightFixPlan WeightPlan;
 
@@ -160,11 +176,129 @@ namespace GP02.EditorTools
         /// <summary>ポーズでの布の伸びの、全ポーズでの一番大きいもの。</summary>
         public float MaxStretch => Summary != null ? Summary.MaxStretch : 0f;
 
-        /// <summary>ウェイトが原因の貫通（ウェイトを体に寄せる対象）のか所の数。</summary>
+        /// <summary>ウェイトが原因の貫通（直す範囲のポーズで、ウェイトを体に寄せる対象）のか所の数。</summary>
         public int WeightCausedRegionCount => WeightPlan != null ? WeightPlan.Regions : 0;
 
-        /// <summary>貫通が見つかった結果の番号を、悪い順に並べたもの。</summary>
+        /// <summary>貫通が見つかった結果の番号を、悪い順に並べたもの（すべてのポーズ）。</summary>
         public int[] RankEntries() => Summary != null ? Summary.RankEntries() : new int[0];
+
+        /// <summary>直す範囲のポーズで、貫通が見つかった結果の番号を、悪い順に並べたもの。</summary>
+        public int[] RankFixEntries() => FixSummary != null ? FixSummary.RankEntries() : new int[0];
+
+        /// <summary>直す範囲の外（大きく動くポーズを直さないときの、大きく動くポーズ）で、貫通が見つかった結果の番号を、悪い順に並べたもの。</summary>
+        public int[] RankOtherEntries() => !IncludesLargePoses && LargeSummary != null ? LargeSummary.RankEntries() : new int[0];
+
+        /// <summary>「順に見る」の順: 直す範囲のポーズを悪い順に、そのあと範囲の外のポーズを悪い順に。</summary>
+        public int[] RankForBrowsing()
+        {
+            int[] fix = RankFixEntries(), other = RankOtherEntries();
+            var all = new int[fix.Length + other.Length];
+            fix.CopyTo(all, 0);
+            other.CopyTo(all, fix.Length);
+            return all;
+        }
+
+        /// <summary>よく使うポーズで、突き抜けが無いか。</summary>
+        public bool CommonClear => CommonSummary == null || CommonSummary.PenetratingEntryCount == 0;
+
+        /// <summary>直す範囲のポーズで、突き抜けが無いか。</summary>
+        public bool FixScopeClear => FixSummary == null || FixSummary.PenetratingEntryCount == 0;
+
+        /// <summary>直す範囲のポーズの、突き抜けたか所の数（同じ所でも、ポーズ・段階ごとに1か所と数える）。</summary>
+        public int FixRegionCount => FixSummary != null ? FixSummary.TotalRegionCount : 0;
+
+        /// <summary>直す範囲のポーズの、体どうしの重なりの所の数。</summary>
+        public int FixOverlapRegionCount => FixSummary != null ? FixSummary.TotalOverlapRegionCount : 0;
+
+        /// <summary>
+        /// よく使うポーズと大きく動くポーズに分けた集計（<see cref="CommonSummary"/>・<see cref="LargeSummary"/>）を作る。
+        /// <see cref="Entries"/> と <see cref="Summary"/> がそろってから呼ぶ（調べ終わったとき）。
+        /// </summary>
+        public void BuildScopes()
+        {
+            if (Summary == null) return;
+            int count = Summary.Entries.Count;
+            var common = new bool[count];
+            var large = new bool[count];
+            for (int e = 0; e < count && e < Entries.Count; e++)
+            {
+                bool isLarge = Entries[e].IsLargeMotion;
+                common[e] = !isLarge;
+                large[e] = isLarge;
+            }
+            CommonSummary = Summary.Select(common);
+            LargeSummary = Summary.Select(large);
+        }
+
+        /// <summary>
+        /// 直す範囲（includeLargePoses なら大きく動くポーズも）のポーズの結果から、色分けの点（cloth の粒子ごとの最悪の深さ）・外へ逃がす量・
+        /// ウェイトを寄せる対象を作り直す。保存してある各ポーズの結果から作るので、調べ直しはしない。
+        /// </summary>
+        public void BuildPlans(bool includeLargePoses, ParticleCloth cloth)
+        {
+            if (Summary == null) return;
+            if (CommonSummary == null || LargeSummary == null) BuildScopes();
+            IncludesLargePoses = includeLargePoses;
+            UpdateParticleDepth(cloth);
+            EscapePlan = null;
+            WeightPlan = null;
+            if (!HasBody) return;
+            PoseCheckSummary scope = FixSummary;
+            var defaults = new PoseEscapeOptions();
+            EscapePlan = scope.PlanEscape(defaults.Extra, defaults.MaxPush, defaults.MinGain, Anchors, WeightTransferOptions.DefaultFullDistance);
+            WeightPlan = scope.PlanWeightFix(defaults.Extra, defaults.MaxPush, defaults.MinGain, Anchors, WeightTransferOptions.DefaultFullDistance);
+        }
+
+        /// <summary>
+        /// 色分けの点（粒子ごとの、直す範囲のポーズでの最悪の深さ）を、cloth の粒子で作り直す（毎回新しい配列にする。画面は配列が変わったら描き直すため）。
+        /// 布の頂点の数が合わなければ null にする。
+        /// </summary>
+        public void UpdateParticleDepth(ParticleCloth cloth)
+        {
+            PoseCheckSummary scope = FixSummary;
+            if (cloth == null || scope == null || cloth.Topology.Positions.Length != scope.VertexCount)
+            {
+                ParticleDepth = null;
+                return;
+            }
+            var depth = new float[cloth.Model.ParticleCount];
+            scope.ToParticleDepth(cloth, depth);
+            ParticleDepth = depth;
+        }
+
+        /// <summary>
+        /// よく使うポーズの結果の1行（例「よく使うポーズ: 突き抜けなし ✓」「よく使うポーズ: 3 / 10 ポーズで 5 か所（最大 8.2 mm）」）。
+        /// よく使うポーズを1つも試していなければ空。
+        /// </summary>
+        public string DescribeCommon()
+        {
+            PoseCheckSummary s = CommonSummary;
+            if (s == null || s.IncludedEntryCount == 0) return "";
+            int bad = s.PenetratingGroupCount;
+            if (bad == 0) return L10n.Tr($"{PoseLibrary.CommonLabel}: 突き抜けなし ✓", $"{PoseLibrary.CommonLabel}: no poke-through ✓");
+            return L10n.Tr($"{PoseLibrary.CommonLabel}: {bad} / {s.IncludedGroupCount} ポーズで {s.TotalRegionCount} か所（最大 {s.MaxDepth * 1000f:F1} mm）",
+                $"{PoseLibrary.CommonLabel}: {s.TotalRegionCount} place(s) in {bad} of {s.IncludedGroupCount} poses (up to {s.MaxDepth * 1000f:F1} mm)");
+        }
+
+        /// <summary>
+        /// 大きく動くポーズの結果の1行（例「大きく動くポーズ（座る・しゃがむ・足を上げる・開く）: 4 / 5 ポーズで 12 か所。スカートなどでは普通に起きます（…）」）。
+        /// 大きく動くポーズを1つも試していなければ空。
+        /// </summary>
+        public string DescribeLarge()
+        {
+            PoseCheckSummary s = LargeSummary;
+            if (s == null || s.IncludedEntryCount == 0) return "";
+            int bad = s.PenetratingGroupCount;
+            string label = PoseLibrary.LargeMotionLabel;
+            if (bad == 0) return L10n.Tr($"{label}: 突き抜けなし ✓", $"{label}: no poke-through ✓");
+            if (IncludesLargePoses)
+            {
+                return L10n.Tr($"{label}: {bad} / {s.IncludedGroupCount} ポーズで {s.TotalRegionCount} か所（最大 {s.MaxDepth * 1000f:F1} mm）",
+                    $"{label}: {s.TotalRegionCount} place(s) in {bad} of {s.IncludedGroupCount} poses (up to {s.MaxDepth * 1000f:F1} mm)");
+            }
+            return L10n.Tr($"{label}: {bad} / {s.IncludedGroupCount} ポーズで {s.TotalRegionCount} か所。スカートなどでは普通に起きます（VRChat では揺れもの（PhysBone）で動かすことが多いです）",
+                $"{label}: {s.TotalRegionCount} place(s) in {bad} of {s.IncludedGroupCount} poses. This is normal for skirts and the like (in VRChat they are often moved by PhysBones)");
+        }
 
         /// <summary>試したポーズ（試した順、重ねない。クリップのコマは含めない）。</summary>
         public List<PosePreset> GetPoses()
@@ -208,13 +342,24 @@ namespace GP02.EditorTools
         /// <summary>布を動かした結果。逃がせるか所が無く、何もしなかったときは null。</summary>
         public PoseEscapeResult Escape;
 
+        /// <summary>逃がす量を決めた、逃がす前の結果（効かずに戻したときは、そのまま今の結果になる）。</summary>
+        public PoseCheckResult Before;
+
+        /// <summary>直す範囲に、大きく動くポーズも入れていたか（逃がす量と「効いたか」は、この範囲のポーズで決めた）。</summary>
+        public bool IncludesLargePoses;
+
         /// <summary>逃がしたか所の数と、逃がさなかったか所の数（ウェイトが原因・深すぎる）。ポーズ・段階ごとに数える。</summary>
         public int PushedRegions, LowGainRegions, TooFarRegions, TightRegions;
 
+        /// <summary>すべてのポーズでの、貫通したポーズ・か所・頂点の数と、一番深い所の前後。</summary>
         public int PosesBefore, PosesAfter;
         public int RegionsBefore, RegionsAfter;
         public int VerticesBefore, VerticesAfter;
         public float MaxDepthBefore, MaxDepthAfter;
+
+        /// <summary>直す範囲のポーズ（<see cref="IncludesLargePoses"/>）での、貫通したポーズとか所の数の前後。</summary>
+        public int ScopePosesBefore, ScopePosesAfter;
+        public int ScopeRegionsBefore, ScopeRegionsAfter;
 
         /// <summary>
         /// 逃がしたか所が、もう一度チェックしてどれだけ浅くなったか（ポーズごとに比べる）と、全ポーズの深さの合計の前後。
@@ -243,11 +388,65 @@ namespace GP02.EditorTools
 
         public override string ToString()
         {
-            return (Reverted ? "効かなかったので戻した / " : "") + $"逃がしたか所 {PushedRegions}（ウェイトが原因で逃がさない {LowGainRegions}、深すぎて逃がさない {TooFarRegions}、体にぴったりで逃がさない {TightRegions}）" +
+            return (Reverted ? "効かなかったので戻した / " : "") + $"直す範囲: {(IncludesLargePoses ? "すべてのポーズ" : "よく使うポーズ")}（貫通したポーズ {ScopePosesBefore} → {ScopePosesAfter}、か所 {ScopeRegionsBefore} → {ScopeRegionsAfter}）" +
+                $" / 逃がしたか所 {PushedRegions}（ウェイトが原因で逃がさない {LowGainRegions}、深すぎて逃がさない {TooFarRegions}、体にぴったりで逃がさない {TightRegions}）" +
                 (Effect != null ? $" / 逃がした所（ポーズごとの頂点 {Effect.PushedPairs}）: 深さの平均 {Effect.PushedDepthBefore * 1000f:F1} → {Effect.PushedDepthAfter * 1000f:F1} mm、貫通が無くなった {Effect.ClearedPairs}" +
-                    $" / 全ポーズの深さの合計 {Effect.TotalDepthBefore * 1000.0:F0} → {Effect.TotalDepthAfter * 1000.0:F0} mm" : "") +
-                $" / 貫通したポーズ {PosesBefore} → {PosesAfter}、か所 {RegionsBefore} → {RegionsAfter}、頂点 {VerticesBefore} → {VerticesAfter}" +
+                    $" / 直す範囲の深さの合計 {Effect.TotalDepthBefore * 1000.0:F0} → {Effect.TotalDepthAfter * 1000.0:F0} mm" : "") +
+                $" / すべてのポーズ: 貫通したポーズ {PosesBefore} → {PosesAfter}、か所 {RegionsBefore} → {RegionsAfter}、頂点 {VerticesBefore} → {VerticesAfter}" +
                 $"、最大 {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm / {(Escape != null ? Escape.ToString() : "動かしていない")}";
+        }
+    }
+
+    /// <summary>
+    /// 動作チェックの結果から決めた「おすすめの直し方」（画面に依存しないので、テストで確かめる）。
+    /// 1. 浅い所 → 元のポーズで外へ逃がす、2. ウェイトが原因の所 → ウェイトを体に寄せる、3. 体どうしの重なり → 服では直せない（気にしなくてよい）。
+    /// 数は、直す範囲（設定の「大きく動くポーズも直す」）のポーズで、ポーズ・段階ごとに数える。
+    /// 外へ逃がしても効かずに戻したあとは、外へ逃がすを勧めない（ウェイトを勧めるか、このままで大丈夫と言う）。
+    /// </summary>
+    public sealed class PoseFixAdvice
+    {
+        /// <summary>よく使うポーズで、突き抜けが無い（いちばん目立たせる）。</summary>
+        public bool CommonClear;
+
+        /// <summary>直す範囲のポーズで、突き抜けが無い。</summary>
+        public bool ScopeClear;
+
+        /// <summary>直す範囲に、大きく動くポーズも入っているか。</summary>
+        public bool IncludesLargePoses;
+
+        /// <summary>1. 浅い所（元のポーズで外へ逃がせる所）の数。外へ逃がしても効かずに戻したあとは 0。</summary>
+        public int EscapeRegions;
+
+        /// <summary>外へ逃がしても効かずに戻した、浅い所の数（勧めず、このままで大丈夫と言う）。</summary>
+        public int RevertedEscapeRegions;
+
+        /// <summary>2. ウェイトが原因の所の数。</summary>
+        public int WeightRegions;
+
+        /// <summary>3. 体どうしの重なりの所の数（服では直せない）。</summary>
+        public int OverlapRegions;
+
+        /// <summary>勧める直し方が無い（直す範囲に突き抜けが無い、または外へ逃がしても効かず、ウェイトが原因の所も無い）。</summary>
+        public bool NothingToDo => EscapeRegions == 0 && WeightRegions == 0;
+
+        /// <summary>
+        /// 結果 result と、最後の「外へ逃がす」（lastEscape。無ければ null）から決める。result が無い・体が無いときは null。
+        /// </summary>
+        public static PoseFixAdvice From(PoseCheckResult result, PoseEscapeReport lastEscape)
+        {
+            if (result == null || !result.HasBody || result.Summary == null) return null;
+            bool reverted = lastEscape != null && lastEscape.Reverted && lastEscape.Before == result && lastEscape.IncludesLargePoses == result.IncludesLargePoses;
+            int escapable = result.EscapePlan != null ? result.EscapePlan.PushedRegions : 0;
+            return new PoseFixAdvice
+            {
+                CommonClear = result.CommonClear,
+                ScopeClear = result.FixScopeClear,
+                IncludesLargePoses = result.IncludesLargePoses,
+                EscapeRegions = reverted ? 0 : escapable,
+                RevertedEscapeRegions = reverted ? escapable : 0,
+                WeightRegions = result.WeightCausedRegionCount,
+                OverlapRegions = result.FixOverlapRegionCount,
+            };
         }
     }
 }
