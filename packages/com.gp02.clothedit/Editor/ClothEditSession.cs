@@ -793,6 +793,56 @@ namespace GP02.EditorTools
             }
         }
 
+        /// <summary>
+        /// 今の編集を、元メッシュの頂点ごとのメッシュ空間の差分で返す（シェイプキーのデータ用）。
+        /// <see cref="BuildMeshSpaceDeltas"/> の位置の差分だけを新しい配列に入れて返す。
+        /// </summary>
+        public Vector3[] GetMeshSpaceDeltas()
+        {
+            var deltaVertices = new Vector3[VertexCount];
+            var deltaNormals = new Vector3[VertexCount];
+            BuildMeshSpaceDeltas(deltaVertices, deltaNormals);
+            return deltaVertices;
+        }
+
+        /// <summary>
+        /// メッシュ空間の差分（<see cref="GetMeshSpaceDeltas"/> の逆）を、編集中の形として読み込む。
+        /// 差分を頂点ごとの行列でワールドへ直し、まとめた後の頂点の位置にして、粒子の位置は三角形の重心座標で補間して決める。
+        /// 既存のシェイプキーを取り込んで、布として続きを編集するのに使う。ピン留めは変えず、つまみは外れる。
+        /// 粒子の Undo の記録（<see cref="WriteState"/>）は、呼び出し側（コントローラー）が操作の前後で取る。
+        /// 頂点数が合わなければ何もせず false。
+        /// </summary>
+        public bool LoadMeshSpaceDeltas(Vector3[] deltas)
+        {
+            if (deltas == null || deltas.Length != VertexCount) return false;
+
+            // まとめる前の頂点が同じ位置に複数あるとき（継ぎ目）は、ワールドの差分を平均する
+            int weldedCount = _toposRest.Length;
+            var sum = new NVector3[weldedCount];
+            var count = new int[weldedCount];
+            for (int v = 0; v < deltas.Length; v++)
+            {
+                Matrix4x4 m = _vertexMatrices[v];
+                Vector3 d = deltas[v];
+                int w = _vertexToWelded[v];
+                sum[w] += new NVector3(
+                    m.m00 * d.x + m.m01 * d.y + m.m02 * d.z,
+                    m.m10 * d.x + m.m11 * d.y + m.m12 * d.z,
+                    m.m20 * d.x + m.m21 * d.y + m.m22 * d.z);
+                count[w]++;
+            }
+            var target = new NVector3[weldedCount];
+            for (int w = 0; w < weldedCount; w++) target[w] = count[w] > 0 ? _toposRest[w] + sum[w] / count[w] : _toposRest[w];
+
+            var particles = new NVector3[ParticleCount];
+            _cloth.ParticlePositionsFromWelded(target, particles);
+
+            _grabParticle = -1;
+            _solver.SetPositions(particles);
+            UpdateCurrentShape();
+            return true;
+        }
+
         /// <summary>元メッシュの複製に、現在の形をシェイプキーとして加えたメッシュを作る（アセットには保存しない）。</summary>
         public Mesh CreateMeshWithBlendShape(string shapeName)
         {

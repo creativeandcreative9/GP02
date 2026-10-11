@@ -4,6 +4,7 @@
     "references": [
         "GP02.Core",
         "GP02.Editor",
+        "GP02.Runtime",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],
