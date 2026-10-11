@@ -43,8 +43,12 @@ namespace GP02.Core
         readonly int[] _bindParticles;
         readonly float[] _bindWeights;
 
+        // 粒子ごとの、乗っている三角形の3頂点に対する重心座標（X, Y, Z が 1つ目・2つ目・3つ目の頂点の重み、合計1）。
+        // 元の形で一度だけ計算し、Rebase でも引き継ぐ（粒子は三角形の上に乗ったまま、三角形と一緒に動く扱い）
+        readonly Vector3[] _particleBarycentric;
+
         ParticleCloth(MeshTopology topology, ClothModel model, ClothHierarchy hierarchy, float spacing, int[] particleTriangle,
-            int[] bindOffsets, int[] bindParticles, float[] bindWeights)
+            int[] bindOffsets, int[] bindParticles, float[] bindWeights, Vector3[] particleBarycentric)
         {
             Topology = topology;
             Model = model;
@@ -56,6 +60,7 @@ namespace GP02.Core
             _bindOffsets = bindOffsets;
             _bindParticles = bindParticles;
             _bindWeights = bindWeights;
+            _particleBarycentric = particleBarycentric;
         }
 
         public static ParticleCloth Build(Vector3[] vertices, int[] triangles, float spacing = DefaultSpacing,
@@ -82,7 +87,8 @@ namespace GP02.Core
             var hierarchy = ClothHierarchy.Build(topology, search, particles, particleTriangle, spacing, coarseLevels, StretchRange, BindRange);
 
             var model = new ClothModel(particles, stretchPairs.ToArray(), bendPairs.ToArray(), ComputeRestNormals(topology, particles, particleTriangle));
-            return new ParticleCloth(topology, model, hierarchy, spacing, particleTriangle, offsets, bindParticles, bindWeights);
+            Vector3[] barycentric = ComputeBarycentric(topology, particles, particleTriangle);
+            return new ParticleCloth(topology, model, hierarchy, spacing, particleTriangle, offsets, bindParticles, bindWeights, barycentric);
         }
 
         /// <summary>
@@ -163,7 +169,60 @@ namespace GP02.Core
             MeshTopology topology = Topology.WithPositions(welded);
             var model = new ClothModel(particles, Model.StretchPairs, Model.BendPairs, ComputeRestNormals(topology, particles, ParticleTriangle));
             ClothHierarchy hierarchy = Hierarchy.WithRestPositions(particles);
-            return new ParticleCloth(topology, model, hierarchy, Spacing, ParticleTriangle, _bindOffsets, _bindParticles, _bindWeights);
+            return new ParticleCloth(topology, model, hierarchy, Spacing, ParticleTriangle, _bindOffsets, _bindParticles, _bindWeights, _particleBarycentric);
+        }
+
+        /// <summary>
+        /// まとめた後の頂点の位置から、粒子の位置を作る（<see cref="DeformWelded"/> の逆向き）。
+        /// 粒子は三角形の上に乗っているので、元の形で求めておいた重心座標で、三角形の3頂点の位置から補間する。
+        /// 既存のシェイプキーを取り込んで、布として続きを編集するのに使う。
+        /// なめらかな変形なら、結果を <see cref="DeformWelded"/> に通すと元の頂点の位置にほぼ戻る。
+        /// </summary>
+        public void ParticlePositionsFromWelded(ReadOnlySpan<Vector3> weldedPositions, Vector3[] particlePositions)
+        {
+            if (weldedPositions.Length != Topology.Positions.Length) throw new ArgumentException("頂点数が一致しません。", nameof(weldedPositions));
+            if (particlePositions == null || particlePositions.Length != Model.ParticleCount) throw new ArgumentException("粒子数が一致しません。", nameof(particlePositions));
+
+            int[] triangles = Topology.Triangles;
+            // 毎フレーム回る処理ではないが、Mono で遅い Vector3 の演算子は避けて成分ごとに計算する
+            for (int i = 0; i < particlePositions.Length; i++)
+            {
+                int t = ParticleTriangle[i];
+                Vector3 a = weldedPositions[triangles[3 * t]], b = weldedPositions[triangles[3 * t + 1]], c = weldedPositions[triangles[3 * t + 2]];
+                Vector3 w = _particleBarycentric[i];
+                particlePositions[i] = new Vector3(
+                    w.X * a.X + w.Y * b.X + w.Z * c.X,
+                    w.X * a.Y + w.Y * b.Y + w.Z * c.Y,
+                    w.X * a.Z + w.Y * b.Z + w.Z * c.Z);
+            }
+        }
+
+        // 粒子を三角形に落とした重心座標。粒子は三角形の上に作ってあるので、落とす距離はほぼ 0
+        static Vector3[] ComputeBarycentric(MeshTopology topology, Vector3[] particles, int[] particleTriangle)
+        {
+            int[] triangles = topology.Triangles;
+            Vector3[] positions = topology.Positions;
+            var result = new Vector3[particles.Length];
+            for (int i = 0; i < particles.Length; i++)
+            {
+                int t = particleTriangle[i];
+                Vector3 a = positions[triangles[3 * t]], b = positions[triangles[3 * t + 1]], c = positions[triangles[3 * t + 2]];
+                Vector3 v0 = b - a, v1 = c - a, v2 = particles[i] - a;
+                float d00 = Vector3.Dot(v0, v0), d01 = Vector3.Dot(v0, v1), d11 = Vector3.Dot(v1, v1);
+                float d20 = Vector3.Dot(v2, v0), d21 = Vector3.Dot(v2, v1);
+                float denominator = d00 * d11 - d01 * d01;
+                if (denominator <= 1e-24f * (d00 + d11) * (d00 + d11))
+                {
+                    // 面積がほぼ 0 の三角形では、一番近い頂点にそのまま乗せる
+                    float da = v2.LengthSquared(), db = (particles[i] - b).LengthSquared(), dc = (particles[i] - c).LengthSquared();
+                    result[i] = da <= db && da <= dc ? new Vector3(1f, 0f, 0f) : db <= dc ? new Vector3(0f, 1f, 0f) : new Vector3(0f, 0f, 1f);
+                    continue;
+                }
+                float v = (d11 * d20 - d01 * d21) / denominator;
+                float w = (d00 * d21 - d01 * d20) / denominator;
+                result[i] = new Vector3(1f - v - w, v, w);
+            }
+            return result;
         }
 
         /// <summary>

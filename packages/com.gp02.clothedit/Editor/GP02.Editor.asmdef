@@ -2,7 +2,8 @@
     "name": "GP02.Editor",
     "rootNamespace": "GP02.EditorTools",
     "references": [
-        "GP02.Core"
+        "GP02.Core",
+        "GP02.Runtime"
     ],
     "includePlatforms": [
         "Editor"
