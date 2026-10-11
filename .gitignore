@@ -499,3 +499,9 @@ unity/.idea/
 # 開発用プロジェクトは VRChat SDK なしで動かす方針。VRChat での確認は最後の段階だけ行う
 unity/Packages/*/
 tools/unity/out/
+# ツールが作るメッシュ・テスト用の衣装（Assets/GP02/）と、手元の衣装を置く場所（Assets/Local/）はコミットしない。
+# リポジトリは public なので、購入した衣装のデータが入らないようにする
+unity/Assets/GP02/
+unity/Assets/GP02.meta
+unity/Assets/Local/
+unity/Assets/Local.meta
