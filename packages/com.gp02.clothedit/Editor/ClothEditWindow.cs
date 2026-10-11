@@ -236,10 +236,20 @@ namespace GP02.EditorTools
                 "粗い粒子で先に形を決める計算の、1段あたりの反復回数です。多いと遠くまで動きが伝わりやすくなりますが、重くなります。既定 10"),
                 _settings.CoarseIterations, 0, 40);
 
+            _settings.BrushCompliance = EditorGUILayout.Slider(new GUIContent("つまむ柔らかさ",
+                "大きいほど、布の長さで届かない所へ引いたときに早く手前で止まります（伸びが残りにくい）。" +
+                "小さいほど手にしっかり付いてきます。0 でつまんだ所を固定します（届かない所まで連れて行くので伸びが残ります）。既定 0.02"),
+                _settings.BrushCompliance, 0f, ClothEditSettings.MaxBrushCompliance);
+
             _settings.KeepOutsideRestSurface = EditorGUILayout.Toggle(new GUIContent("元の形より内側に入らない",
                 "オンにすると、布が編集前の形より内側（体や内側の布の方）へ入らなくなり、すり抜けを防ぎます。" +
                 "つまんでいる範囲は対象外です。平らな部品や、裏面用の面が重なった部分には効きません。内側へ押し込む編集をしたいときはオフにします。既定はオン"),
                 _settings.KeepOutsideRestSurface);
+            _settings.UseRestSurfaceAllowance = EditorGUILayout.Toggle(new GUIContent("体や内側の布までの隙間を使う",
+                "オンにすると、編集を始めるときに測った「体や内側の布までの隙間」の分だけ、布が元の形より内側へ動けます。" +
+                "ふんわりした服は、隙間を使えると布を融通できて伸びが残りにくくなります（体や内側の布には入り込みません）。" +
+                "オフにすると隙間を 0 にして、元の形より内側へは入りません。「元の形より内側に入らない」がオフのときは関係ありません。既定はオン"),
+                _settings.UseRestSurfaceAllowance);
 
             IClothSolverKernel kernel = ClothSolver.DefaultKernel;
             if (kernel != null)

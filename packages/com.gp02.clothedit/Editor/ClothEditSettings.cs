@@ -16,6 +16,8 @@ namespace GP02.EditorTools
         public const float DefaultSettleTimeoutSeconds = 2f;
         public const float DefaultSolveMilliseconds = 12f;
         public const int DefaultCoarseIterations = 10;
+        public const float DefaultBrushCompliance = ClothSolver.DefaultBrushCompliance;
+        public const float MaxBrushCompliance = 0.2f;
 
         /// <summary>EditorPrefs のキーの先頭。テストでは別の値を渡して、本物の設定を壊さない。</summary>
         public const string DefaultKeyPrefix = "GP02.Settings.";
@@ -47,6 +49,19 @@ namespace GP02.EditorTools
         /// </summary>
         public bool KeepOutsideRestSurface = true;
 
+        /// <summary>
+        /// つまんだ範囲の柔らかさ（<see cref="ClothSolver.BrushCompliance"/>）。大きいほど、布の長さで届かない所へ引いたときに早く手前で止まる。
+        /// 0 で、つまんだ所を目標に固定する（届かない所まで連れて行くので、伸びが残る）。
+        /// </summary>
+        public float BrushCompliance = DefaultBrushCompliance;
+
+        /// <summary>
+        /// 体や内側の布までの隙間を使うか。オンなら、隙間の分だけ元の形より内側へ動ける
+        /// （<see cref="ClothEditSession.RestAllowance"/> を <see cref="ClothSolver.SetRestSurfaceAllowance"/> に渡す）。
+        /// オフなら隙間を 0 にする（元の形より内側へは入らない）。
+        /// </summary>
+        public bool UseRestSurfaceAllowance = true;
+
         public void ResetToDefaults()
         {
             BendCompliance = DefaultBendCompliance;
@@ -57,6 +72,8 @@ namespace GP02.EditorTools
             CoarseIterations = DefaultCoarseIterations;
             UseAcceleration = true;
             KeepOutsideRestSurface = true;
+            BrushCompliance = DefaultBrushCompliance;
+            UseRestSurfaceAllowance = true;
         }
 
         /// <summary>負の値や、計算を壊す値を直す。</summary>
@@ -68,10 +85,18 @@ namespace GP02.EditorTools
             if (!(SettleTimeoutSeconds >= 0f)) SettleTimeoutSeconds = DefaultSettleTimeoutSeconds;
             if (!(SolveMilliseconds >= 0f)) SolveMilliseconds = DefaultSolveMilliseconds;
             if (CoarseIterations < 0) CoarseIterations = DefaultCoarseIterations;
+            if (!(BrushCompliance >= 0f)) BrushCompliance = DefaultBrushCompliance;
+            else if (BrushCompliance > MaxBrushCompliance) BrushCompliance = MaxBrushCompliance;
         }
 
-        /// <summary>計算に関わる値（曲がりやすさなど）をソルバーに反映する。</summary>
-        public void ApplyTo(ClothSolver solver)
+        /// <summary>
+        /// 計算に関わる値（曲がりやすさなど）をソルバーに反映する。
+        /// </summary>
+        /// <param name="restAllowance">
+        /// 測った、粒子ごとの隙間（<see cref="ClothEditSession.RestAllowance"/>）。
+        /// <see cref="UseRestSurfaceAllowance"/> がオンのときだけソルバーに渡し、オフか null なら隙間を 0 にする
+        /// </param>
+        public void ApplyTo(ClothSolver solver, float[] restAllowance = null)
         {
             if (solver == null) return;
             Sanitize();
@@ -80,6 +105,8 @@ namespace GP02.EditorTools
             solver.CoarseIterations = CoarseIterations;
             solver.Kernel = UseAcceleration ? ClothSolver.DefaultKernel : null;
             solver.KeepOutsideRestSurface = KeepOutsideRestSurface;
+            solver.BrushCompliance = BrushCompliance;
+            solver.SetRestSurfaceAllowance(UseRestSurfaceAllowance ? restAllowance : null);
         }
 
         public static ClothEditSettings Load(string keyPrefix = DefaultKeyPrefix)
@@ -94,6 +121,8 @@ namespace GP02.EditorTools
                 CoarseIterations = EditorPrefs.GetInt(keyPrefix + "CoarseIterations", DefaultCoarseIterations),
                 UseAcceleration = EditorPrefs.GetBool(keyPrefix + "UseAcceleration", true),
                 KeepOutsideRestSurface = EditorPrefs.GetBool(keyPrefix + "KeepOutsideRestSurface", true),
+                BrushCompliance = EditorPrefs.GetFloat(keyPrefix + "BrushCompliance", DefaultBrushCompliance),
+                UseRestSurfaceAllowance = EditorPrefs.GetBool(keyPrefix + "UseRestSurfaceAllowance", true),
             };
             settings.Sanitize();
             return settings;
@@ -109,6 +138,8 @@ namespace GP02.EditorTools
             EditorPrefs.SetInt(keyPrefix + "CoarseIterations", CoarseIterations);
             EditorPrefs.SetBool(keyPrefix + "UseAcceleration", UseAcceleration);
             EditorPrefs.SetBool(keyPrefix + "KeepOutsideRestSurface", KeepOutsideRestSurface);
+            EditorPrefs.SetFloat(keyPrefix + "BrushCompliance", BrushCompliance);
+            EditorPrefs.SetBool(keyPrefix + "UseRestSurfaceAllowance", UseRestSurfaceAllowance);
         }
 
         /// <summary>保存した値を消す（次の Load で既定値に戻る）。</summary>
@@ -118,6 +149,7 @@ namespace GP02.EditorTools
             {
                 "BendCompliance", "StretchCompliance", "SettleTolerance", "SettleTimeoutSeconds",
                 "SolveMilliseconds", "CoarseIterations", "UseAcceleration", "KeepOutsideRestSurface",
+                "BrushCompliance", "UseRestSurfaceAllowance",
             })
             {
                 EditorPrefs.DeleteKey(keyPrefix + key);

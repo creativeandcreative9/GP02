@@ -35,15 +35,18 @@ namespace GP02.Tests
             return solver;
         }
 
-        [TestCase(0)]
-        [TestCase(2)]
-        public void BurstKernel_MatchesCSharpResult(int coarseLevels)
+        // つまむ柔らかさは既定（柔らかいつまみ）と、0（つまんだ範囲を固定）、大きめの値の3通り
+        [TestCase(0, ClothSolver.DefaultBrushCompliance)]
+        [TestCase(2, ClothSolver.DefaultBrushCompliance)]
+        [TestCase(2, 0f)]
+        [TestCase(2, 0.1f)]
+        public void BurstKernel_MatchesCSharpResult(int coarseLevels, float brushCompliance)
         {
             const float size = 0.3f;
             ParticleCloth cloth = BuildCloth(20, size, coarseLevels);
 
-            Vector3[] expected = Operate(cloth, size, null);
-            Vector3[] actual = Operate(cloth, size, new BurstClothSolverKernel());
+            Vector3[] expected = Operate(cloth, size, null, brushCompliance);
+            Vector3[] actual = Operate(cloth, size, new BurstClothSolverKernel(), brushCompliance);
 
             float moved = 0f, maxDifference = 0f;
             for (int i = 0; i < expected.Length; i++)
@@ -51,14 +54,16 @@ namespace GP02.Tests
                 moved = System.Math.Max(moved, Vector3.Distance(expected[i], cloth.Model.RestPositions[i]));
                 maxDifference = System.Math.Max(maxDifference, Vector3.Distance(expected[i], actual[i]));
             }
-            Debug.Log($"[GP02] Burst と C# の差（粗い段 {coarseLevels}）: 最大 {maxDifference:E2} m（粒子 {expected.Length}、最大の移動 {moved:F3} m）");
+            Debug.Log($"[GP02] Burst と C# の差（粗い段 {coarseLevels}、つまむ柔らかさ {brushCompliance}）: 最大 {maxDifference:E2} m（粒子 {expected.Length}、最大の移動 {moved:F3} m）");
             Assert.That(moved, Is.GreaterThan(0.01f), "操作で動いていません");
             Assert.That(maxDifference, Is.LessThan(1e-4f));
         }
 
-        // 曲がった布（テスト用のスカート）では、元の形より内側に入らない制約が効く。その状態でも C# と一致すること
-        [Test]
-        public void BurstKernel_MatchesCSharpResult_WithRestSurface()
+        // 曲がった布（テスト用のスカート）では、元の形より内側に入らない制約が効く。その状態でも C# と一致すること。
+        // useAllowance なら、粒子ごとに違う「入ってよい深さ」（0〜1.2cm）も入れる
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BurstKernel_MatchesCSharpResult_WithRestSurface(bool useAllowance)
         {
             UnityEngine.Mesh mesh = TestClothMenu.CreateSkirtMesh();
             var cloth = ParticleCloth.Build(MeshBridge.ToNumerics(mesh.vertices, UnityEngine.Vector3.one), mesh.triangles);
@@ -67,9 +72,15 @@ namespace GP02.Tests
             foreach (Vector3 n in cloth.Model.RestNormals) if (n != Vector3.Zero) withNormals++;
             Assert.That(withNormals, Is.GreaterThan(cloth.Model.ParticleCount / 2), "スカートで外向きが決まっていません");
 
-            Vector3[] Run(IClothSolverKernel kernel)
+            Vector3[] Run(IClothSolverKernel kernel, bool allowance)
             {
                 var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { Kernel = kernel };
+                if (allowance)
+                {
+                    var depths = new float[cloth.Model.ParticleCount];
+                    for (int i = 0; i < depths.Length; i++) depths[i] = 0.002f * (i % 7);
+                    solver.SetRestSurfaceAllowance(depths);
+                }
                 float top = float.MinValue;
                 foreach (Vector3 p in cloth.Model.RestPositions) top = System.Math.Max(top, p.Y);
                 for (int i = 0; i < cloth.Model.ParticleCount; i++)
@@ -87,18 +98,29 @@ namespace GP02.Tests
                 return solver.Positions.ToArray();
             }
 
-            Vector3[] expected = Run(null);
-            Vector3[] actual = Run(new BurstClothSolverKernel());
+            Vector3[] expected = Run(null, useAllowance);
+            Vector3[] actual = Run(new BurstClothSolverKernel(), useAllowance);
             float maxDifference = 0f;
             for (int i = 0; i < expected.Length; i++) maxDifference = System.Math.Max(maxDifference, Vector3.Distance(expected[i], actual[i]));
-            Debug.Log($"[GP02] Burst と C# の差（スカート、内側に入らない制約あり）: 最大 {maxDifference:E2} m");
+            Debug.Log($"[GP02] Burst と C# の差（スカート、内側に入らない制約あり、入ってよい深さ {(useAllowance ? "あり" : "なし")}）: 最大 {maxDifference:E2} m");
             Assert.That(maxDifference, Is.LessThan(1e-4f));
+
+            // 入ってよい深さが結果に効いていること（効かないテストにならないように）
+            if (useAllowance)
+            {
+                Vector3[] without = Run(null, false);
+                float effect = 0f;
+                for (int i = 0; i < expected.Length; i++) effect = System.Math.Max(effect, Vector3.Distance(expected[i], without[i]));
+                Debug.Log($"[GP02] 入ってよい深さの有無による結果の差: 最大 {effect:E2} m");
+                Assert.That(effect, Is.GreaterThan(1e-4f));
+            }
         }
 
         // ピン留め → つまんで数コマ引っ張る → 仕上げ → 離す
-        static Vector3[] Operate(ParticleCloth cloth, float size, IClothSolverKernel kernel)
+        static Vector3[] Operate(ParticleCloth cloth, float size, IClothSolverKernel kernel, float brushCompliance = ClothSolver.DefaultBrushCompliance)
         {
             ClothSolver solver = CreateSolver(cloth, size, kernel, out int center);
+            solver.BrushCompliance = brushCompliance;
             Vector3 start = solver.Positions[center];
             for (int f = 1; f <= 5; f++)
             {

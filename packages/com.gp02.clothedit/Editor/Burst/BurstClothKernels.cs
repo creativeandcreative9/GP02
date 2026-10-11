@@ -39,6 +39,13 @@ namespace GP02.EditorTools
             public float* RestPositions;
             public float* RestNormals;
             public int* RestAnchor;
+            public float* RestAllowance;         // null なら 0
+            public float BrushCompliance;        // 0 以下なら、つまんだ範囲を引き寄せない
+            public float* BrushStart;
+            public float* BrushLambda;
+            public float BrushMoveX;
+            public float BrushMoveY;
+            public float BrushMoveZ;
         }
 
         public struct CoarseLevelArgs
@@ -65,6 +72,7 @@ namespace GP02.EditorTools
             for (int it = 0; it < iterations; it++)
             {
                 // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
+                if (a->BrushCompliance > 0f) SolveBrushTargets(a);
                 SolveDistances(a->Positions, a->InverseMass, a->ActiveBend, a->ActiveBendCount, a->BendPairs, a->BendRest, a->BendLambda, a->BendCompliance);
                 SolveDistances(a->Positions, a->InverseMass, a->ActiveStretch, a->ActiveStretchCount, a->StretchPairs, a->StretchRest, a->StretchLambda, a->StretchCompliance);
                 SolveTethers(a);
@@ -179,13 +187,40 @@ namespace GP02.EditorTools
             }
         }
 
-        // 元の形の、近い粒子の面より内側にあれば、面まで押し戻す（つまんでいる範囲は対象外）
+        // つまんだ範囲の各粒子を、つまみ始めの位置＋つまんだ点の移動量へ引き寄せる（XPBD の柔らかい制約）
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void SolveBrushTargets(IterationArgs* a)
+        {
+            float* p = a->Positions;
+            float* start = a->BrushStart;
+            float* lambda = a->BrushLambda;
+            float alpha = a->BrushCompliance;
+            float mx = a->BrushMoveX, my = a->BrushMoveY, mz = a->BrushMoveZ;
+            float scale = 1f / (1f + alpha);
+            for (int n = 0; n < a->ActiveParticleCount; n++)
+            {
+                int i = a->ActiveParticles[n];
+                if (a->InBrush[i] == 0) continue;
+                float dx = (-(p[3 * i] - start[3 * i] - mx) - alpha * lambda[3 * i]) * scale;
+                float dy = (-(p[3 * i + 1] - start[3 * i + 1] - my) - alpha * lambda[3 * i + 1]) * scale;
+                float dz = (-(p[3 * i + 2] - start[3 * i + 2] - mz) - alpha * lambda[3 * i + 2]) * scale;
+                lambda[3 * i] += dx;
+                lambda[3 * i + 1] += dy;
+                lambda[3 * i + 2] += dz;
+                p[3 * i] += dx;
+                p[3 * i + 1] += dy;
+                p[3 * i + 2] += dz;
+            }
+        }
+
+        // 元の形の、近い粒子の面より、入ってよい深さ以上内側にあれば押し戻す（つまんでいる範囲は対象外）
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void SolveRestSurface(IterationArgs* a)
         {
             float* p = a->Positions;
             float* rest = a->RestPositions;
             float* normals = a->RestNormals;
+            float* allowance = a->RestAllowance;
             bool grabbing = a->Grabbed >= 0;
             for (int n = 0; n < a->ActiveParticleCount; n++)
             {
@@ -194,6 +229,7 @@ namespace GP02.EditorTools
                 int r = a->RestAnchor[i];
                 float nx = normals[3 * r], ny = normals[3 * r + 1], nz = normals[3 * r + 2];
                 float d = (p[3 * i] - rest[3 * r]) * nx + (p[3 * i + 1] - rest[3 * r + 1]) * ny + (p[3 * i + 2] - rest[3 * r + 2]) * nz;
+                if (allowance != null) d += allowance[r];
                 if (d >= 0f) continue;
                 p[3 * i] -= d * nx;
                 p[3 * i + 1] -= d * ny;

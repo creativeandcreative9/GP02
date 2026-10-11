@@ -116,7 +116,7 @@ namespace GP02.EditorTools
         public void ApplySettings()
         {
             _settings.Sanitize();
-            if (_session != null) _settings.ApplyTo(_session.Solver);
+            if (_session != null) _settings.ApplyTo(_session.Solver, _session.RestAllowance);
             Notify();
         }
 
@@ -221,7 +221,7 @@ namespace GP02.EditorTools
                 if (ShowProgress) EditorUtility.ClearProgressBar();
             }
 
-            _settings.ApplyTo(_session.Solver);
+            _settings.ApplyTo(_session.Solver, _session.RestAllowance);
             _session.Solver.InfluenceRadius = _influenceRadius;
             if (reuseCloth != null)
             {

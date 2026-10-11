@@ -37,6 +37,12 @@ namespace GP02.Core
         readonly Vector3[] _restInternal;     // 元の位置（内部の座標）
         readonly Vector3[] _restNormals;      // 元の形の面の外向き。決められない粒子は 0 ベクトル。null なら無し
         readonly int[] _restAnchor;           // 粒子ごとの、今の位置に一番近い元の粒子
+        float[] _restAllowance;               // 粒子ごとの、内側へ入ってよい深さ（体や内側の布までの隙間）。null なら 0
+
+        // つまんだ範囲を目標へ引き寄せる柔らかい制約（BrushCompliance > 0 のとき）
+        readonly Vector3[] _brushStart;       // つまみ始めの位置（内部の座標）
+        readonly Vector3[] _brushLambda;      // XPBD の λ。同じつまみが続く間は Solve をまたいで引き継ぐ
+        float _brushCompliance = DefaultBrushCompliance;
         readonly bool[] _pinned;
         readonly float[] _stretchLambda;
         readonly float[] _bendLambda;
@@ -90,6 +96,39 @@ namespace GP02.Core
         /// 内側へ押し込む編集をしたいときは false にする。<see cref="ClothModel.RestNormals"/> が無い布では効かない。
         /// </summary>
         public bool KeepOutsideRestSurface { get; set; } = true;
+
+        /// <summary><see cref="BrushCompliance"/> の既定値。</summary>
+        public const float DefaultBrushCompliance = 0.02f;
+
+        /// <summary>
+        /// つまんだ範囲の柔らかさ（XPBD のコンプライアンス）。0 なら、つまんだ範囲を目標の位置に固定する。
+        ///
+        /// 固定すると、布の長さで届かない位置（ウエストをピン留めしたスカートを外へ引くなど）まで連れて行くので、
+        /// どこかに大きな伸びが残って消えない（スカートを外へ10cmで約54%）。柔らかくすると、届く目標には届き、
+        /// 届かない目標では布の長さが勝って手前で止まる（同じ操作で約4%）。
+        /// λ は、目標が動かない間は Solve をまたいで引き継ぐので、手を止めてから届かない分だけ少しずつ譲る。
+        /// 目標が動くとリセットするので、ドラッグ中は手にしっかり付いてくる。大きいほど早く譲るが、届く目標にも遅れて着く。
+        /// </summary>
+        public float BrushCompliance
+        {
+            get => _brushCompliance;
+            set
+            {
+                if (!(value >= 0f)) throw new ArgumentOutOfRangeException(nameof(value));
+                if ((value > 0f) != (_brushCompliance > 0f)) _activeDirty = true;
+                _brushCompliance = value;
+            }
+        }
+
+        /// <summary>
+        /// 粒子ごとに、元の形より内側へ入ってよい深さ（メートル）を設定する。null なら全て 0（元の形より内側へは入らない）。
+        /// 体や内側の布までの隙間を入れると、ふんわりした服は隙間の分だけ内側へ動け、布を融通できる。
+        /// </summary>
+        public void SetRestSurfaceAllowance(float[] allowance)
+        {
+            if (allowance != null && allowance.Length != _positions.Length) throw new ArgumentException("粒子数が一致しません。", nameof(allowance));
+            _restAllowance = allowance;
+        }
 
         /// <summary>粗い段1段あたりの反復回数。</summary>
         public int CoarseIterations { get; set; } = 10;
@@ -150,6 +189,8 @@ namespace GP02.Core
             _restNormals = model.RestNormals;
             _restAnchor = new int[n];
             for (int i = 0; i < n; i++) _restAnchor[i] = i;
+            _brushStart = new Vector3[n];
+            _brushLambda = new Vector3[n];
             _pinned = new bool[n];
             _stretchLambda = new float[model.StretchRestLengths.Length];
             _bendLambda = new float[model.BendRestLengths.Length];
@@ -199,7 +240,12 @@ namespace GP02.Core
             {
                 // メッシュに沿った距離で選ぶので、近くにあってもつながっていない布（重ね着など）はつままない
                 _graph.ShortestDistances(new[] { particle }, _grabDistance, null);
-                for (int i = 0; i < _inBrush.Length; i++) _inBrush[i] = _grabDistance[i] <= brushRadius;
+                for (int i = 0; i < _inBrush.Length; i++)
+                {
+                    _inBrush[i] = _grabDistance[i] <= brushRadius;
+                    _brushStart[i] = _positions[i];
+                    _brushLambda[i] = Vector3.Zero;
+                }
                 _grabOrigin = _positions[particle];
                 _appliedOffset = Vector3.Zero;
                 _activePull = 0f;
@@ -207,7 +253,17 @@ namespace GP02.Core
             }
             _grabbed = particle;
             _brushRadius = brushRadius;
-            _grabTarget = target - _origin;
+            Vector3 newTarget = target - _origin;
+            if (newTarget != _grabTarget)
+            {
+                // ドラッグ中（目標が動いている間）は λ をためない。ためると、一時的にかかった力の分だけ、
+                // 届く目標でも遅れが残る。手を止めてから、届かない分だけ少しずつ譲る
+                for (int i = 0; i < _inBrush.Length; i++)
+                {
+                    if (_inBrush[i]) _brushLambda[i] = Vector3.Zero;
+                }
+            }
+            _grabTarget = newTarget;
         }
 
         public void Release()
@@ -370,6 +426,7 @@ namespace GP02.Core
             for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
 
             bool keepOutside = KeepOutsideRestSurface && _restNormals != null;
+            bool softBrush = _grabbed >= 0 && _brushCompliance > 0f;
             if (keepOutside && iterations > 0) UpdateRestAnchors();
 
             IClothSolverKernel kernel = Kernel;
@@ -381,7 +438,8 @@ namespace GP02.Core
                         bendPairs, bendRest, _bendLambda, _activeBend, _activeBendCount, BendCompliance,
                         stretchPairs, stretchRest, _stretchLambda, _activeStretch, _activeStretchCount, StretchCompliance,
                         _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _nearestPin, _pinDistance,
-                        keepOutside, _restInternal, _restNormals, _restAnchor), iterations);
+                        keepOutside, _restInternal, _restNormals, _restAnchor, _restAllowance,
+                        softBrush ? _brushCompliance : 0f, _brushStart, _brushLambda, _grabTarget - _grabOrigin), iterations);
                 }
             }
             else
@@ -389,6 +447,7 @@ namespace GP02.Core
                 for (int it = 0; it < iterations; it++)
                 {
                     // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
+                    if (softBrush) SolveBrushTargets();
                     SolveDistances(_activeBend, _activeBendCount, bendPairs, bendRest, _bendLambda, BendCompliance);
                     SolveDistances(_activeStretch, _activeStretchCount, stretchPairs, stretchRest, _stretchLambda, StretchCompliance);
 
@@ -485,7 +544,8 @@ namespace GP02.Core
             {
                 // つながっていない部品（距離が無限大）は計算しない
                 bool active = _grabbed < 0 || (!float.IsInfinity(_grabDistance[i]) && _grabDistance[i] <= limit);
-                bool fixedParticle = _pinned[i] || IsGrabbed(i) || !active;
+                // つまんだ範囲は、柔らかい制約で引き寄せるときは動ける（BrushCompliance を参照）
+                bool fixedParticle = _pinned[i] || (IsGrabbed(i) && _brushCompliance <= 0f) || !active;
                 _inverseMass[i] = fixedParticle ? 0f : 1f;
                 // つまんだ範囲もテザーの対象にするので、ピン留めでなければ一覧に入れる
                 if (active && !_pinned[i]) _activeParticles[_activeParticleCount++] = i;
@@ -601,12 +661,13 @@ namespace GP02.Core
             return dx * dx + dy * dy + dz * dz;
         }
 
-        // 元の形の、近い粒子の面より内側にあれば、面まで押し戻す。粒子は1cm間隔なので、曲面でも誤差は1mm未満
+        // 元の形の、近い粒子の面より、入ってよい深さ以上内側にあれば押し戻す。粒子は1cm間隔なので、曲面でも誤差は1mm未満
         void SolveRestSurface()
         {
             Vector3[] p = _positions;
             Vector3[] rest = _restInternal;
             Vector3[] normals = _restNormals;
+            float[] allowance = _restAllowance;
             bool grabbing = _grabbed >= 0;
             for (int a = 0; a < _activeParticleCount; a++)
             {
@@ -615,10 +676,34 @@ namespace GP02.Core
                 int r = _restAnchor[i];
                 float nx = normals[r].X, ny = normals[r].Y, nz = normals[r].Z;
                 float d = (p[i].X - rest[r].X) * nx + (p[i].Y - rest[r].Y) * ny + (p[i].Z - rest[r].Z) * nz;
+                if (allowance != null) d += allowance[r];
                 if (d >= 0f) continue;
                 p[i].X -= d * nx;
                 p[i].Y -= d * ny;
                 p[i].Z -= d * nz;
+            }
+        }
+
+        // つまんだ範囲の各粒子を、つまみ始めの位置＋つまんだ点の移動量へ引き寄せる（XPBD の柔らかい制約）
+        void SolveBrushTargets()
+        {
+            Vector3[] p = _positions;
+            float alpha = _brushCompliance;
+            float mx = _grabTarget.X - _grabOrigin.X, my = _grabTarget.Y - _grabOrigin.Y, mz = _grabTarget.Z - _grabOrigin.Z;
+            float scale = 1f / (1f + alpha);
+            for (int a = 0; a < _activeParticleCount; a++)
+            {
+                int i = _activeParticles[a];
+                if (!_inBrush[i]) continue;
+                float dx = (-(p[i].X - _brushStart[i].X - mx) - alpha * _brushLambda[i].X) * scale;
+                float dy = (-(p[i].Y - _brushStart[i].Y - my) - alpha * _brushLambda[i].Y) * scale;
+                float dz = (-(p[i].Z - _brushStart[i].Z - mz) - alpha * _brushLambda[i].Z) * scale;
+                _brushLambda[i].X += dx;
+                _brushLambda[i].Y += dy;
+                _brushLambda[i].Z += dz;
+                p[i].X += dx;
+                p[i].Y += dy;
+                p[i].Z += dz;
             }
         }
 

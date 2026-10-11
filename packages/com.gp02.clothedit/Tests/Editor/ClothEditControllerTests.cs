@@ -569,6 +569,7 @@ namespace GP02.Tests
                 CoarseIterations = 3,
                 UseAcceleration = false,
                 SolveMilliseconds = 4f,
+                BrushCompliance = 0.1f,
             };
             ClothEditController c = StartController(CreateTarget(true), settings);
 
@@ -577,6 +578,7 @@ namespace GP02.Tests
             Assert.That(solver.StretchCompliance, Is.EqualTo(0.02f));
             Assert.That(solver.CoarseIterations, Is.EqualTo(3));
             Assert.That(solver.Kernel, Is.Null, "高速版をオフにすると C# で計算する");
+            Assert.That(solver.BrushCompliance, Is.EqualTo(0.1f));
 
             // C# の計算でもつまんで動かせる
             GrabStroke(c, new Vector3(0.1f, 0f, 0f), 0.05f);
@@ -585,7 +587,9 @@ namespace GP02.Tests
 
             settings.BendCompliance = 0.05f;
             settings.UseAcceleration = true;
+            settings.BrushCompliance = 0f;
             c.ApplySettings();
+            Assert.That(solver.BrushCompliance, Is.EqualTo(0f));
             Assert.That(solver.BendCompliance, Is.EqualTo(0.05f));
             Assert.That(solver.Kernel, Is.SameAs(ClothSolver.DefaultKernel));
         }
@@ -622,6 +626,9 @@ namespace GP02.Tests
             Assert.That(settings.StretchCompliance, Is.EqualTo(solver.StretchCompliance));
             Assert.That(settings.CoarseIterations, Is.EqualTo(solver.CoarseIterations));
             Assert.That(settings.KeepOutsideRestSurface, Is.EqualTo(solver.KeepOutsideRestSurface));
+            Assert.That(settings.BrushCompliance, Is.EqualTo(solver.BrushCompliance));
+            Assert.That(settings.BrushCompliance, Is.EqualTo(0.02f));
+            Assert.That(settings.UseRestSurfaceAllowance, Is.True);
             Assert.That(settings.SettleTolerance, Is.EqualTo(0.01f));
             Assert.That(settings.SettleTimeoutSeconds, Is.EqualTo(2f));
             Assert.That(settings.SolveMilliseconds, Is.EqualTo(12f));
@@ -629,7 +636,15 @@ namespace GP02.Tests
             settings.BendCompliance = -1f;
             settings.StretchCompliance = float.NaN;
             settings.CoarseIterations = -4;
+            settings.BrushCompliance = -0.5f;
             settings.Sanitize();
+            Assert.That(settings.BrushCompliance, Is.EqualTo(ClothEditSettings.DefaultBrushCompliance));
+            settings.BrushCompliance = 5f;
+            settings.Sanitize();
+            Assert.That(settings.BrushCompliance, Is.EqualTo(ClothEditSettings.MaxBrushCompliance), "上限で頭打ち");
+            settings.BrushCompliance = float.NaN;
+            settings.Sanitize();
+            Assert.That(settings.BrushCompliance, Is.EqualTo(ClothEditSettings.DefaultBrushCompliance));
             Assert.That(settings.BendCompliance, Is.EqualTo(ClothEditSettings.DefaultBendCompliance));
             Assert.That(settings.StretchCompliance, Is.EqualTo(ClothEditSettings.DefaultStretchCompliance));
             Assert.That(settings.CoarseIterations, Is.EqualTo(ClothEditSettings.DefaultCoarseIterations));
@@ -647,6 +662,8 @@ namespace GP02.Tests
                 SolveMilliseconds = 20f,
                 CoarseIterations = 7,
                 UseAcceleration = false,
+                BrushCompliance = 0.15f,
+                UseRestSurfaceAllowance = false,
             };
             settings.Save(TestKeyPrefix);
 
@@ -658,13 +675,20 @@ namespace GP02.Tests
             Assert.That(loaded.SolveMilliseconds, Is.EqualTo(20f));
             Assert.That(loaded.CoarseIterations, Is.EqualTo(7));
             Assert.That(loaded.UseAcceleration, Is.False);
+            Assert.That(loaded.BrushCompliance, Is.EqualTo(0.15f));
+            Assert.That(loaded.UseRestSurfaceAllowance, Is.False);
 
             loaded.ResetToDefaults();
             Assert.That(loaded.BendCompliance, Is.EqualTo(ClothEditSettings.DefaultBendCompliance));
             Assert.That(loaded.UseAcceleration, Is.True);
+            Assert.That(loaded.BrushCompliance, Is.EqualTo(ClothEditSettings.DefaultBrushCompliance));
+            Assert.That(loaded.UseRestSurfaceAllowance, Is.True);
 
             ClothEditSettings.DeleteSaved(TestKeyPrefix);
-            Assert.That(ClothEditSettings.Load(TestKeyPrefix).CoarseIterations, Is.EqualTo(ClothEditSettings.DefaultCoarseIterations));
+            ClothEditSettings afterDelete = ClothEditSettings.Load(TestKeyPrefix);
+            Assert.That(afterDelete.CoarseIterations, Is.EqualTo(ClothEditSettings.DefaultCoarseIterations));
+            Assert.That(afterDelete.BrushCompliance, Is.EqualTo(ClothEditSettings.DefaultBrushCompliance));
+            Assert.That(afterDelete.UseRestSurfaceAllowance, Is.True);
         }
     }
 }

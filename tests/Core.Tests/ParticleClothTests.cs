@@ -239,6 +239,7 @@ public class ClothHierarchyTests
     {
         var cloth = SkirtSizedCloth();
         var solver = PullHem(cloth, cloth.Hierarchy, 40, 0);
+        solver.BrushCompliance = 0f;   // つまんだ範囲を固定する設定で確かめる
         var grabbed = Enumerable.Range(0, cloth.Model.ParticleCount).Where(solver.IsGrabbed).ToArray();
         var before = grabbed.Select(i => solver.Positions[i]).ToArray();
 

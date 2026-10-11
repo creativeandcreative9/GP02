@@ -67,8 +67,17 @@ namespace GP02.EditorTools
             return kernel.IsAccelerated ? $"{kernel.Name}（有効）" : $"{kernel.Name}（無効。Jobs > Burst > Enable Compilation を確認してください）";
         }
 
-        /// <summary>準備（粒子化）にかかった時間（ミリ秒）。</summary>
+        /// <summary>準備（粒子化）にかかった時間（ミリ秒）。隙間を測る時間は含まない（<see cref="RestGap"/> の Milliseconds）。</summary>
         public double PrepareMilliseconds { get; }
+
+        /// <summary>
+        /// 粒子ごとの、体や内側の布までの隙間（メートル）。元の形より内側へ入ってよい深さとして、
+        /// <see cref="ClothEditSettings.ApplyTo"/> がソルバーに渡す。測れなかった（元の形の面の向きが無い）ときは null。
+        /// </summary>
+        public float[] RestAllowance { get; }
+
+        /// <summary>隙間を測った結果（平均・最小・最大、かかった時間など）。測れなかったときは null。</summary>
+        public RestGapMeasurer.Result RestGap { get; }
         public int ParticleCount => _cloth.Model.ParticleCount;
         public int VertexCount => _sourceMesh.vertexCount;
 
@@ -149,6 +158,12 @@ namespace GP02.EditorTools
             CurrentWorldVertices = (Vector3[])_baseWorld.Clone();
             timer.Stop();
             PrepareMilliseconds = timer.Elapsed.TotalMilliseconds;
+
+            // 体や内側の布までの隙間。布を渡されたとき（保存後の作り直し）も、今の形で測り直す
+            RestGap = RestGapMeasurer.Measure(_cloth, _bvh, _welded, renderer);
+            RestAllowance = RestGap?.Gaps;
+            _solver.SetRestSurfaceAllowance(RestAllowance);
+            if (RestGap != null) UnityEngine.Debug.Log("[GP02] " + renderer.name + ": " + RestGap);
 
             _previewMesh = Object.Instantiate(_sourceMesh);
             _previewMesh.name = _sourceMesh.name + "_Preview";

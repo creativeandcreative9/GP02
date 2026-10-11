@@ -16,7 +16,8 @@ namespace GP02.Core
         bool IsAccelerated { get; }
 
         /// <summary>
-        /// 細かい粒子の反復（曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約）を iterations 回行う。
+        /// 細かい粒子の反復（つまんだ範囲の引き寄せ → 曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約）を iterations 回行う。
+        /// 最初の引き寄せは <see cref="ClothSolverIterationData.BrushCompliance"/> が正のときだけ、
         /// 最後の制約は <see cref="ClothSolverIterationData.KeepOutsideRestSurface"/> が true のときだけ。
         /// </summary>
         void Iterate(in ClothSolverIterationData data, int iterations);
@@ -84,12 +85,31 @@ namespace GP02.Core
         /// </summary>
         public readonly int[] RestAnchor;
 
+        /// <summary>粒子ごとの、元の形より内側へ入ってよい深さ（RestAnchor の粒子の値を使う）。null なら 0。</summary>
+        public readonly float[] RestAllowance;
+
+        /// <summary>
+        /// つまんだ範囲の引き寄せのコンプライアンス。0 以下なら引き寄せない（つまんだ範囲は逆質量 0 で固定されている）。
+        /// 正なら、つまんだ範囲（InBrush）の粒子 i を、BrushStart[i] + BrushMove へ引き寄せる XPBD の制約を、x, y, z 別々に解く:
+        /// Δ = (-(p - 目標) - α λ) / (1 + α)、λ += Δ、p += Δ。BrushLambda は書き換えてよい（Solve をまたいで引き継がれる）。
+        /// </summary>
+        public readonly float BrushCompliance;
+        public readonly Vector3[] BrushStart;
+        public readonly Vector3[] BrushLambda;
+        public readonly Vector3 BrushMove;
+
         internal ClothSolverIterationData(Vector3[] positions, float[] inverseMass,
             int[] bendPairs, float[] bendRestLengths, float[] bendLambda, int[] activeBend, int activeBendCount, float bendCompliance,
             int[] stretchPairs, float[] stretchRestLengths, float[] stretchLambda, int[] activeStretch, int activeStretchCount, float stretchCompliance,
             int[] activeParticles, int activeParticleCount, int grabbed, bool[] inBrush, float[] grabDistance, int[] nearestPin, float[] pinDistance,
-            bool keepOutsideRestSurface, Vector3[] restPositions, Vector3[] restNormals, int[] restAnchor)
+            bool keepOutsideRestSurface, Vector3[] restPositions, Vector3[] restNormals, int[] restAnchor, float[] restAllowance,
+            float brushCompliance, Vector3[] brushStart, Vector3[] brushLambda, Vector3 brushMove)
         {
+            RestAllowance = restAllowance;
+            BrushCompliance = brushCompliance;
+            BrushStart = brushStart;
+            BrushLambda = brushLambda;
+            BrushMove = brushMove;
             KeepOutsideRestSurface = keepOutsideRestSurface;
             RestPositions = restPositions;
             RestNormals = restNormals;

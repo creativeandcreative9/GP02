@@ -31,8 +31,9 @@ namespace GP02.EditorTools
             fixed (int* bendPairs = d.BendPairs, activeBend = d.ActiveBend, stretchPairs = d.StretchPairs, activeStretch = d.ActiveStretch,
                 activeParticles = d.ActiveParticles, nearestPin = d.NearestPin)
             fixed (bool* inBrush = d.InBrush)
-            fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals)
+            fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals, brushStart = d.BrushStart, brushLambda = d.BrushLambda)
             fixed (int* restAnchor = d.RestAnchor)
+            fixed (float* restAllowance = d.RestAllowance)
             {
                 var args = new BurstClothKernels.IterationArgs
                 {
@@ -62,6 +63,15 @@ namespace GP02.EditorTools
                     RestPositions = (float*)restPositions,
                     RestNormals = (float*)restNormals,
                     RestAnchor = restAnchor,
+                    // null のとき fixed は null ポインタを返す。Burst 側は null なら 0 として扱う
+                    RestAllowance = restAllowance,
+                    // 配列が無いときは引き寄せない
+                    BrushCompliance = brushStart != null && brushLambda != null ? d.BrushCompliance : 0f,
+                    BrushStart = (float*)brushStart,
+                    BrushLambda = (float*)brushLambda,
+                    BrushMoveX = d.BrushMove.X,
+                    BrushMoveY = d.BrushMove.Y,
+                    BrushMoveZ = d.BrushMove.Z,
                 };
                 BurstClothKernels.Iterate(&args, iterations);
             }

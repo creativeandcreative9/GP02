@@ -25,6 +25,17 @@ public class ClothSolverKernelTests
             IterationsTotal += iterations;
             for (int it = 0; it < iterations; it++)
             {
+                if (d.BrushCompliance > 0f)
+                {
+                    for (int a = 0; a < d.ActiveParticleCount; a++)
+                    {
+                        int i = d.ActiveParticles[a];
+                        if (!d.InBrush[i]) continue;
+                        Vector3 delta = (-(d.Positions[i] - d.BrushStart[i] - d.BrushMove) - d.BrushCompliance * d.BrushLambda[i]) / (1f + d.BrushCompliance);
+                        d.BrushLambda[i] += delta;
+                        d.Positions[i] += delta;
+                    }
+                }
                 Distances(d.Positions, d.InverseMass, d.ActiveBend, d.ActiveBendCount, d.BendPairs, d.BendRestLengths, d.BendLambda, d.BendCompliance);
                 Distances(d.Positions, d.InverseMass, d.ActiveStretch, d.ActiveStretchCount, d.StretchPairs, d.StretchRestLengths, d.StretchLambda, d.StretchCompliance);
                 for (int a = 0; a < d.ActiveParticleCount; a++)
@@ -41,7 +52,7 @@ public class ClothSolverKernelTests
                     if (d.Grabbed >= 0 && d.InBrush[i]) continue;
                     int r = d.RestAnchor[i];
                     Vector3 n = d.RestNormals[r];
-                    float depth = Vector3.Dot(d.Positions[i] - d.RestPositions[r], n);
+                    float depth = Vector3.Dot(d.Positions[i] - d.RestPositions[r], n) + (d.RestAllowance != null ? d.RestAllowance[r] : 0f);
                     if (depth < 0f) d.Positions[i] -= depth * n;
                 }
             }
