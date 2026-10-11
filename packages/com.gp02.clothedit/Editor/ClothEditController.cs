@@ -668,5 +668,141 @@ namespace GP02.EditorTools
         {
             Changed?.Invoke();
         }
+
+        // ---- シェイプキーのデータとの連携（別の変更と衝突しないよう、クラスの末尾にまとめている） ----
+
+        /// <summary>
+        /// メッシュ空間の差分（シェイプキーのデータの1フレーム分）を、編集中の形として読み込む。Unity の Undo の1段になる。
+        /// 頂点数が合わない・編集中でないときは何もせず false。
+        /// </summary>
+        public bool LoadDeltasAsOperation(Vector3[] deltas)
+        {
+            return LoadDeltasAsOperation(deltas, null);
+        }
+
+        /// <summary>
+        /// 差分を読み込み、pinnedVertices（元メッシュの頂点番号）が空でなければ、今のピンをその頂点の近くの粒子に置き換える。
+        /// ピンの読み込みも同じ Undo の1段に含まれる。
+        /// </summary>
+        public bool LoadDeltasAsOperation(Vector3[] deltas, int[] pinnedVertices)
+        {
+            if (!EnsureAlive() || deltas == null || deltas.Length != _session.VertexCount) return false;
+            FinishStroke();
+            BeginOperation("GP02 シェイプキーを読み込む");
+            bool loaded = _session.LoadMeshSpaceDeltas(deltas);
+            if (loaded && pinnedVertices != null && pinnedVertices.Length > 0) ReplacePinsWithVertices(pinnedVertices);
+            // 何も変わらなかったとき（差分が 0 など）は、Undo の記録も残さない
+            CommitOperation();
+            AfterShapeChanged();
+            return loaded;
+        }
+
+        /// <summary>
+        /// 今の編集（粒子の形とピン）を、シェイプキーのデータのエントリとして保存する。保存したエントリを返す。Unity の Undo で戻せる。
+        /// 編集は続けられる（メッシュは差し替えない）。ピン留めした粒子の近くの頂点番号もエントリに入れる。
+        /// </summary>
+        /// <param name="overwrite">true なら同じ名前のエントリを上書きする（無ければ追加）。false なら、同じ名前があれば「名前 (1)」のように別名で追加する</param>
+        /// <returns>保存できなければ null（理由は <see cref="LastError"/>）</returns>
+        public ShapeKeyEntry SaveToData(GP02ShapeKeyData data, string entryName, bool overwrite)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (!EnsureAlive())
+            {
+                LastError = "編集中ではありません。";
+                return null;
+            }
+            string name = entryName == null ? "" : entryName.Trim();
+            if (name.Length == 0)
+            {
+                LastError = "シェイプキーの名前が空です。名前を入れてから保存してください。";
+                return null;
+            }
+            if (data.VertexCount != _session.VertexCount)
+            {
+                LastError = $"データの頂点数（{data.VertexCount}）が、編集中のメッシュの頂点数（{_session.VertexCount}）と違うので保存できません。";
+                return null;
+            }
+
+            FinishStroke();
+            Vector3[] deltas = _session.GetMeshSpaceDeltas();
+            // 法線の差分は、元の形（データの元のメッシュ）に対して計算する
+            Mesh rest = data.SourceMesh != null && data.SourceMesh.vertexCount == deltas.Length ? data.SourceMesh : _session.SourceMesh;
+            ShapeKeyEntry fresh = ShapeKeyLibrary.CreateEntryFromDeltas(rest, name, deltas);
+            fresh.PinnedVertices = CollectPinnedVertices();
+
+            Undo.IncrementCurrentGroup();
+            ShapeKeyEntry result;
+            ShapeKeyEntry existing = overwrite ? data.FindEntry(name) : null;
+            if (existing != null)
+            {
+                Undo.RecordObject(data, "GP02 シェイプキーを上書き保存");
+                existing.Frames = fresh.Frames;
+                existing.PinnedVertices = fresh.PinnedVertices;
+                EditorUtility.SetDirty(data);
+                result = existing;
+            }
+            else
+            {
+                fresh.Name = ShapeKeyListOperations.UniqueName(data, name);
+                ShapeKeyLibrary.AddEntry(data, fresh);
+                result = fresh;
+            }
+            ShapeKeyLibrary.SaveData(data);
+            Undo.IncrementCurrentGroup();
+            LastError = "";
+            return result;
+        }
+
+        /// <summary>
+        /// レンダラーのシェイプキーのデータを返す。コンポーネントとデータが無ければ作って付ける（Undo できる）。
+        /// レンダラーにメッシュが無ければ null。
+        /// </summary>
+        public GP02ShapeKeyData FindOrCreateData(Renderer renderer)
+        {
+            return ShapeKeyLibrary.FindOrCreateData(renderer);
+        }
+
+        // ピン留めした粒子の近くにある頂点の番号。復元（ReplacePinsWithVertices）と同じ距離で見る
+        int[] CollectPinnedVertices()
+        {
+            var pins = new List<Vector3>();
+            _session.GetPinnedPositions(pins);
+            if (pins.Count == 0) return new int[0];
+
+            float radius = _session.Cloth.Spacing * 0.75f;
+            var grid = new PointGrid(radius);
+            for (int i = 0; i < pins.Count; i++) grid.Add(i, new System.Numerics.Vector3(pins[i].x, pins[i].y, pins[i].z));
+
+            var result = new List<int>();
+            var candidates = new List<int>();
+            Vector3[] vertices = _session.CurrentWorldVertices;
+            float radiusSq = radius * radius;
+            for (int v = 0; v < vertices.Length; v++)
+            {
+                grid.Query(new System.Numerics.Vector3(vertices[v].x, vertices[v].y, vertices[v].z), radius, candidates);
+                foreach (int c in candidates)
+                {
+                    if ((pins[c] - vertices[v]).sqrMagnitude <= radiusSq)
+                    {
+                        result.Add(v);
+                        break;
+                    }
+                }
+            }
+            return result.ToArray();
+        }
+
+        // 今のピンをすべて外し、頂点の（今の形での）位置の近くの粒子をピン留めする
+        void ReplacePinsWithVertices(int[] vertexIndices)
+        {
+            _session.PaintPins(Vector3.zero, 1e5f, false);
+            Vector3[] vertices = _session.CurrentWorldVertices;
+            var positions = new List<Vector3>(vertexIndices.Length);
+            foreach (int v in vertexIndices)
+            {
+                if ((uint)v < (uint)vertices.Length) positions.Add(vertices[v]);
+            }
+            _session.PinNear(positions, _session.Cloth.Spacing * 0.75f);
+        }
     }
 }

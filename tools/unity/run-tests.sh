@@ -12,6 +12,10 @@
 #
 # 追加の引数: 環境変数 GP02_UNITY_ARGS に入れると Unity に渡す（例: GP02_UNITY_ARGS=-releaseCodeOptimization）
 #
+# 画面の描画を確かめるテスト（ShapeKeyGuiSmokeTests）は、通常の実行（-nographics）では飛ばす。次のように仮想画面の上で動かす:
+#   GP02_GUI=1 GP02_UNITY_ARGS="-testFilter GP02.Tests.ShapeKeyGuiSmokeTests" tools/unity/run-tests.sh
+#   画像は tools/unity/out/gui/ に出る
+#
 # 出力（Gitには含めない）:
 #   tools/unity/out/editmode.xml … テスト結果
 #   tools/unity/out/unity.log    … Unity のログ（コンパイルエラーはここに出る）
@@ -74,6 +78,7 @@ docker run --rm \
   -e GP02_LICENSE="$LICENSE" \
   -e GP02_USE_LOGIN="$USE_LOGIN" \
   -e GP02_UNITY_ARGS="${GP02_UNITY_ARGS:-}" \
+  -e GP02_GUI="${GP02_GUI:-0}" \
   -e UNITY_EMAIL -e UNITY_PASSWORD \
   -v "$REPO:/repo" \
   "$IMAGE" \
@@ -91,11 +96,20 @@ docker run --rm \
     if [ "$GP02_USE_LOGIN" = 1 ]; then
       $LC --activate-ulf --username "$UNITY_EMAIL" --password "$UNITY_PASSWORD" | grep -v "$UNITY_PASSWORD"
     fi
-    unity-editor -batchmode -nographics \
-      -projectPath /repo/unity \
-      -runTests -testPlatform EditMode \
-      -testResults /repo/tools/unity/out/editmode.xml \
-      -logFile /repo/tools/unity/out/unity.log $GP02_UNITY_ARGS
+    if [ "$GP02_GUI" = 1 ]; then
+      # 画面（ウィンドウ・インスペクター）の描画を確かめるときは、-nographics を付けず、仮想画面の上で OpenGL（Mesa のソフトウェア描画）を使う
+      xvfb-run -a -s "-screen 0 1280x960x24" unity-editor -batchmode -force-glcore \
+        -projectPath /repo/unity \
+        -runTests -testPlatform EditMode \
+        -testResults /repo/tools/unity/out/editmode.xml \
+        -logFile /repo/tools/unity/out/unity.log $GP02_UNITY_ARGS
+    else
+      unity-editor -batchmode -nographics \
+        -projectPath /repo/unity \
+        -runTests -testPlatform EditMode \
+        -testResults /repo/tools/unity/out/editmode.xml \
+        -logFile /repo/tools/unity/out/unity.log $GP02_UNITY_ARGS
+    fi
     code=$?
     # ライセンスまわりの調査用に、ライセンス管理のログも残す
     cp ~/.config/unity3d/Unity/Unity.Licensing.Client.log /repo/tools/unity/out/licensing-client.log 2>/dev/null
