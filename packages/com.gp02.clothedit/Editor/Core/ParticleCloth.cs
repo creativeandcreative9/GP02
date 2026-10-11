@@ -134,31 +134,16 @@ namespace GP02.Core
         /// 粒子の位置から、まとめた後の頂点の位置を求める。
         /// 頂点は、結びつけた粒子の移動量の重み付き平均だけ動く。
         /// </summary>
-        public void DeformWelded(ReadOnlySpan<Vector3> particlePositions, Vector3[] weldedPositions)
+        /// <param name="kernel">計算を任せる部品（Burst など）。null なら C#（<see cref="ShapeKernels"/>）で計算する</param>
+        public void DeformWelded(ReadOnlySpan<Vector3> particlePositions, Vector3[] weldedPositions, IShapeKernel kernel = null)
         {
             if (particlePositions.Length != Model.ParticleCount) throw new ArgumentException("粒子数が一致しません。", nameof(particlePositions));
             if (weldedPositions == null || weldedPositions.Length != Topology.Positions.Length) throw new ArgumentException("頂点数が一致しません。", nameof(weldedPositions));
 
-            // Unity の Mono では Vector3 の演算子が遅いので、成分ごとに計算する（ClothSolver.SolveDistances を参照）
-            Vector3[] rest = Model.RestPositions;
-            Vector3[] basePositions = Topology.Positions;
-            int[] offsets = _bindOffsets;
-            int[] particles = _bindParticles;
-            float[] weights = _bindWeights;
-            for (int v = 0; v < weldedPositions.Length; v++)
-            {
-                float dx = 0f, dy = 0f, dz = 0f;
-                int end = offsets[v + 1];
-                for (int k = offsets[v]; k < end; k++)
-                {
-                    int p = particles[k];
-                    float w = weights[k];
-                    dx += (particlePositions[p].X - rest[p].X) * w;
-                    dy += (particlePositions[p].Y - rest[p].Y) * w;
-                    dz += (particlePositions[p].Z - rest[p].Z) * w;
-                }
-                weldedPositions[v] = new Vector3(basePositions[v].X + dx, basePositions[v].Y + dy, basePositions[v].Z + dz);
-            }
+            var data = new WeldedDeformData(particlePositions, Model.RestPositions, Topology.Positions,
+                _bindOffsets, _bindParticles, _bindWeights, weldedPositions);
+            if (kernel != null) kernel.DeformWelded(data);
+            else ShapeKernels.DeformWelded(data);
         }
 
         /// <summary>

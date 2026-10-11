@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
+using GP02.Core;
 using GP02.EditorTools;
 using NUnit.Framework;
 using UnityEditor;
@@ -216,6 +217,98 @@ namespace GP02.Tests
                 Assert.That(buildMs, Is.LessThan(2000.0), "BuildMeshSpaceDeltas");
             }
         }
+        /// <summary>ドラッグ中の1コマの内訳（平均、ミリ秒）。</summary>
+        struct FrameCost
+        {
+            public double Solve, Update, Preview, Refit, Stretch;
+            public double Iterations;
+        }
+
+        // ドラッグ中の1コマ（ウィンドウの Tick と同じ順）の内訳を測る。kernel が null なら C#、そうでなければそのカーネルで計算する
+        static FrameCost MeasureDragFrame(ClothEditSession session, Camera camera, IClothSolverKernel kernel, double frameMilliseconds)
+        {
+            session.ResetAll();
+            session.Solver.Kernel = kernel;
+            var ray = new Ray(new Vector3(0f, 0.7f, -1f), Vector3.forward);
+            Assert.That(session.Raycast(ray, out Vector3 hit, out _, out int triangle), Is.True);
+            Assert.That(session.BeginGrab(hit, 0.04f, triangle), Is.True);
+
+            // Burst のコンパイルや時間の測定を、測定から外す
+            session.DragTo(hit + new Vector3(0f, 0.001f, -0.005f));
+            session.Solver.SolveFor(frameMilliseconds);
+            session.UpdateCurrentShape();
+            session.DrawPreview(camera);
+            session.Raycast(ray, out _, out _, out _);
+
+            var timer = new Stopwatch();
+            var cost = new FrameCost();
+            const int frames = 20;
+            for (int f = 1; f <= frames; f++)
+            {
+                session.DragTo(hit + new Vector3(0f, 0.01f, -0.05f) * f / frames);
+                timer.Restart();
+                cost.Iterations += session.Solver.SolveFor(frameMilliseconds);
+                cost.Solve += timer.Elapsed.TotalMilliseconds;
+                timer.Restart();
+                session.UpdateCurrentShape();
+                cost.Update += timer.Elapsed.TotalMilliseconds;
+                timer.Restart();
+                session.DrawPreview(camera);
+                cost.Preview += timer.Elapsed.TotalMilliseconds;
+                timer.Restart();
+                session.Raycast(ray, out _, out _, out _);   // 形が変わった直後なので、境界箱の更新を含む
+                cost.Refit += timer.Elapsed.TotalMilliseconds;
+                timer.Restart();
+                float stretch = session.Solver.MeasureMaxStretch();
+                cost.Stretch += timer.Elapsed.TotalMilliseconds;
+                Assert.That(float.IsNaN(stretch), Is.False);
+            }
+            session.Release();
+            cost.Solve /= frames;
+            cost.Update /= frames;
+            cost.Preview /= frames;
+            cost.Refit /= frames;
+            cost.Stretch /= frames;
+            cost.Iterations /= frames;
+            return cost;
+        }
+
+        // 8万頂点のスカートを、1コマ 12ms の持ち時間でドラッグしたときの内訳。高速版（Burst があれば）と C# の両方を測る。
+        // 合否は、極端に遅い場合だけ失敗にする緩い上限
+        [Test]
+        public void Skirt80k_MeasureDragFrameCost()
+        {
+            const double frameMilliseconds = 12.0;
+            Mesh mesh = CreateSkirtMesh();
+            Renderer renderer = CreateRenderer(mesh);
+            var camera = new GameObject("GP02_TestCamera").AddComponent<Camera>();
+            _created.Add(camera.gameObject);
+
+            using (var session = new ClothEditSession(renderer))
+            {
+                IClothSolverKernel accelerated = ClothSolver.DefaultKernel;
+                string acceleratedName = ClothEditSession.DescribeAcceleration(accelerated);
+                FrameCost fast = default;
+                if (accelerated != null) fast = MeasureDragFrame(session, camera, accelerated, frameMilliseconds);
+                FrameCost plain = MeasureDragFrame(session, camera, null, frameMilliseconds);
+
+                string Describe(string label, FrameCost c) =>
+                    $"  {label}: 反復 {c.Iterations:F1} 回 / 計算 {c.Solve:F1} ms / 形の更新 {c.Update:F1} ms / プレビューの書き込みと法線 {c.Preview:F1} ms" +
+                    $" / 境界箱の更新＋クリック判定 {c.Refit:F1} ms / 伸びの測定 {c.Stretch:F1} ms";
+                Debug.Log($"[GP02] 大きなスカートのドラッグ中の1コマ（持ち時間 {frameMilliseconds} ms。頂点 {session.VertexCount} / 粒子 {session.ParticleCount}）\n" +
+                    (accelerated != null ? Describe(acceleratedName, fast) + "\n" : "") + Describe("C#（高速版なし）", plain));
+
+                // 極端に遅い場合だけ失敗にする
+                foreach (FrameCost c in accelerated != null ? new[] { fast, plain } : new[] { plain })
+                {
+                    Assert.That(c.Iterations, Is.GreaterThanOrEqualTo(1.0), "1コマの反復回数");
+                    Assert.That(c.Solve, Is.LessThan(500.0), "計算");
+                    Assert.That(c.Update, Is.LessThan(500.0), "形の更新");
+                    Assert.That(c.Refit, Is.LessThan(500.0), "境界箱の更新＋クリック判定");
+                }
+            }
+        }
+
         // 保存したあとの作り直し（Rebase した布を渡す）が、粒子を置き直す普通の作り直しより十分速いこと
         [Test]
         public void Skirt80k_MeasureRebuildAfterSave()

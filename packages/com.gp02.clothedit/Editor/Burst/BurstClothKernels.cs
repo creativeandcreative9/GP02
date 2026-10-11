@@ -15,6 +15,12 @@ namespace GP02.EditorTools
         public struct IterationArgs
         {
             public float* Positions;
+            public float* WorldPositions;        // 計算のあとに、計算範囲の粒子の分を書き戻す
+            public float OriginX;                // Positions + Origin = WorldPositions
+            public float OriginY;
+            public float OriginZ;
+            public int* GraphOffsets;            // 粒子をつなぐ辺のグラフ。元の形の近い粒子を探し直すのに使う
+            public int* GraphNeighbors;
             public float* InverseMass;
             public int* BendPairs;
             public float* BendRest;
@@ -66,9 +72,49 @@ namespace GP02.EditorTools
             public int Iterations;
         }
 
+        public struct DeformWeldedArgs
+        {
+            public float* ParticlePositions;
+            public float* ParticleRest;
+            public float* BasePositions;
+            public int* BindOffsets;
+            public int* BindParticles;
+            public float* BindWeights;
+            public float* Welded;
+            public int WeldedCount;
+        }
+
+        public struct ExpandVerticesArgs
+        {
+            public float* Vertices;
+            public float* BaseVertices;
+            public float* Welded;
+            public float* WeldedRest;
+            public int* VertexToWelded;
+            public int VertexCount;
+        }
+
+        public struct RefitBvhArgs
+        {
+            public float* Positions;
+            public int* LeafTriangleVertices;
+            public int* Right;
+            public int* Start;
+            public int* Count;
+            public int NodeCount;
+            public float* BoxMin;
+            public float* BoxMax;
+            public float Padding;
+        }
+
         [BurstCompile(CompileSynchronously = true)]
         public static void Iterate(IterationArgs* a, int iterations)
         {
+            // 前処理：λ を 0 に戻し、元の形の近い粒子を探し直す
+            for (int n = 0; n < a->ActiveStretchCount; n++) a->StretchLambda[a->ActiveStretch[n]] = 0f;
+            for (int n = 0; n < a->ActiveBendCount; n++) a->BendLambda[a->ActiveBend[n]] = 0f;
+            if (a->KeepOutsideRestSurface != 0) UpdateRestAnchors(a);
+
             for (int it = 0; it < iterations; it++)
             {
                 // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
@@ -78,6 +124,59 @@ namespace GP02.EditorTools
                 SolveTethers(a);
                 if (a->KeepOutsideRestSurface != 0) SolveRestSurface(a);
             }
+
+            // 後処理：動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）。ワールド座標へ書き戻す
+            float* p = a->Positions;
+            float* world = a->WorldPositions;
+            for (int n = 0; n < a->ActiveParticleCount; n++)
+            {
+                int i = a->ActiveParticles[n];
+                world[3 * i] = p[3 * i] + a->OriginX;
+                world[3 * i + 1] = p[3 * i + 1] + a->OriginY;
+                world[3 * i + 2] = p[3 * i + 2] + a->OriginZ;
+            }
+        }
+
+        // 今の近い粒子から、伸びの制約でつながった隣へ、近くなる限りたどる（最大16歩）。ClothSolver の C# 版と同じ
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void UpdateRestAnchors(IterationArgs* a)
+        {
+            int* offsets = a->GraphOffsets;
+            int* neighbors = a->GraphNeighbors;
+            float* p = a->Positions;
+            float* rest = a->RestPositions;
+            for (int n = 0; n < a->ActiveParticleCount; n++)
+            {
+                int i = a->ActiveParticles[n];
+                int anchor = a->RestAnchor[i];
+                float px = p[3 * i], py = p[3 * i + 1], pz = p[3 * i + 2];
+                float best = DistanceSquared(px, py, pz, rest, anchor);
+                for (int step = 0; step < 16; step++)
+                {
+                    int next = -1;
+                    int end = offsets[anchor + 1];
+                    for (int k = offsets[anchor]; k < end; k++)
+                    {
+                        int candidate = neighbors[k];
+                        float d = DistanceSquared(px, py, pz, rest, candidate);
+                        if (d < best)
+                        {
+                            best = d;
+                            next = candidate;
+                        }
+                    }
+                    if (next < 0) break;
+                    anchor = next;
+                }
+                a->RestAnchor[i] = anchor;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static float DistanceSquared(float x, float y, float z, float* points, int index)
+        {
+            float dx = x - points[3 * index], dy = y - points[3 * index + 1], dz = z - points[3 * index + 2];
+            return dx * dx + dy * dy + dz * dz;
         }
 
         [BurstCompile(CompileSynchronously = true)]
@@ -249,6 +348,108 @@ namespace GP02.EditorTools
             p[3 * i] = ox + dx * s;
             p[3 * i + 1] = oy + dy * s;
             p[3 * i + 2] = oz + dz * s;
+        }
+
+        // まとめた頂点ごとに、結びつけた粒子の移動量の重み付き和（ShapeKernels.DeformWelded と同じ式）
+        [BurstCompile(CompileSynchronously = true)]
+        public static void DeformWelded(DeformWeldedArgs* a)
+        {
+            float* particles = a->ParticlePositions;
+            float* rest = a->ParticleRest;
+            float* basePositions = a->BasePositions;
+            int* offsets = a->BindOffsets;
+            int* bound = a->BindParticles;
+            float* weights = a->BindWeights;
+            float* welded = a->Welded;
+            for (int v = 0; v < a->WeldedCount; v++)
+            {
+                float dx = 0f, dy = 0f, dz = 0f;
+                int end = offsets[v + 1];
+                for (int k = offsets[v]; k < end; k++)
+                {
+                    int p = bound[k];
+                    float w = weights[k];
+                    dx += (particles[3 * p] - rest[3 * p]) * w;
+                    dy += (particles[3 * p + 1] - rest[3 * p + 1]) * w;
+                    dz += (particles[3 * p + 2] - rest[3 * p + 2]) * w;
+                }
+                welded[3 * v] = basePositions[3 * v] + dx;
+                welded[3 * v + 1] = basePositions[3 * v + 1] + dy;
+                welded[3 * v + 2] = basePositions[3 * v + 2] + dz;
+            }
+        }
+
+        // 元の頂点 = 基準の位置 + まとめた頂点の動き（ShapeKernels.ExpandVertices と同じ式）
+        [BurstCompile(CompileSynchronously = true)]
+        public static void ExpandVertices(ExpandVerticesArgs* a)
+        {
+            float* vertices = a->Vertices;
+            float* baseVertices = a->BaseVertices;
+            float* welded = a->Welded;
+            float* weldedRest = a->WeldedRest;
+            int* map = a->VertexToWelded;
+            for (int v = 0; v < a->VertexCount; v++)
+            {
+                int w = map[v];
+                vertices[3 * v] = baseVertices[3 * v] + (welded[3 * w] - weldedRest[3 * w]);
+                vertices[3 * v + 1] = baseVertices[3 * v + 1] + (welded[3 * w + 1] - weldedRest[3 * w + 1]);
+                vertices[3 * v + 2] = baseVertices[3 * v + 2] + (welded[3 * w + 2] - weldedRest[3 * w + 2]);
+            }
+        }
+
+        // 三角形の木の境界箱を、子から親へ作り直す（ShapeKernels.RefitBvh と同じ式）。子の番号は親より大きいので、後ろから処理する
+        [BurstCompile(CompileSynchronously = true)]
+        public static void RefitBvh(RefitBvhArgs* a)
+        {
+            float* positions = a->Positions;
+            int* leafVertices = a->LeafTriangleVertices;
+            float* boxMin = a->BoxMin;
+            float* boxMax = a->BoxMax;
+            float padding = a->Padding;
+            for (int node = a->NodeCount - 1; node >= 0; node--)
+            {
+                float minX, minY, minZ, maxX, maxY, maxZ;
+                int right = a->Right[node];
+                if (right < 0)
+                {
+                    minX = minY = minZ = float.MaxValue;
+                    maxX = maxY = maxZ = float.MinValue;
+                    int end = 3 * (a->Start[node] + a->Count[node]);
+                    for (int i = 3 * a->Start[node]; i < end; i++)
+                    {
+                        int v = leafVertices[i];
+                        float x = positions[3 * v], y = positions[3 * v + 1], z = positions[3 * v + 2];
+                        if (x < minX) minX = x;
+                        if (y < minY) minY = y;
+                        if (z < minZ) minZ = z;
+                        if (x > maxX) maxX = x;
+                        if (y > maxY) maxY = y;
+                        if (z > maxZ) maxZ = z;
+                    }
+                    minX -= padding;
+                    minY -= padding;
+                    minZ -= padding;
+                    maxX += padding;
+                    maxY += padding;
+                    maxZ += padding;
+                }
+                else
+                {
+                    int left = node + 1;
+                    minX = boxMin[3 * left] < boxMin[3 * right] ? boxMin[3 * left] : boxMin[3 * right];
+                    minY = boxMin[3 * left + 1] < boxMin[3 * right + 1] ? boxMin[3 * left + 1] : boxMin[3 * right + 1];
+                    minZ = boxMin[3 * left + 2] < boxMin[3 * right + 2] ? boxMin[3 * left + 2] : boxMin[3 * right + 2];
+                    maxX = boxMax[3 * left] > boxMax[3 * right] ? boxMax[3 * left] : boxMax[3 * right];
+                    maxY = boxMax[3 * left + 1] > boxMax[3 * right + 1] ? boxMax[3 * left + 1] : boxMax[3 * right + 1];
+                    maxZ = boxMax[3 * left + 2] > boxMax[3 * right + 2] ? boxMax[3 * left + 2] : boxMax[3 * right + 2];
+                }
+                boxMin[3 * node] = minX;
+                boxMin[3 * node + 1] = minY;
+                boxMin[3 * node + 2] = minZ;
+                boxMax[3 * node] = maxX;
+                boxMax[3 * node + 1] = maxY;
+                boxMax[3 * node + 2] = maxZ;
+            }
         }
     }
 }

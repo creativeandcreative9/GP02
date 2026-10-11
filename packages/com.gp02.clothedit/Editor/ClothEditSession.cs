@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using GP02.Core;
 using UnityEditor;
 using UnityEngine;
@@ -373,19 +374,19 @@ namespace GP02.EditorTools
         /// <summary>頂点の、メッシュ座標 → ワールド座標の行列。</summary>
         public Matrix4x4 GetVertexMatrix(int vertex) => _vertexMatrices[vertex];
 
-        /// <summary>粒子の位置から CurrentWorldVertices を更新する。確保はしない。</summary>
+        /// <summary>
+        /// 粒子の位置から CurrentWorldVertices を更新する。確保はしない。
+        /// 計算は、ソルバーのカーネル（<see cref="ClothSolver.Kernel"/>）が <see cref="IShapeKernel"/> なら（Burst など）それに任せ、そうでなければ C# で行う。
+        /// </summary>
         public void UpdateCurrentShape()
         {
-            _cloth.DeformWelded(_solver.Positions, _welded);
-            // Mono ではベクトルの演算子が遅いので、成分ごとに計算する
-            Vector3[] current = CurrentWorldVertices;
-            for (int v = 0; v < current.Length; v++)
-            {
-                int w = _vertexToWelded[v];
-                current[v].x = _baseWorld[v].x + (_welded[w].X - _toposRest[w].X);
-                current[v].y = _baseWorld[v].y + (_welded[w].Y - _toposRest[w].Y);
-                current[v].z = _baseWorld[v].z + (_welded[w].Z - _toposRest[w].Z);
-            }
+            var kernel = _solver.Kernel as IShapeKernel;
+            _cloth.DeformWelded(_solver.Positions, _welded, kernel);
+            // UnityEngine.Vector3 と System.Numerics.Vector3 はどちらも float 3つなので、コピーせずに読み替える
+            ShapeKernels.ExpandVertices(kernel,
+                MemoryMarshal.Cast<Vector3, NVector3>(new Span<Vector3>(CurrentWorldVertices)),
+                MemoryMarshal.Cast<Vector3, NVector3>(new ReadOnlySpan<Vector3>(_baseWorld)),
+                _welded, _toposRest, _vertexToWelded);
             _previewDirty = true;
             _bvhDirty = true;
         }
@@ -408,7 +409,7 @@ namespace GP02.EditorTools
         {
             if (_bvhDirty)
             {
-                _bvh.Refit(_welded);
+                _bvh.Refit(_welded, _solver.Kernel as IShapeKernel);
                 _bvhDirty = false;
             }
 

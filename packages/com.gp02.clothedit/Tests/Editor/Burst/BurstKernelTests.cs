@@ -133,6 +133,171 @@ namespace GP02.Tests
             return solver.Positions.ToArray();
         }
 
+        // 曲がった布（テスト用のスカート）を引っ張った粒子の位置から、まとめた頂点の位置と元の頂点への展開が C# 版と一致すること
+        [Test]
+        public void BurstKernel_DeformWeldedAndExpand_MatchCSharp()
+        {
+            UnityEngine.Mesh mesh = TestClothMenu.CreateSkirtMesh();
+            Vector3[] baseVertices = MeshBridge.ToNumerics(mesh.vertices, UnityEngine.Vector3.one);
+            var cloth = ParticleCloth.Build(baseVertices, mesh.triangles);
+            UnityEngine.Object.DestroyImmediate(mesh);
+
+            var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { Kernel = null, InfluenceRadius = 0.15f };
+            float top = float.MinValue;
+            foreach (Vector3 p in cloth.Model.RestPositions) top = System.Math.Max(top, p.Y);
+            for (int i = 0; i < cloth.Model.ParticleCount; i++)
+            {
+                if (cloth.Model.RestPositions[i].Y > top - cloth.Spacing) solver.SetPinned(i, true);
+            }
+            int grabbed = solver.FindNearestParticle(new Vector3(0f, top - 0.25f, -0.3f));
+            solver.Grab(grabbed, solver.Positions[grabbed] + new Vector3(0f, 0.02f, -0.08f), 0.04f);
+            solver.Solve(10);
+            Vector3[] particles = solver.Positions.ToArray();
+
+            var burst = new BurstClothSolverKernel();
+            var expectedWelded = new Vector3[cloth.Topology.Positions.Length];
+            var actualWelded = new Vector3[expectedWelded.Length];
+            cloth.DeformWelded(particles, expectedWelded, null);
+            cloth.DeformWelded(particles, actualWelded, burst);
+
+            // 元の頂点（まとめる前）への展開。継ぎ目の頂点が同じ位置に2つある
+            int[] map = cloth.Topology.VertexToWelded;
+            var expectedVertices = new Vector3[map.Length];
+            var actualVertices = new Vector3[map.Length];
+            ShapeKernels.ExpandVertices(null, expectedVertices, baseVertices, expectedWelded, cloth.Topology.Positions, map);
+            ShapeKernels.ExpandVertices(burst, actualVertices, baseVertices, actualWelded, cloth.Topology.Positions, map);
+
+            float moved = 0f, weldedDifference = 0f, vertexDifference = 0f;
+            for (int w = 0; w < expectedWelded.Length; w++)
+            {
+                moved = System.Math.Max(moved, Vector3.Distance(expectedWelded[w], cloth.Topology.Positions[w]));
+                weldedDifference = System.Math.Max(weldedDifference, Vector3.Distance(expectedWelded[w], actualWelded[w]));
+            }
+            for (int v = 0; v < map.Length; v++) vertexDifference = System.Math.Max(vertexDifference, Vector3.Distance(expectedVertices[v], actualVertices[v]));
+            Debug.Log($"[GP02] Burst と C# の差（形の更新）: まとめた頂点 最大 {weldedDifference:E2} m、元の頂点 最大 {vertexDifference:E2} m（頂点 {map.Length}、最大の移動 {moved:F3} m）");
+            Assert.That(map.Length, Is.GreaterThan(expectedWelded.Length), "継ぎ目で頂点がまとまっていません");
+            Assert.That(moved, Is.GreaterThan(0.01f), "操作で動いていません");
+            Assert.That(weldedDifference, Is.LessThan(1e-5f));
+            Assert.That(vertexDifference, Is.LessThan(1e-5f));
+        }
+
+        // 頂点を大きく動かしたあとの境界箱の更新が、C# 版と完全に一致し、Raycast の結果も変わらないこと
+        [Test]
+        public void BurstKernel_RefitBvh_MatchesCSharp()
+        {
+            UnityEngine.Mesh mesh = TestClothMenu.CreateSkirtMesh();
+            Vector3[] vertices = MeshBridge.ToNumerics(mesh.vertices, UnityEngine.Vector3.one);
+            int[] triangles = mesh.triangles;
+            UnityEngine.Object.DestroyImmediate(mesh);
+            var viaCSharp = new TriangleBvh(vertices, triangles);
+            var viaBurst = new TriangleBvh(vertices, triangles);
+
+            var random = new System.Random(3);
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                vertices[i] += new Vector3((float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f, (float)random.NextDouble() - 0.5f) * 0.05f;
+            }
+            viaCSharp.Refit(vertices, null);
+            viaBurst.Refit(vertices, new BurstClothSolverKernel());
+
+            Assert.That(viaBurst.NodeCount, Is.EqualTo(viaCSharp.NodeCount));
+            for (int node = 0; node < viaCSharp.NodeCount; node++)
+            {
+                viaCSharp.GetNodeBox(node, out Vector3 expectedMin, out Vector3 expectedMax);
+                viaBurst.GetNodeBox(node, out Vector3 actualMin, out Vector3 actualMax);
+                Assert.That(actualMin, Is.EqualTo(expectedMin), $"ノード {node} の最小");
+                Assert.That(actualMax, Is.EqualTo(expectedMax), $"ノード {node} の最大");
+            }
+
+            int hits = 0;
+            for (int r = 0; r < 300; r++)
+            {
+                var origin = new Vector3((float)random.NextDouble() * 3f - 1.5f, (float)random.NextDouble() * 2f - 0.5f, (float)random.NextDouble() * 3f - 1.5f);
+                var target = new Vector3((float)random.NextDouble() * 0.6f - 0.3f, 0.45f + (float)random.NextDouble() * 0.35f, (float)random.NextDouble() * 0.6f - 0.3f);
+                Vector3 direction = Vector3.Normalize(target - origin);
+                bool expected = viaCSharp.Raycast(origin, direction, vertices, out float expectedDistance, out int expectedTriangle);
+                bool actual = viaBurst.Raycast(origin, direction, vertices, out float distance, out int triangle);
+                Assert.That(actual, Is.EqualTo(expected), $"レイ {r}");
+                if (!expected) continue;
+                hits++;
+                Assert.That(distance, Is.EqualTo(expectedDistance), $"レイ {r}");
+                Assert.That(triangle, Is.EqualTo(expectedTriangle), $"レイ {r}");
+            }
+            Assert.That(hits, Is.GreaterThan(30), "当たったレイが少なすぎます");
+        }
+
+        // セッション全体で、Kernel を Burst にしたときと null にしたときで、形（CurrentWorldVertices）とクリック判定が同じこと
+        [Test]
+        public void BurstKernel_SessionShapeUpdateAndRaycast_MatchCSharp()
+        {
+            UnityEngine.Mesh mesh = TestClothMenu.CreateSkirtMesh();
+            UnityEngine.Vector3[] rest = mesh.vertices;
+            var go = new UnityEngine.GameObject("GP02_BurstSessionTest");
+            go.AddComponent<UnityEngine.MeshFilter>().sharedMesh = mesh;
+            var renderer = go.AddComponent<UnityEngine.MeshRenderer>();
+            try
+            {
+                using (var session = new ClothEditSession(renderer))
+                {
+                    session.Solver.Kernel = new BurstClothSolverKernel();
+                    var ray = new UnityEngine.Ray(new UnityEngine.Vector3(0f, 0.6f, -2f), UnityEngine.Vector3.forward);
+                    Assert.That(session.Raycast(ray, out UnityEngine.Vector3 hit, out _, out int triangle), Is.True);
+                    Assert.That(session.BeginGrab(hit, 0.05f, triangle), Is.True);
+                    session.DragTo(hit + new UnityEngine.Vector3(0.02f, 0.03f, -0.06f));
+                    session.Solver.SolveFor(30);
+
+                    var rays = new UnityEngine.Ray[100];
+                    var random = new System.Random(5);
+                    for (int i = 0; i < rays.Length; i++)
+                    {
+                        var target = new UnityEngine.Vector3((float)random.NextDouble() * 0.4f - 0.2f, 0.5f + (float)random.NextDouble() * 0.25f, (float)random.NextDouble() * 0.4f - 0.2f);
+                        var direction = new UnityEngine.Vector3((float)random.NextDouble() - 0.5f, (float)random.NextDouble() * 0.4f - 0.2f, (float)random.NextDouble() - 0.5f).normalized;
+                        rays[i] = new UnityEngine.Ray(target - direction * 1.5f, direction);
+                    }
+
+                    (UnityEngine.Vector3[], bool[], UnityEngine.Vector3[], int[]) Capture()
+                    {
+                        session.UpdateCurrentShape();
+                        var vertices = (UnityEngine.Vector3[])session.CurrentWorldVertices.Clone();
+                        var found = new bool[rays.Length];
+                        var points = new UnityEngine.Vector3[rays.Length];
+                        var triangles = new int[rays.Length];
+                        for (int i = 0; i < rays.Length; i++) found[i] = session.Raycast(rays[i], out points[i], out _, out triangles[i]);
+                        return (vertices, found, points, triangles);
+                    }
+
+                    var burst = Capture();
+                    session.Solver.Kernel = null;
+                    var csharp = Capture();
+
+                    float moved = 0f, difference = 0f;
+                    for (int v = 0; v < burst.Item1.Length; v++)
+                    {
+                        moved = System.Math.Max(moved, (csharp.Item1[v] - rest[v]).magnitude);
+                        difference = System.Math.Max(difference, (burst.Item1[v] - csharp.Item1[v]).magnitude);
+                    }
+                    int hits = 0;
+                    for (int i = 0; i < rays.Length; i++)
+                    {
+                        Assert.That(burst.Item2[i], Is.EqualTo(csharp.Item2[i]), $"レイ {i}");
+                        if (!csharp.Item2[i]) continue;
+                        hits++;
+                        Assert.That((burst.Item3[i] - csharp.Item3[i]).magnitude, Is.LessThan(1e-5f), $"レイ {i}");
+                        Assert.That(burst.Item4[i], Is.EqualTo(csharp.Item4[i]), $"レイ {i}");
+                    }
+                    Debug.Log($"[GP02] Burst と C# の差（セッションの形の更新）: 最大 {difference:E2} m（最大の移動 {moved:F3} m、当たったレイ {hits}）");
+                    Assert.That(moved, Is.GreaterThan(0.005f), "操作で動いていません");
+                    Assert.That(difference, Is.LessThan(1e-5f));
+                    Assert.That(hits, Is.GreaterThan(10));
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
+
         [Test]
         public void BurstKernel_IsAccelerated()
         {

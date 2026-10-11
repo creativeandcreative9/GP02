@@ -19,6 +19,7 @@ namespace GP02.Core
 
         readonly int[] _triangles;     // 頂点番号の3つ組
         readonly int[] _order;         // 葉に並べた三角形の番号
+        readonly int[] _leafVertices;  // _order の順に並べた、三角形の頂点番号の3つ組（Refit で順に読むため）
         readonly Vector3[] _boxMin;
         readonly Vector3[] _boxMax;
         readonly int[] _right;         // 内部ノード：右の子（左の子は node + 1）。葉：-1
@@ -41,6 +42,7 @@ namespace GP02.Core
             int count = triangles.Length / 3;
             _order = new int[count];
             for (int i = 0; i < count; i++) _order[i] = i;
+            _leafVertices = new int[triangles.Length];
 
             int maxNodes = Math.Max(1, 2 * count);
             _boxMin = new Vector3[maxNodes];
@@ -61,6 +63,12 @@ namespace GP02.Core
                     centers[2][t] = c.Z;
                 }
                 Build(centers, 0, count);
+                for (int i = 0; i < count; i++)
+                {
+                    _leafVertices[3 * i] = triangles[3 * _order[i]];
+                    _leafVertices[3 * i + 1] = triangles[3 * _order[i] + 1];
+                    _leafVertices[3 * i + 2] = triangles[3 * _order[i] + 2];
+                }
             }
             else
             {
@@ -137,54 +145,25 @@ namespace GP02.Core
         /// <summary>頂点が動いたあとに、境界箱を更新する。確保はしない。</summary>
         public void Refit(Vector3[] positions)
         {
+            Refit(positions, null);
+        }
+
+        /// <summary>頂点が動いたあとに、境界箱を更新する。確保はしない。</summary>
+        /// <param name="kernel">計算を任せる部品（Burst など）。null なら C#（<see cref="ShapeKernels.RefitBvh"/>）で計算する</param>
+        public void Refit(Vector3[] positions, IShapeKernel kernel)
+        {
             if (positions == null) throw new ArgumentNullException(nameof(positions));
-            // 頂点数十万の更新を 1 コマの中で終えたいので、Vector3.Min などの呼び出しを使わず、値をそのまま比べる
-            // （Unity の Mono では、小さな関数呼び出しの積み重ねが目立つため）
-            int[] triangles = _triangles;
-            // 子の番号は親より大きいので、後ろから処理すれば子が先に終わる
-            for (int node = _nodeCount - 1; node >= 0; node--)
-            {
-                float minX, minY, minZ, maxX, maxY, maxZ;
-                if (_right[node] < 0)
-                {
-                    minX = minY = minZ = float.MaxValue;
-                    maxX = maxY = maxZ = float.MinValue;
-                    int end = _start[node] + _count[node];
-                    for (int i = _start[node]; i < end; i++)
-                    {
-                        int t = 3 * _order[i];
-                        for (int k = 0; k < 3; k++)
-                        {
-                            Vector3 p = positions[triangles[t + k]];
-                            if (p.X < minX) minX = p.X;
-                            if (p.Y < minY) minY = p.Y;
-                            if (p.Z < minZ) minZ = p.Z;
-                            if (p.X > maxX) maxX = p.X;
-                            if (p.Y > maxY) maxY = p.Y;
-                            if (p.Z > maxZ) maxZ = p.Z;
-                        }
-                    }
-                    minX -= BoxPadding;
-                    minY -= BoxPadding;
-                    minZ -= BoxPadding;
-                    maxX += BoxPadding;
-                    maxY += BoxPadding;
-                    maxZ += BoxPadding;
-                }
-                else
-                {
-                    Vector3 lMin = _boxMin[node + 1], lMax = _boxMax[node + 1];
-                    Vector3 rMin = _boxMin[_right[node]], rMax = _boxMax[_right[node]];
-                    minX = lMin.X < rMin.X ? lMin.X : rMin.X;
-                    minY = lMin.Y < rMin.Y ? lMin.Y : rMin.Y;
-                    minZ = lMin.Z < rMin.Z ? lMin.Z : rMin.Z;
-                    maxX = lMax.X > rMax.X ? lMax.X : rMax.X;
-                    maxY = lMax.Y > rMax.Y ? lMax.Y : rMax.Y;
-                    maxZ = lMax.Z > rMax.Z ? lMax.Z : rMax.Z;
-                }
-                _boxMin[node] = new Vector3(minX, minY, minZ);
-                _boxMax[node] = new Vector3(maxX, maxY, maxZ);
-            }
+            var data = new BvhRefitData(positions, _leafVertices, _right, _start, _count, _nodeCount, _boxMin, _boxMax, BoxPadding);
+            if (kernel != null) kernel.RefitBvh(data);
+            else ShapeKernels.RefitBvh(data);
+        }
+
+        /// <summary>ノードの境界箱（確認用）。node は 0 以上 <see cref="NodeCount"/> 未満。</summary>
+        public void GetNodeBox(int node, out Vector3 min, out Vector3 max)
+        {
+            if ((uint)node >= (uint)_nodeCount) throw new ArgumentOutOfRangeException(nameof(node));
+            min = _boxMin[node];
+            max = _boxMax[node];
         }
 
         /// <summary>

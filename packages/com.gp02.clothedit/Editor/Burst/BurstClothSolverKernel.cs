@@ -6,14 +6,15 @@ using UnityEditor;
 namespace GP02.EditorTools
 {
     /// <summary>
-    /// <see cref="ClothSolver"/> の反復を Burst で計算する高速版。
+    /// <see cref="ClothSolver"/> の反復と、形の更新（頂点への展開、境界箱の更新）を Burst で計算する高速版。
     /// com.unity.burst が入っているときだけコンパイルされる（この asmdef の versionDefines と defineConstraints）。
-    /// 計算の式と順番は <see cref="ClothSolver"/> の C# 版と同じ。
+    /// 計算の式と順番は <see cref="ClothSolver"/> と <see cref="ShapeKernels"/> の C# 版と同じ。
+    /// <see cref="ClothSolver.Kernel"/> に入れると、<see cref="IShapeKernel"/> としても使われる。
     ///
     /// C# の配列を固定（fixed）し、先頭のポインタを Burst の static メソッドに渡す。
     /// System.Numerics.Vector3 の配列は float 3つ並び、int[] のペアは int 2つ並び、bool[] は 1バイトずつとして読む。
     /// </summary>
-    public sealed unsafe class BurstClothSolverKernel : IClothSolverKernel
+    public sealed unsafe class BurstClothSolverKernel : IClothSolverKernel, IShapeKernel
     {
         public string Name => "Burst";
 
@@ -25,10 +26,11 @@ namespace GP02.EditorTools
 
         public void Iterate(in ClothSolverIterationData d, int iterations)
         {
-            fixed (Vector3* positions = d.Positions)
+            fixed (Vector3* positions = d.Positions, worldPositions = d.WorldPositions)
             fixed (float* inverseMass = d.InverseMass, bendRest = d.BendRestLengths, bendLambda = d.BendLambda,
                 stretchRest = d.StretchRestLengths, stretchLambda = d.StretchLambda, grabDistance = d.GrabDistance, pinDistance = d.PinDistance)
-            fixed (int* bendPairs = d.BendPairs, activeBend = d.ActiveBend, stretchPairs = d.StretchPairs, activeStretch = d.ActiveStretch,
+            fixed (int* graphOffsets = d.GraphOffsets, graphNeighbors = d.GraphNeighbors,
+                bendPairs = d.BendPairs, activeBend = d.ActiveBend, stretchPairs = d.StretchPairs, activeStretch = d.ActiveStretch,
                 activeParticles = d.ActiveParticles, nearestPin = d.NearestPin)
             fixed (bool* inBrush = d.InBrush)
             fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals, brushStart = d.BrushStart, brushLambda = d.BrushLambda)
@@ -38,6 +40,12 @@ namespace GP02.EditorTools
                 var args = new BurstClothKernels.IterationArgs
                 {
                     Positions = (float*)positions,
+                    WorldPositions = (float*)worldPositions,
+                    OriginX = d.Origin.X,
+                    OriginY = d.Origin.Y,
+                    OriginZ = d.Origin.Z,
+                    GraphOffsets = graphOffsets,
+                    GraphNeighbors = graphNeighbors,
                     InverseMass = inverseMass,
                     BendPairs = bendPairs,
                     BendRest = bendRest,
@@ -74,6 +82,68 @@ namespace GP02.EditorTools
                     BrushMoveZ = d.BrushMove.Z,
                 };
                 BurstClothKernels.Iterate(&args, iterations);
+            }
+        }
+
+        public void DeformWelded(in WeldedDeformData d)
+        {
+            fixed (Vector3* particles = d.ParticlePositions)
+            fixed (Vector3* rest = d.ParticleRestPositions, basePositions = d.BasePositions, welded = d.Welded)
+            fixed (int* bindOffsets = d.BindOffsets, bindParticles = d.BindParticles)
+            fixed (float* bindWeights = d.BindWeights)
+            {
+                var args = new BurstClothKernels.DeformWeldedArgs
+                {
+                    ParticlePositions = (float*)particles,
+                    ParticleRest = (float*)rest,
+                    BasePositions = (float*)basePositions,
+                    BindOffsets = bindOffsets,
+                    BindParticles = bindParticles,
+                    BindWeights = bindWeights,
+                    Welded = (float*)welded,
+                    WeldedCount = d.Welded.Length,
+                };
+                BurstClothKernels.DeformWelded(&args);
+            }
+        }
+
+        public void ExpandVertices(in VertexExpandData d)
+        {
+            fixed (Vector3* vertices = d.Vertices)
+            fixed (Vector3* baseVertices = d.BaseVertices, welded = d.Welded, weldedRest = d.WeldedRest)
+            fixed (int* map = d.VertexToWelded)
+            {
+                var args = new BurstClothKernels.ExpandVerticesArgs
+                {
+                    Vertices = (float*)vertices,
+                    BaseVertices = (float*)baseVertices,
+                    Welded = (float*)welded,
+                    WeldedRest = (float*)weldedRest,
+                    VertexToWelded = map,
+                    VertexCount = d.Vertices.Length,
+                };
+                BurstClothKernels.ExpandVertices(&args);
+            }
+        }
+
+        public void RefitBvh(in BvhRefitData d)
+        {
+            fixed (Vector3* positions = d.Positions, boxMin = d.BoxMin, boxMax = d.BoxMax)
+            fixed (int* leafVertices = d.LeafTriangleVertices, right = d.Right, start = d.Start, count = d.Count)
+            {
+                var args = new BurstClothKernels.RefitBvhArgs
+                {
+                    Positions = (float*)positions,
+                    LeafTriangleVertices = leafVertices,
+                    Right = right,
+                    Start = start,
+                    Count = count,
+                    NodeCount = d.NodeCount,
+                    BoxMin = (float*)boxMin,
+                    BoxMax = (float*)boxMax,
+                    Padding = d.Padding,
+                };
+                BurstClothKernels.RefitBvh(&args);
             }
         }
 

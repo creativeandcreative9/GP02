@@ -72,6 +72,7 @@ namespace GP02.Core
         int _activeBendCount;
         bool _activeDirty = true;
         float _activePull;   // 計算範囲を決めたときの、つまみ始めからの移動距離
+        IClothSolverKernel _kernel = DefaultKernel;
         float _influenceRadius = 0.3f;
         float _activeMargin = float.PositiveInfinity;
 
@@ -85,7 +86,17 @@ namespace GP02.Core
         /// 重い計算（反復と粗い段）を任せる部品。null ならこのクラスの C# で計算する。
         /// 作ったときは <see cref="DefaultKernel"/> が入る。
         /// </summary>
-        public IClothSolverKernel Kernel { get; set; } = DefaultKernel;
+        public IClothSolverKernel Kernel
+        {
+            get => _kernel;
+            set
+            {
+                if (ReferenceEquals(value, _kernel)) return;
+                _kernel = value;
+                // 時間の見積もりは、計算する部品によって変わる
+                ResetSolveTiming();
+            }
+        }
 
         /// <summary>伸びやすさ。0 で伸びない。</summary>
         public float StretchCompliance { get; set; } = 0f;
@@ -366,22 +377,107 @@ namespace GP02.Core
             return stretch;
         }
 
+        /// <summary>1回の Solve にまとめる反復回数の上限（<see cref="SolveFor"/>）。時間の見積もりが外れたときに、持ち時間を大きく超えないため。</summary>
+        public const int MaxIterationsPerSolve = 40;
+
+        // SolveFor の時間の見積もり。1回の Solve の時間 = 前後の処理 + 反復1回 × 回数 に、測定を古いものほど軽く重み付けして当てはめる
+        const double TimingDecay = 0.75;
+        const double DefaultOverheadShare = 0.3;
+        double _timingWeight, _timingSumN, _timingSumT, _timingSumNN, _timingSumNT;
+        double _overheadShare = DefaultOverheadShare;   // 測定のばらつきが足りないときに使う、前後の処理が占める割合
+        double _overheadMilliseconds, _iterationMilliseconds;
+
+        void ResetSolveTiming()
+        {
+            _timingWeight = _timingSumN = _timingSumT = _timingSumNN = _timingSumNT = 0.0;
+            _overheadShare = DefaultOverheadShare;
+            _overheadMilliseconds = _iterationMilliseconds = 0.0;
+        }
+
+        void RecordSolveTiming(int iterations, double milliseconds)
+        {
+            // Burst のコンパイルや GC などの突発的な遅れで、見積もりが何コマも引きずられないようにする
+            if (_timingWeight > 0.0)
+            {
+                double predicted = _overheadMilliseconds + _iterationMilliseconds * iterations;
+                if (predicted > 0.0) milliseconds = Math.Min(milliseconds, 4.0 * predicted);
+            }
+
+            _timingWeight = _timingWeight * TimingDecay + 1.0;
+            _timingSumN = _timingSumN * TimingDecay + iterations;
+            _timingSumT = _timingSumT * TimingDecay + milliseconds;
+            _timingSumNN = _timingSumNN * TimingDecay + (double)iterations * iterations;
+            _timingSumNT = _timingSumNT * TimingDecay + iterations * milliseconds;
+
+            double meanN = _timingSumN / _timingWeight;
+            double meanT = _timingSumT / _timingWeight;
+            double variance = _timingSumNN / _timingWeight - meanN * meanN;
+            bool fitted = false;
+            // 回数が十分ばらついているときだけ、直線を当てはめて前後の処理と反復1回の時間を分ける。
+            // 毎回ほぼ同じ回数だと分けられないので、前に分けられたときの割合を使う
+            if (variance > 0.04 * meanN * meanN)
+            {
+                double slope = (_timingSumNT / _timingWeight - meanN * meanT) / variance;
+                double intercept = meanT - slope * meanN;
+                if (slope > 0.0 && intercept >= 0.0)
+                {
+                    _iterationMilliseconds = slope;
+                    _overheadMilliseconds = intercept;
+                    _overheadShare = Math.Min(0.9, intercept / meanT);
+                    fitted = true;
+                }
+                else
+                {
+                    _overheadShare = slope > 0.0 ? 0.0 : 0.9;
+                }
+            }
+            if (!fitted)
+            {
+                _overheadMilliseconds = _overheadShare * meanT;
+                _iterationMilliseconds = (meanT - _overheadMilliseconds) / meanN;
+            }
+        }
+
         /// <summary>
         /// 指定した時間（ミリ秒）だけ解く。Unity側で、1コマの時間予算に収めるために使う。
         /// 最低でも1回は解く。
+        ///
+        /// 1回の Solve には、反復の回数によらない前後の処理（粗い段、元の形の近い粒子の探し直しなど）がかかる。
+        /// そこで、反復1回の時間と前後の処理の時間を覚えておき、持ち時間をなるべく少ない回数の Solve で使い切る
+        /// （1回の Solve は最大 <see cref="MaxIterationsPerSolve"/> 回の反復）。
+        /// 時間が分かるまで（このソルバーで最初の呼び出し）は、<paramref name="iterationsPerStep"/> 回の反復で測る。
         /// </summary>
+        /// <param name="iterationsPerStep">時間がまだ分からないときの、最初の Solve の反復回数</param>
         /// <returns>行った反復回数</returns>
         public int SolveFor(double milliseconds, int iterationsPerStep = 5)
         {
             if (iterationsPerStep <= 0) throw new ArgumentOutOfRangeException(nameof(iterationsPerStep));
             var timer = Stopwatch.StartNew();
             int done = 0;
-            do
+            while (true)
             {
-                Solve(iterationsPerStep);
-                done += iterationsPerStep;
+                int step = iterationsPerStep;
+                if (_timingWeight > 0.0)
+                {
+                    double remaining = milliseconds - timer.Elapsed.TotalMilliseconds;
+                    double affordable = _iterationMilliseconds > 0.0
+                        ? (remaining - _overheadMilliseconds) / _iterationMilliseconds
+                        : MaxIterationsPerSolve;
+                    step = affordable >= MaxIterationsPerSolve ? MaxIterationsPerSolve : (int)Math.Max(affordable, 0.0);
+                    if (step < 1)
+                    {
+                        // 次の Solve は持ち時間に入らない。1回も解いていなければ、最低1回は解く
+                        if (done > 0) break;
+                        step = 1;
+                    }
+                }
+
+                long begin = Stopwatch.GetTimestamp();
+                Solve(step);
+                RecordSolveTiming(step, (Stopwatch.GetTimestamp() - begin) * 1000.0 / Stopwatch.Frequency);
+                done += step;
+                if (timer.Elapsed.TotalMilliseconds >= milliseconds) break;
             }
-            while (timer.Elapsed.TotalMilliseconds < milliseconds);
             return done;
         }
 
@@ -422,38 +518,35 @@ namespace GP02.Core
             int[] bendPairs = _model.BendPairs;
             float[] bendRest = _model.BendRestLengths;
 
-            for (int a = 0; a < _activeStretchCount; a++) _stretchLambda[_activeStretch[a]] = 0f;
-            for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
-
             bool keepOutside = KeepOutsideRestSurface && _restNormals != null;
             bool softBrush = _grabbed >= 0 && _brushCompliance > 0f;
-            if (keepOutside && iterations > 0) UpdateRestAnchors();
 
             IClothSolverKernel kernel = Kernel;
-            if (kernel != null)
+            if (kernel != null && iterations > 0)
             {
-                if (iterations > 0)
-                {
-                    kernel.Iterate(new ClothSolverIterationData(_positions, _inverseMass,
-                        bendPairs, bendRest, _bendLambda, _activeBend, _activeBendCount, BendCompliance,
-                        stretchPairs, stretchRest, _stretchLambda, _activeStretch, _activeStretchCount, StretchCompliance,
-                        _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _nearestPin, _pinDistance,
-                        keepOutside, _restInternal, _restNormals, _restAnchor, _restAllowance,
-                        softBrush ? _brushCompliance : 0f, _brushStart, _brushLambda, _grabTarget - _grabOrigin), iterations);
-                }
+                // λ のリセット、元の形の近い粒子の探し直し、ワールド座標への書き戻しも、カーネルが行う
+                kernel.Iterate(new ClothSolverIterationData(_positions, _worldPositions, _origin, _graph.Offsets, _graph.Neighbors, _inverseMass,
+                    bendPairs, bendRest, _bendLambda, _activeBend, _activeBendCount, BendCompliance,
+                    stretchPairs, stretchRest, _stretchLambda, _activeStretch, _activeStretchCount, StretchCompliance,
+                    _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _nearestPin, _pinDistance,
+                    keepOutside, _restInternal, _restNormals, _restAnchor, _restAllowance,
+                    softBrush ? _brushCompliance : 0f, _brushStart, _brushLambda, _grabTarget - _grabOrigin), iterations);
+                return;
             }
-            else
-            {
-                for (int it = 0; it < iterations; it++)
-                {
-                    // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
-                    if (softBrush) SolveBrushTargets();
-                    SolveDistances(_activeBend, _activeBendCount, bendPairs, bendRest, _bendLambda, BendCompliance);
-                    SolveDistances(_activeStretch, _activeStretchCount, stretchPairs, stretchRest, _stretchLambda, StretchCompliance);
 
-                    SolveTethers();
-                    if (keepOutside) SolveRestSurface();
-                }
+            for (int a = 0; a < _activeStretchCount; a++) _stretchLambda[_activeStretch[a]] = 0f;
+            for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
+            if (keepOutside && iterations > 0) UpdateRestAnchors();
+
+            for (int it = 0; it < iterations; it++)
+            {
+                // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
+                if (softBrush) SolveBrushTargets();
+                SolveDistances(_activeBend, _activeBendCount, bendPairs, bendRest, _bendLambda, BendCompliance);
+                SolveDistances(_activeStretch, _activeStretchCount, stretchPairs, stretchRest, _stretchLambda, StretchCompliance);
+
+                SolveTethers();
+                if (keepOutside) SolveRestSurface();
             }
 
             // 動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）

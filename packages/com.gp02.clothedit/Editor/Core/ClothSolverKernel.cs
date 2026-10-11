@@ -16,9 +16,15 @@ namespace GP02.Core
         bool IsAccelerated { get; }
 
         /// <summary>
-        /// 細かい粒子の反復（つまんだ範囲の引き寄せ → 曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約）を iterations 回行う。
-        /// 最初の引き寄せは <see cref="ClothSolverIterationData.BrushCompliance"/> が正のときだけ、
-        /// 最後の制約は <see cref="ClothSolverIterationData.KeepOutsideRestSurface"/> が true のときだけ。
+        /// 1回の Solve の細かい粒子の計算（iterations が 1 以上のときだけ呼ばれる）を、次の順に行う。
+        /// 1. 計算範囲の伸び・曲げの制約の λ を 0 に戻す（<see cref="ClothSolverIterationData.ActiveStretch"/>、<see cref="ClothSolverIterationData.ActiveBend"/>）
+        /// 2. <see cref="ClothSolverIterationData.KeepOutsideRestSurface"/> が true なら、元の形の近い粒子（<see cref="ClothSolverIterationData.RestAnchor"/>）を探し直す
+        /// 3. 反復を iterations 回行う（つまんだ範囲の引き寄せ → 曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約）。
+        ///    最初の引き寄せは <see cref="ClothSolverIterationData.BrushCompliance"/> が正のときだけ、
+        ///    最後の制約は KeepOutsideRestSurface が true のときだけ
+        /// 4. 計算範囲の粒子の位置を、ワールド座標（内部の座標 + <see cref="ClothSolverIterationData.Origin"/>）として
+        ///    <see cref="ClothSolverIterationData.WorldPositions"/> へ書き戻す
+        /// 前後の処理（1・2・4）を C# で別に行うと、粒子が多いときに反復1回分より重くなるため、まとめて任せている。
         /// </summary>
         void Iterate(in ClothSolverIterationData data, int iterations);
 
@@ -34,6 +40,19 @@ namespace GP02.Core
     {
         /// <summary>内部の座標（ワールド座標 - 原点のずらし）。粒子ごとに x, y, z の順に float 3つ分。</summary>
         public readonly Vector3[] Positions;
+
+        /// <summary>外に見せるワールド座標。計算のあとに、計算範囲の粒子の分を書き戻す（<c>Positions[i] + Origin</c>）。</summary>
+        public readonly Vector3[] WorldPositions;
+
+        /// <summary>内部の座標に足すとワールド座標になる、原点のずらし。</summary>
+        public readonly Vector3 Origin;
+
+        /// <summary>
+        /// 粒子をつなぐ辺のグラフ（伸びの制約でつながった隣）。粒子 i の隣は <c>GraphNeighbors[GraphOffsets[i] .. GraphOffsets[i + 1])</c>。
+        /// 元の形の近い粒子を探し直すのに使う。
+        /// </summary>
+        public readonly int[] GraphOffsets;
+        public readonly int[] GraphNeighbors;
 
         /// <summary>粒子ごとの逆質量。動かない粒子（ピン留め、つまんだ範囲、計算範囲の外）は 0、それ以外は 1。</summary>
         public readonly float[] InverseMass;
@@ -82,6 +101,8 @@ namespace GP02.Core
         /// <summary>
         /// 粒子ごとの、今の位置に一番近い元の粒子。テザーの後に、つまんでいる範囲以外の粒子を、
         /// この粒子の面（RestPositions と RestNormals で決まる平面）より外側へ押し戻す。
+        /// 反復の前に、計算範囲の粒子について、今の粒子から辺でつながった隣へ、近くなる限り（最大16歩）たどって更新する。
+        /// 1歩ごとに隣を順に調べ、最も近くなる隣（同じ距離なら先に調べたほう）へ進む。
         /// </summary>
         public readonly int[] RestAnchor;
 
@@ -98,13 +119,17 @@ namespace GP02.Core
         public readonly Vector3[] BrushLambda;
         public readonly Vector3 BrushMove;
 
-        internal ClothSolverIterationData(Vector3[] positions, float[] inverseMass,
+        internal ClothSolverIterationData(Vector3[] positions, Vector3[] worldPositions, Vector3 origin, int[] graphOffsets, int[] graphNeighbors, float[] inverseMass,
             int[] bendPairs, float[] bendRestLengths, float[] bendLambda, int[] activeBend, int activeBendCount, float bendCompliance,
             int[] stretchPairs, float[] stretchRestLengths, float[] stretchLambda, int[] activeStretch, int activeStretchCount, float stretchCompliance,
             int[] activeParticles, int activeParticleCount, int grabbed, bool[] inBrush, float[] grabDistance, int[] nearestPin, float[] pinDistance,
             bool keepOutsideRestSurface, Vector3[] restPositions, Vector3[] restNormals, int[] restAnchor, float[] restAllowance,
             float brushCompliance, Vector3[] brushStart, Vector3[] brushLambda, Vector3 brushMove)
         {
+            WorldPositions = worldPositions;
+            Origin = origin;
+            GraphOffsets = graphOffsets;
+            GraphNeighbors = graphNeighbors;
             RestAllowance = restAllowance;
             BrushCompliance = brushCompliance;
             BrushStart = brushStart;

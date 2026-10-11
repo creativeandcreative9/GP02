@@ -23,6 +23,10 @@ public class ClothSolverKernelTests
         {
             IterateCalls++;
             IterationsTotal += iterations;
+            // 前処理：λ を 0 に戻し、元の形の近い粒子を探し直す
+            for (int a = 0; a < d.ActiveStretchCount; a++) d.StretchLambda[d.ActiveStretch[a]] = 0f;
+            for (int a = 0; a < d.ActiveBendCount; a++) d.BendLambda[d.ActiveBend[a]] = 0f;
+            if (d.KeepOutsideRestSurface) UpdateRestAnchors(d);
             for (int it = 0; it < iterations; it++)
             {
                 if (d.BrushCompliance > 0f)
@@ -55,6 +59,39 @@ public class ClothSolverKernelTests
                     float depth = Vector3.Dot(d.Positions[i] - d.RestPositions[r], n) + (d.RestAllowance != null ? d.RestAllowance[r] : 0f);
                     if (depth < 0f) d.Positions[i] -= depth * n;
                 }
+            }
+            // 後処理：ワールド座標へ書き戻す
+            for (int a = 0; a < d.ActiveParticleCount; a++)
+            {
+                int i = d.ActiveParticles[a];
+                d.WorldPositions[i] = d.Positions[i] + d.Origin;
+            }
+        }
+
+        static void UpdateRestAnchors(in ClothSolverIterationData d)
+        {
+            for (int a = 0; a < d.ActiveParticleCount; a++)
+            {
+                int i = d.ActiveParticles[a];
+                int anchor = d.RestAnchor[i];
+                float best = Vector3.DistanceSquared(d.Positions[i], d.RestPositions[anchor]);
+                for (int step = 0; step < 16; step++)
+                {
+                    int next = -1;
+                    for (int k = d.GraphOffsets[anchor]; k < d.GraphOffsets[anchor + 1]; k++)
+                    {
+                        int candidate = d.GraphNeighbors[k];
+                        float distance = Vector3.DistanceSquared(d.Positions[i], d.RestPositions[candidate]);
+                        if (distance < best)
+                        {
+                            best = distance;
+                            next = candidate;
+                        }
+                    }
+                    if (next < 0) break;
+                    anchor = next;
+                }
+                d.RestAnchor[i] = anchor;
             }
         }
 
