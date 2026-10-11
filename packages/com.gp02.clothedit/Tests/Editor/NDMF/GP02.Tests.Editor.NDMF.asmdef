@@ -1,0 +1,36 @@
+{
+    "name": "GP02.Tests.Editor.NDMF",
+    "rootNamespace": "GP02.Tests",
+    "references": [
+        "GP02.Editor",
+        "GP02.Editor.NDMF",
+        "GP02.Runtime",
+        "GP02.Tests.Editor",
+        "nadena.dev.ndmf",
+        "nadena.dev.ndmf.runtime",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "GP02_NDMF"
+    ],
+    "versionDefines": [
+        {
+            "name": "nadena.dev.ndmf",
+            "expression": "1.14.0",
+            "define": "GP02_NDMF"
+        }
+    ],
+    "noEngineReferences": false
+}

@@ -51,6 +51,8 @@ GP02/
   - 描画の中身は `tools/unity/render/RenderScenes.cs`。出力は `tools/unity/out/render/`（`edit_and_save.png` に編集と保存を、`tools.png` に対称でつまむ・回す・拡大縮小・元に戻すブラシの結果を、それぞれ1枚にまとめる）
   - 開発用の `unity/` とは別の作業用プロジェクトを使うので、`run-tests.sh` と同時に動かせる
   - `-executeMethod` では毎フレームの更新が回らないので、SkinnedMeshRenderer は `BakeMesh` で取り出して描く
+- NDMF 連携のテスト（Docker、NDMF 入りの作業用プロジェクト）: `tools/unity/ndmf-tests.sh`
+  - NDMF 1.14.8 を VPM から取得して `tools/unity/out/` の作業用プロジェクトに入れ、`Editor/NDMF/` の Plugin と `Tests/Editor/NDMF/` のテスト（NDMF があるときだけ有効）を、通常のテストと一緒に動かす。開発用の `unity/` には NDMF を入れない
 - `.meta` の作成: `python3 tools/unity/generate_meta.py`
   - `packages/` にファイルやフォルダを追加したら、必ず実行して `.meta` もコミットする（Unityに自動で作らせるとGUIDがPCごとに変わるため）
 

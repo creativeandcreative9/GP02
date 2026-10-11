@@ -325,6 +325,7 @@ namespace GP02.EditorTools
             EditorGUILayout.Space(2f);
             DrawOperations(data);
             DrawImport(data);
+            ShapeKeyApplyModeGUI.Draw(_component, _renderer);
             DrawExport(data);
         }
 
