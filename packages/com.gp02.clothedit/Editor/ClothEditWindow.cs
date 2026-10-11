@@ -199,6 +199,7 @@ namespace GP02.EditorTools
             DrawBrushSection();
             DrawSymmetrySection();
             DrawDisplaySection();
+            DrawPoseCheckSection();
             DrawSaveSection();
             DrawAdvancedSection();
             EditorGUILayout.EndScrollView();

@@ -149,13 +149,33 @@ namespace GP02.Core
         public PenetrationDetector(ParticleCloth cloth)
         {
             _cloth = cloth ?? throw new ArgumentNullException(nameof(cloth));
+            ComputeSigns(cloth, out _particleSign, out _triangleSign);
+            _welded = (Vector3[])cloth.Topology.Positions.Clone();
+            _tree = new ClosestTriangleTree(_welded, cloth.Topology.Triangles);
+        }
+
+        /// <summary>
+        /// 布の三角形（<see cref="MeshTopology.Triangles"/>）ごとの、巻き順の向きが布の外向きなら +1、逆なら -1、決まらなければ 0。
+        /// 粒子の元の形の外向き（<see cref="ClothModel.RestNormals"/>）と巻き順の向きを比べ、島ごとの多数決で決める。
+        /// 裏面用に同じ3頂点で重ねた三角形と、外向きの無い島（平らな部品）は 0。
+        /// スキニングでは巻き順は変わらないので、ポーズを変えた布の外向きにもそのまま使える（動作チェック）。
+        /// </summary>
+        public static sbyte[] ComputeTriangleSigns(ParticleCloth cloth)
+        {
+            if (cloth == null) throw new ArgumentNullException(nameof(cloth));
+            ComputeSigns(cloth, out _, out sbyte[] triangleSign);
+            return triangleSign;
+        }
+
+        static void ComputeSigns(ParticleCloth cloth, out sbyte[] particleSign, out sbyte[] triangleSign)
+        {
             MeshTopology topology = cloth.Topology;
             int[] triangles = topology.Triangles;
             Vector3[] rest = topology.Positions;
             Vector3[] restNormals = cloth.Model.RestNormals;
             int n = cloth.Model.ParticleCount;
 
-            _particleSign = new sbyte[n];
+            particleSign = new sbyte[n];
             var votes = new int[topology.IslandCount];
             for (int i = 0; i < n; i++)
             {
@@ -164,8 +184,8 @@ namespace GP02.Core
                 Vector3 winding = Vector3.Cross(rest[triangles[3 * t + 1]] - rest[triangles[3 * t]], rest[triangles[3 * t + 2]] - rest[triangles[3 * t]]);
                 float dot = Vector3.Dot(winding, restNormals[i]);
                 if (dot == 0f) continue;
-                _particleSign[i] = dot > 0f ? (sbyte)1 : (sbyte)-1;
-                votes[topology.TriangleIsland[t]] += _particleSign[i];
+                particleSign[i] = dot > 0f ? (sbyte)1 : (sbyte)-1;
+                votes[topology.TriangleIsland[t]] += particleSign[i];
             }
 
             // 同じ3頂点を持つ三角形（裏面用の重ね）は、どちらが外か分からない
@@ -188,16 +208,13 @@ namespace GP02.Core
                     seen.Add((a, b, c), t);
                 }
             }
-            _triangleSign = new sbyte[triangleCount];
+            triangleSign = new sbyte[triangleCount];
             for (int t = 0; t < triangleCount; t++)
             {
                 int vote = votes[topology.TriangleIsland[t]];
                 if (twin[t] || vote == 0) continue;
-                _triangleSign[t] = vote > 0 ? (sbyte)1 : (sbyte)-1;
+                triangleSign[t] = vote > 0 ? (sbyte)1 : (sbyte)-1;
             }
-
-            _welded = (Vector3[])rest.Clone();
-            _tree = new ClosestTriangleTree(_welded, triangles);
         }
 
         /// <summary>

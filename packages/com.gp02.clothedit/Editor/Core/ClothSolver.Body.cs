@@ -100,28 +100,31 @@ namespace GP02.Core
         {
             _body = body;
             _bodyPlaneCount = 0;
-            if (body == null) return;
-            int n = _positions.Length;
-            if (_bodyQueryAt == null)
-            {
-                _bodyQueryAt = new Vector3[n];
-                _bodyDistance = new float[n];
-                _bodyPoint = new Vector3[n];
-                _bodyNormal = new Vector3[n];
-                _bodyMin = new float[n];
-                _bodyBudgetSq = new float[n];
-                _bodyFlags = new byte[n];
-                _bodyHasPlane = new bool[n];
-                _bodyHasExtra = new bool[n];
-                _bodyExtraPoint = new Vector3[n];
-                _bodyExtraNormal = new Vector3[n];
-                _bodyPlaneParticle = new int[2 * n];
-                _bodyPlanePoint = new Vector3[2 * n];
-                _bodyPlaneNormal = new Vector3[2 * n];
-                _bodyPlaneMin = new float[2 * n];
-            }
             ClearBodyExtraPlanes();
-            for (int i = 0; i < n; i++) QueryBody(i, true);
+            if (body == null) return;
+            EnsureBodyArrays();
+            for (int i = 0; i < _positions.Length; i++) QueryBody(i, true);
+        }
+
+        void EnsureBodyArrays()
+        {
+            if (_bodyQueryAt != null) return;
+            int n = _positions.Length;
+            _bodyQueryAt = new Vector3[n];
+            _bodyDistance = new float[n];
+            _bodyPoint = new Vector3[n];
+            _bodyNormal = new Vector3[n];
+            _bodyMin = new float[n];
+            _bodyBudgetSq = new float[n];
+            _bodyFlags = new byte[n];
+            _bodyHasPlane = new bool[n];
+            _bodyHasExtra = new bool[n];
+            _bodyExtraPoint = new Vector3[n];
+            _bodyExtraNormal = new Vector3[n];
+            _bodyPlaneParticle = new int[2 * n];
+            _bodyPlanePoint = new Vector3[2 * n];
+            _bodyPlaneNormal = new Vector3[2 * n];
+            _bodyPlaneMin = new float[2 * n];
         }
 
         /// <summary>
@@ -144,14 +147,16 @@ namespace GP02.Core
         /// 粒子そのものは体の外にあるので、尖った所（体の頂点）を通る平面で、周りの粒子を外へ出す。
         /// 平面の点から面に沿って 3cm より離れたら解かない。<see cref="SetPositions"/>・<see cref="ResetToRest"/>・<see cref="SetBody"/> で消え、
         /// つまんで（<see cref="Grab(int, Vector3, float)"/> など）解くと、すべて消える。
+        /// 体が無くても使える（動作チェックで見つかった所を外へ逃がすとき。今の姿勢では体が近くに無いこともある）。
         /// </summary>
         /// <param name="point">平面の点（ワールド座標）</param>
         /// <param name="normal">平面の外向き（長さ1にそろえる）</param>
         public void AddBodyExtraPlane(int particle, Vector3 point, Vector3 normal)
         {
-            if (_body == null || (uint)particle >= (uint)_positions.Length) return;
+            if ((uint)particle >= (uint)_positions.Length) return;
             float length = normal.Length();
             if (!(length > 1e-12f)) return;
+            EnsureBodyArrays();
             if (!_bodyHasExtra[particle]) _bodyExtraCount++;
             _bodyHasExtra[particle] = true;
             _bodyExtraPoint[particle] = point - _origin;
@@ -242,8 +247,8 @@ namespace GP02.Core
         // 位置が変わっていない粒子は、前に調べた距離のまま
         void ResetBodyRatchet()
         {
-            if (_body == null) return;
             ClearBodyExtraPlanes();
+            if (_body == null) return;
             Vector3[] p = _positions;
             for (int i = 0; i < p.Length; i++)
             {
@@ -257,32 +262,37 @@ namespace GP02.Core
         void RefreshBodyPlanes()
         {
             _bodyPlaneCount = 0;
-            if (_body == null) return;
+            if (_body == null && _bodyExtraCount == 0) return;
             // 直したあとに、またつまんで形を変え始めたら、直したときに足した平面（空間に固定）は合わなくなる。
             // 残すと、つまみの周りの布が平面とつまみに引っ張り合われて大きく伸びるので、すべて外す
             if (_grabbed >= 0 && _bodyExtraCount > 0) ClearBodyExtraPlanes();
+            bool hasBody = _body != null;
+            if (!hasBody && _bodyExtraCount == 0) return;
             Vector3[] p = _positions;
             for (int a = 0; a < _activeParticleCount; a++)
             {
                 int i = _activeParticles[a];
-                float dx = p[i].X - _bodyQueryAt[i].X, dy = p[i].Y - _bodyQueryAt[i].Y, dz = p[i].Z - _bodyQueryAt[i].Z;
-                float moved = dx * dx + dy * dy + dz * dz;
-                bool stale = _bodyFlags[i] != 0 || moved > _bodyBudgetSq[i];
-                if (!stale && _bodyHasPlane[i] && moved > BodyContactRefreshDistance * BodyContactRefreshDistance)
+                if (hasBody)
                 {
-                    Vector3 c = _bodyPoint[i], nrm = _bodyNormal[i];
-                    float onPlane = (p[i].X - c.X) * nrm.X + (p[i].Y - c.Y) * nrm.Y + (p[i].Z - c.Z) * nrm.Z - _bodyMin[i];
-                    stale = onPlane < BodyContactSlack;
-                }
-                if (stale) QueryBody(i, false);
+                    float dx = p[i].X - _bodyQueryAt[i].X, dy = p[i].Y - _bodyQueryAt[i].Y, dz = p[i].Z - _bodyQueryAt[i].Z;
+                    float moved = dx * dx + dy * dy + dz * dz;
+                    bool stale = _bodyFlags[i] != 0 || moved > _bodyBudgetSq[i];
+                    if (!stale && _bodyHasPlane[i] && moved > BodyContactRefreshDistance * BodyContactRefreshDistance)
+                    {
+                        Vector3 c = _bodyPoint[i], nrm = _bodyNormal[i];
+                        float onPlane = (p[i].X - c.X) * nrm.X + (p[i].Y - c.Y) * nrm.Y + (p[i].Z - c.Z) * nrm.Z - _bodyMin[i];
+                        stale = onPlane < BodyContactSlack;
+                    }
+                    if (stale) QueryBody(i, false);
 
-                if (_bodyHasPlane[i] && _bodyDistance[i] - _bodyMin[i] < BodyBand)
-                {
-                    int k = _bodyPlaneCount++;
-                    _bodyPlaneParticle[k] = i;
-                    _bodyPlanePoint[k] = _bodyPoint[i];
-                    _bodyPlaneNormal[k] = _bodyNormal[i];
-                    _bodyPlaneMin[k] = _bodyMin[i];
+                    if (_bodyHasPlane[i] && _bodyDistance[i] - _bodyMin[i] < BodyBand)
+                    {
+                        int k = _bodyPlaneCount++;
+                        _bodyPlaneParticle[k] = i;
+                        _bodyPlanePoint[k] = _bodyPoint[i];
+                        _bodyPlaneNormal[k] = _bodyNormal[i];
+                        _bodyPlaneMin[k] = _bodyMin[i];
+                    }
                 }
                 if (_bodyExtraCount > 0 && _bodyHasExtra[i])
                 {

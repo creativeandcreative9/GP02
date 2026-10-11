@@ -74,6 +74,9 @@ namespace GP02.Core
         readonly int[] _triangleIsland;
         readonly int[] _vertexIsland;
         readonly Island[] _islands;
+        readonly int[] _vertexToWelded;     // 渡された頂点ごとの、まとめた後の番号（SetVertexPositions で使う）
+        readonly int[] _weldedSourceCount;  // まとめた後の頂点ごとの、渡された頂点の数
+        readonly bool[] _islandFlipped;     // 巻き順が内向きなので裏返して使う島
 
         /// <summary>まとめた後の頂点の数。</summary>
         public int VertexCount => _positions.Length;
@@ -98,6 +101,9 @@ namespace GP02.Core
 
             int[] vertexToWelded = VertexWelder.Weld(vertices, WeldTolerance, out _positions);
             int n = _positions.Length;
+            _vertexToWelded = vertexToWelded;
+            _weldedSourceCount = new int[n];
+            for (int v = 0; v < vertexToWelded.Length; v++) _weldedSourceCount[vertexToWelded[v]]++;
 
             // 潰れた三角形（同じ頂点を2回使う、面積がほぼ 0）を除く
             var kept = new List<int>(triangles.Length);
@@ -195,6 +201,7 @@ namespace GP02.Core
             {
                 if (flip[_triangleIsland[t]]) _faceNormals[t] = -_faceNormals[t];
             }
+            _islandFlipped = flip;
             for (int i = 0; i < n; i++)
             {
                 if (_vertexIsland[i] >= 0) _islands[_vertexIsland[i]].VertexCount++;
@@ -517,6 +524,84 @@ namespace GP02.Core
                 if (island.Enabled) enabled++;
             }
             return enabled;
+        }
+
+        /// <summary>
+        /// 「中」を持つ島をすべて検索に使う。使う島の数を返す。
+        /// 体だけを渡したとき（服を含まない）に使う。<see cref="ClassifyIslands"/> は布の近くの島しか使わないので、
+        /// ポーズを変えると近づく島（座ったときの太ももなど）を落としてしまうため。
+        /// </summary>
+        public int EnableSolidIslands()
+        {
+            int enabled = 0;
+            foreach (Island island in _islands)
+            {
+                island.Enabled = island.Solid;
+                if (island.Enabled) enabled++;
+            }
+            return enabled;
+        }
+
+        /// <summary>作るときに渡した頂点の数（<see cref="SetVertexPositions"/> に渡す配列の長さ）。</summary>
+        public int SourceVertexCount => _vertexToWelded.Length;
+
+        /// <summary>
+        /// 頂点の位置だけを入れ替える（ポーズを変えた体）。つながり・島・島を使うかどうか・裏返しの島は、作ったときのまま。
+        /// 作ったときに同じ位置としてまとめた頂点は、新しい位置の平均にする（ウェイトの違いでポーズで少しずれても、1つの頂点のまま扱う）。
+        /// 面・辺・頂点の向きを計算し直し、木の箱を更新する（木の形は作ったときの位置のまま。検索の結果は変わらず、遅くなるだけ）。
+        /// ポーズごとに作り直すと、つながりの計算（頂点をまとめる・辺の表・島）を毎回やり直すことになり、大きな体では重いため。
+        /// </summary>
+        /// <param name="vertices">作るときと同じ並び・同じ数の頂点（ワールド座標）</param>
+        public void SetVertexPositions(ReadOnlySpan<Vector3> vertices)
+        {
+            if (vertices.Length != _vertexToWelded.Length) throw new ArgumentException("頂点の数が、作ったときと違います。", nameof(vertices));
+            int n = _positions.Length;
+            for (int i = 0; i < n; i++) _positions[i] = Vector3.Zero;
+            for (int v = 0; v < vertices.Length; v++)
+            {
+                int w = _vertexToWelded[v];
+                Vector3 p = vertices[v];
+                _positions[w] = new Vector3(_positions[w].X + p.X, _positions[w].Y + p.Y, _positions[w].Z + p.Z);
+            }
+            for (int i = 0; i < n; i++)
+            {
+                int count = _weldedSourceCount[i];
+                if (count > 1) _positions[i] = new Vector3(_positions[i].X / count, _positions[i].Y / count, _positions[i].Z / count);
+            }
+
+            int triangleCount = _triangles.Length / 3;
+            for (int t = 0; t < triangleCount; t++)
+            {
+                Cross(_positions[_triangles[3 * t]], _positions[_triangles[3 * t + 1]], _positions[_triangles[3 * t + 2]], out float nx, out float ny, out float nz);
+                float length = MathF.Sqrt(nx * nx + ny * ny + nz * nz);
+                // ポーズで潰れた三角形は、向きを持たない（擬似法線に効かない）
+                float scale = length > 1e-20f ? (_islandFlipped[_triangleIsland[t]] ? -1f : 1f) / length : 0f;
+                _faceNormals[t] = new Vector3(nx * scale, ny * scale, nz * scale);
+            }
+
+            Array.Clear(_vertexNormals, 0, n);
+            for (int t = 0; t < triangleCount; t++)
+            {
+                Vector3 normal = _faceNormals[t];
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    int v = _triangles[3 * t + corner];
+                    Vector3 p = _positions[v];
+                    Vector3 e1 = _positions[_triangles[3 * t + (corner + 1) % 3]] - p;
+                    Vector3 e2 = _positions[_triangles[3 * t + (corner + 2) % 3]] - p;
+                    _vertexNormals[v] += normal * Angle(e1, e2);
+                }
+            }
+            for (int i = 0; i < n; i++) _vertexNormals[i] = SafeNormalize(_vertexNormals[i]);
+
+            Array.Clear(_edgeNormals, 0, _edgeNormals.Length);
+            for (int t = 0; t < triangleCount; t++)
+            {
+                for (int e = 0; e < 3; e++) _edgeNormals[_triangleEdges[3 * t + e]] += _faceNormals[t];
+            }
+            for (int e = 0; e < _edgeNormals.Length; e++) _edgeNormals[e] = SafeNormalize(_edgeNormals[e]);
+
+            foreach (Island island in _islands) island.Tree.Refit(_positions);
         }
     }
 }

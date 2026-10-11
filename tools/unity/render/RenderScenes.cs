@@ -29,8 +29,12 @@ public static class RenderScenes
             SymmetryScenes();
             ClearScene();
             PenetrationScenes();
+            ClearScene();
+            PoseCheckScenes();
         });
     }
+
+    public static void PoseCheck() => Run(PoseCheckScenes);
 
     public static void Symmetry() => Run(SymmetryScenes);
 
@@ -589,6 +593,247 @@ public static class RenderScenes
             Object.DestroyImmediate(root);
         }
         SaveGrid(shots, 3, "penetration");
+    }
+
+    // ---- 動作チェック（Humanoid のテスト用アバターに、いろいろなポーズを付けて貫通を調べる） ----
+    // pose_check.png: 1段目 スカート（T ポーズ・座る・左足を上げる・しゃがむ。赤い点が突き抜けた所）、
+    //                 2段目 タイツ（座る・しゃがむ）と袖（腕を体の前で曲げる・腕を下ろす）の近くから、
+    //                 3段目 服を別のアーマチュアにしたアバターで座る・腕を上げる、編集の姿勢での最悪の深さの色分け（スカート・タイツ。黄 1mm → 赤 1cm）
+    // pose_escape.png: 「元のポーズで外へ逃がす」の前後（スカート: しゃがむ（半分）・お辞儀（半分）・編集の姿勢。左が前、右が後）
+    // ポーズはアバターの複製に付け、BakeMesh で取り出して描く（-executeMethod では SkinnedMeshRenderer の描画が更新されないため）。
+    // ログに、ポーズごとの結果・時間・外へ逃がした前後の件数を出す
+
+    static void PoseCheckScenes()
+    {
+        Camera camera = SetUpCamera(new Vector3(1.1f, 1.05f, 1.9f), new Vector3(0f, 0.72f, 0f));
+        camera.aspect = 1f;
+        camera.fieldOfView = 45f;
+        Light light = Object.FindObjectOfType<Light>();
+        light.transform.rotation = Quaternion.Euler(35f, 200f, 0f);
+        var shots = new List<Texture2D>();
+        var depthShots = new List<Texture2D>();
+        GameObject root = TestAvatarMenu.CreateInScene(null);
+        var skirt = FindSkinned(root, TestAvatarMenu.SkirtName);
+        var tights = FindSkinned(root, TestAvatarMenu.TightsName);
+        var sleeves = FindSkinned(root, TestAvatarMenu.SleevesName);
+
+        // 1段目: スカート
+        PoseCheckResult skirtResult;
+        var controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+        try
+        {
+            if (!controller.TryStart(skirt, out string error)) throw new InvalidOperationException(error);
+            skirtResult = RunAndLog(controller, "スカート");
+            shots.Add(ShotPose(camera, "pose_skirt_0_tpose", controller, null));
+            foreach (string id in new[] { "sit", "leg_forward_l", "squat" }) shots.Add(ShotPose(camera, "pose_skirt_" + id, controller, FindEntry(skirtResult, id)));
+            depthShots.Add(ShotDepth(camera, "pose_skirt_depth", controller));
+        }
+        finally
+        {
+            controller.Dispose();
+        }
+
+        // 2段目: タイツと袖（近くから）
+        Vector3 farPosition = camera.transform.position;
+        Quaternion farRotation = camera.transform.rotation;
+        controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+        try
+        {
+            if (!controller.TryStart(tights, out string error)) throw new InvalidOperationException(error);
+            PoseCheckResult result = RunAndLog(controller, "タイツ");
+            camera.transform.position = new Vector3(0.75f, 0.75f, 1.05f);
+            camera.transform.LookAt(new Vector3(0f, 0.45f, 0.1f));
+            foreach (string id in new[] { "sit", "squat" }) shots.Add(ShotPose(camera, "pose_tights_" + id, controller, FindEntry(result, id)));
+            depthShots.Add(ShotDepth(camera, "pose_tights_depth", controller));
+        }
+        finally
+        {
+            controller.Dispose();
+        }
+        controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+        try
+        {
+            if (!controller.TryStart(sleeves, out string error)) throw new InvalidOperationException(error);
+            PoseCheckResult result = RunAndLog(controller, "袖");
+            camera.transform.position = new Vector3(-0.15f, 1.25f, 1.0f);
+            camera.transform.LookAt(new Vector3(0f, 1.0f, 0.1f));
+            foreach (string id in new[] { "arms_bent", "arms_down" }) shots.Add(ShotPose(camera, "pose_sleeves_" + id, controller, FindEntry(result, id)));
+        }
+        finally
+        {
+            controller.Dispose();
+        }
+        camera.transform.SetPositionAndRotation(farPosition, farRotation);
+        Object.DestroyImmediate(root);
+
+        // 3段目: 服を別のアーマチュアにしたアバター
+        GameObject outfitRoot = TestAvatarMenu.CreateInScene(null, true);
+        controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+        try
+        {
+            if (!controller.TryStart(FindSkinned(outfitRoot, TestAvatarMenu.SkirtName), out string error)) throw new InvalidOperationException(error);
+            PoseCheckResult result = RunAndLog(controller, "スカート（服を別のアーマチュア）");
+            foreach (string id in new[] { "sit", "arms_up" }) shots.Add(ShotPose(camera, "pose_outfit_" + id, controller, FindEntry(result, id)));
+        }
+        finally
+        {
+            controller.Dispose();
+        }
+        Object.DestroyImmediate(outfitRoot);
+        shots.AddRange(depthShots);
+        SaveGrid(shots, 4, "pose_check");
+
+        // 外へ逃がす前後
+        var escapeShots = new List<Texture2D>();
+        GameObject escapeRoot = TestAvatarMenu.CreateInScene(null);
+        var cases = new[]
+        {
+            ("squat", 0.5f, new Vector3(0.55f, 0.95f, 1.25f), new Vector3(0f, 0.55f, 0.1f)),
+            ("bow", 0.5f, new Vector3(1.0f, 1.2f, 0.9f), new Vector3(0f, 0.85f, 0f)),
+        };
+        controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+        try
+        {
+            if (!controller.TryStart(FindSkinned(escapeRoot, TestAvatarMenu.SkirtName), out string error)) throw new InvalidOperationException(error);
+            PoseCheckResult before = RunAndLog(controller, "スカート（外へ逃がす前）");
+            foreach (var (id, stage, position, target) in cases)
+            {
+                camera.transform.position = position;
+                camera.transform.LookAt(target);
+                escapeShots.Add(ShotPose(camera, $"escape_skirt_{id}_before", controller, FindEntry(before, id, stage)));
+            }
+            Vector3 editPosition = new Vector3(0.45f, 1.0f, 1.3f), editTarget = new Vector3(0f, 0.75f, 0f);
+            camera.transform.position = editPosition;
+            camera.transform.LookAt(editTarget);
+            escapeShots.Add(ShotPose(camera, "escape_skirt_edit_before", controller, null));
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            PoseEscapeReport report = controller.EscapePoseCheckPenetration();
+            Debug.Log($"[GP02描画] 外へ逃がす（スカート、{timer.ElapsedMilliseconds} ms）: {report}");
+            PoseCheckResult after = controller.LastPoseCheck;
+            foreach (var (id, stage, position, target) in cases)
+            {
+                camera.transform.position = position;
+                camera.transform.LookAt(target);
+                PoseCheckEntry entry = FindEntry(after, id, stage);
+                Debug.Log($"[GP02描画]   {entry.Name}: {FindEntry(before, id, stage).Result} → {entry.Result}");
+                escapeShots.Add(ShotPose(camera, $"escape_skirt_{id}_after", controller, entry));
+            }
+            camera.transform.position = editPosition;
+            camera.transform.LookAt(editTarget);
+            escapeShots.Add(ShotPose(camera, "escape_skirt_edit_after", controller, null));
+        }
+        finally
+        {
+            controller.Dispose();
+        }
+        Object.DestroyImmediate(escapeRoot);
+        // 2列にそろえる（1列目が前、2列目が後）
+        SaveGrid(new List<Texture2D> { escapeShots[0], escapeShots[3], escapeShots[1], escapeShots[4], escapeShots[2], escapeShots[5] }, 2, "pose_escape");
+        camera.transform.SetPositionAndRotation(farPosition, farRotation);
+    }
+
+    static SkinnedMeshRenderer FindSkinned(GameObject root, string name)
+    {
+        foreach (SkinnedMeshRenderer renderer in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+        {
+            if (renderer.name == name) return renderer;
+        }
+        throw new InvalidOperationException(name + " が見つかりません");
+    }
+
+    static PoseCheckEntry FindEntry(PoseCheckResult result, string id, float stage = 1f)
+    {
+        foreach (PoseCheckEntry entry in result.Entries)
+        {
+            if (entry.Pose.Id == id && Mathf.Approximately(entry.Stage, stage)) return entry;
+        }
+        throw new InvalidOperationException($"{id}（{stage}）の結果がありません");
+    }
+
+    static PoseCheckResult RunAndLog(ClothEditController controller, string label)
+    {
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        PoseCheckResult result = controller.RunPoseCheck();
+        if (result == null) throw new InvalidOperationException(controller.LastPoseCheckError);
+        Debug.Log($"[GP02描画] 動作チェック（{label}、{timer.ElapsedMilliseconds} ms、{ClothEditSession.DescribeAcceleration(controller.Session.Solver.Kernel)}）: {result.DescribeSummary()} / 基準 {result.Baseline} / {result.BodyDescription}");
+        foreach (PoseCheckEntry entry in result.Entries)
+        {
+            if (entry.Result.IsPenetrating) Debug.Log($"[GP02描画]   {entry.Name}: {entry.Result}");
+        }
+        return result;
+    }
+
+    // entry のポーズを付けたアバターの複製を、BakeMesh で取り出して描き、突き抜けた所に赤い点を描く（entry が null なら編集の姿勢）
+    static Texture2D ShotPose(Camera camera, string name, ClothEditController controller, PoseCheckEntry entry)
+    {
+        PoseRig rig = controller.PoseCheckRig;
+        if (entry != null) rig.ApplyMuscles(entry.Muscles);
+        else rig.ApplyBase();
+        var views = new List<GameObject>();
+        foreach (Renderer renderer in rig.CloneRoot.GetComponentsInChildren<Renderer>(true))
+        {
+            if (!(renderer is SkinnedMeshRenderer skinned) || !renderer.gameObject.activeSelf) continue;
+            views.Add(BakedView(skinned));
+        }
+        var hidden = new List<(Renderer, bool)>();
+        foreach (Renderer renderer in rig.OriginalRoot.GetComponentsInChildren<Renderer>(true))
+        {
+            hidden.Add((renderer, renderer.forceRenderingOff));
+            renderer.forceRenderingOff = true;
+        }
+        var points = new List<Vector3>();
+        if (entry != null)
+        {
+            foreach (System.Numerics.Vector3 p in entry.Result.Points) points.Add(new Vector3(p.X, p.Y, p.Z));
+        }
+        Texture2D texture = Shot(camera, name, (c, t) => PaintDots(c, t, points, new Color(1f, 0.12f, 0.1f)));
+        foreach ((Renderer renderer, bool previous) in hidden) renderer.forceRenderingOff = previous;
+        foreach (GameObject view in views)
+        {
+            Object.DestroyImmediate(view.GetComponent<MeshFilter>().sharedMesh);
+            Object.DestroyImmediate(view);
+        }
+        rig.ApplyBase();
+        return texture;
+    }
+
+    // 編集の姿勢で、全ポーズでの最悪の深さで粒子を色分けした図（シーンビューの色分けの代わり）。アバターの複製を編集の姿勢で取り出して描く
+    static Texture2D ShotDepth(Camera camera, string name, ClothEditController controller)
+    {
+        float[] depth = controller.PoseCheckParticleDepth;
+        var positions = new List<Vector3>();
+        var colors = new List<Color>();
+        for (int i = 0; i < depth.Length; i++)
+        {
+            if (!(depth[i] > 0f)) continue;
+            var p = controller.Session.Solver.Positions[i];
+            positions.Add(new Vector3(p.X, p.Y, p.Z));
+            colors.Add(ClothEditWindow.PoseDepthColor(depth[i]));
+        }
+        Debug.Log($"[GP02描画] {name}: 色分けした粒子 {positions.Count} / {depth.Length}");
+        PoseRig rig = controller.PoseCheckRig;
+        rig.ApplyBase();
+        var views = new List<GameObject>();
+        foreach (Renderer renderer in rig.CloneRoot.GetComponentsInChildren<Renderer>(true))
+        {
+            if (!(renderer is SkinnedMeshRenderer skinned) || !renderer.gameObject.activeSelf) continue;
+            views.Add(BakedView(skinned));
+        }
+        var hidden = new List<(Renderer, bool)>();
+        foreach (Renderer renderer in rig.OriginalRoot.GetComponentsInChildren<Renderer>(true))
+        {
+            hidden.Add((renderer, renderer.forceRenderingOff));
+            renderer.forceRenderingOff = true;
+        }
+        DrawDots(camera, positions, colors);
+        Texture2D texture = Shot(camera, name);
+        foreach ((Renderer renderer, bool previous) in hidden) renderer.forceRenderingOff = previous;
+        foreach (GameObject view in views)
+        {
+            Object.DestroyImmediate(view.GetComponent<MeshFilter>().sharedMesh);
+            Object.DestroyImmediate(view);
+        }
+        return texture;
     }
 
     // skinned を BakeMesh で取り出した形の表示を作り、元のレンダラーを隠す（消すのは呼び出し側。元のレンダラーは隠したまま）

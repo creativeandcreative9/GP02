@@ -120,6 +120,12 @@ namespace GP02.EditorTools
         /// <summary>貫通の余白（mm）の設定。</summary>
         PenetrationMargin,
 
+        /// <summary>動作チェック: 始める・やめる・結果の要約・順に見る・順に再生・元の姿勢に戻る・最悪の深さの色分け・元のポーズで外へ逃がす（編集中）。</summary>
+        PoseCheck,
+
+        /// <summary>動作チェック: 試すポーズの一覧・2段階の切り替え・許容の深さ・ポーズごとの結果の一覧・体として使ったもの。</summary>
+        PoseCheckDetails,
+
         // ---- シーンビューの道具バー ----
 
         /// <summary>道具バーの「伸びの表示」「元の形」。</summary>
@@ -219,6 +225,7 @@ namespace GP02.EditorTools
             ClothEditUiItem.StatusLine,
             ClothEditUiItem.ReachWarning,
             ClothEditUiItem.PenetrationFix,
+            ClothEditUiItem.PoseCheck,
             ClothEditUiItem.ShapeKeyEnabled,
             ClothEditUiItem.ShapeKeyName,
             ClothEditUiItem.ShapeKeyWeight,

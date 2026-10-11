@@ -652,6 +652,7 @@ namespace GP02.EditorTools
             _settings.ApplyTo(_session.Solver, _session.GetRestAllowance(_settings.KeepLayersApart));
             ApplyViewSettings();
             _session.Solver.InfluenceRadius = _influenceRadius;
+            ForgetPoseCheckOfOtherTargets();
             if (reuseCloth != null)
             {
                 if (carriedPinParticles != null && carriedPinParticles.Count > 0)
@@ -699,6 +700,7 @@ namespace GP02.EditorTools
         /// <summary>編集を終える。元のレンダラーの表示を戻す。</summary>
         public void End()
         {
+            DisposePoseCheckRig();
             _pointerDown = false;
             _dragging = false;
             _settling = false;
@@ -2050,6 +2052,7 @@ namespace GP02.EditorTools
         public void Tick(double now)
         {
             if (!EnsureAlive()) return;
+            TickPoseCheck(now);
             if (!_dragging && !_settling) return;
             // 動かしていないうちは計算しない（クリックしただけで形が変わらないように）
             if (_dragging && !_moved) return;
@@ -2082,6 +2085,7 @@ namespace GP02.EditorTools
         // 仕上げを待たずに、つまみを外して確定する（次の操作や保存の前など）
         void FinishStroke()
         {
+            StopPoseActivity();
             _pointerDown = false;
             _dragging = false;
             _settling = false;
@@ -2147,6 +2151,7 @@ namespace GP02.EditorTools
         public void OnUndoRedoPerformed()
         {
             if (_session == null || _ignoreUndoCallback) return;
+            StopPoseActivity();
 
             // 仕上げ中・ドラッグ中なら止める。書き込まない記録は、Undo がすでに戻している
             _pointerDown = false;

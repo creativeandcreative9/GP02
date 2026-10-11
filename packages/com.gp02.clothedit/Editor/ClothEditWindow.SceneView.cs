@@ -52,7 +52,8 @@ namespace GP02.EditorTools
             _controller.SetViewRotation(sceneView.camera.transform.rotation);
             if (e.type == EventType.Repaint)
             {
-                session.DrawPreview(sceneView.camera);
+                // ポーズを見せている間は、アバターの複製が服を描く（編集中の形のプレビューは編集の姿勢なので描かない）
+                if (!_controller.IsPosePreviewActive) session.DrawPreview(sceneView.camera);
                 return;
             }
             if (HandleRadiusDragAndCursor(sceneView, e)) return;
@@ -213,6 +214,7 @@ namespace GP02.EditorTools
                     sceneView.Repaint();
                     return;
                 }
+                if (EndPosePreviewOnEscape(e)) return;
                 bool pointerCancelled = SelectCancelPointer();
                 if (_controller.Cancel() || pointerCancelled)
                 {
@@ -245,6 +247,7 @@ namespace GP02.EditorTools
                     break;
 
                 case EventType.MouseDown:
+                    if (e.button == 0 && EndPosePreviewOnClick(e)) break;
                     if (e.button != 0 || HandleUtility.nearestControl != controlId) break;
                     if (selecting)
                     {
@@ -358,6 +361,7 @@ namespace GP02.EditorTools
         {
             ClothEditSession session = _controller.Session;
             if (session == null) return;
+            if (DrawPoseCheckOverlay(session)) return;
 
             if (_settings.SymmetryEnabled) DrawMirrorPlane(session);
 
@@ -485,6 +489,7 @@ namespace GP02.EditorTools
             }
 
             string text = ClothEditHelp.GetHint(_controller.Mode, _controller.IsDragging, _controller.IsSettling, _controller.SelectionCount, _controller.PinEraseMode);
+            text += PoseCheckHint();
             if (_controller.IsComparing)
             {
                 float blend = _controller.ShowOriginal || _controller.HoldOriginal ? 0f : _controller.CompareBlend;

@@ -522,6 +522,7 @@ namespace GP02.EditorTools
             UseRestSurfaceAllowance = true;
             KeepLayersApart = true;
             ResetPenetrationDefaults();
+            ResetPoseCheckDefaults();
         }
 
         /// <summary>負の値や、計算を壊す値を直す。</summary>
@@ -567,6 +568,7 @@ namespace GP02.EditorTools
             if (!(CompareBlend >= 0f)) CompareBlend = 1f;
             else if (CompareBlend > 1f) CompareBlend = 1f;
             SanitizePenetration();
+            SanitizePoseCheck();
         }
 
         /// <summary>
@@ -639,6 +641,7 @@ namespace GP02.EditorTools
                 SelectionMovesAsCloth = EditorPrefs.GetBool(keyPrefix + "SelectionMovesAsCloth", true),
             };
             settings.LoadPenetration(keyPrefix);
+            settings.LoadPoseCheck(keyPrefix);
             settings.Sanitize();
             return settings;
         }
@@ -688,6 +691,7 @@ namespace GP02.EditorTools
             EditorPrefs.SetInt(keyPrefix + "SelectionFalloff", (int)SelectionFalloff);
             EditorPrefs.SetBool(keyPrefix + "SelectionMovesAsCloth", SelectionMovesAsCloth);
             SavePenetration(keyPrefix);
+            SavePoseCheck(keyPrefix);
         }
 
         /// <summary>保存した値を消す（次の Load で既定値に戻る）。</summary>
@@ -709,6 +713,7 @@ namespace GP02.EditorTools
                 EditorPrefs.DeleteKey(keyPrefix + key);
             }
             DeletePenetration(keyPrefix);
+            DeletePoseCheck(keyPrefix);
         }
     }
 }

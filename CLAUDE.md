@@ -48,7 +48,7 @@ GP02/
   - 画面（ウィンドウ・インスペクター）の描画を実際に動かすテスト（`ShapeKeyGuiSmokeTests`）は、通常の実行（`-nographics`）では飛ばす。`GP02_GUI=1 GP02_UNITY_ARGS="-testFilter GP02.Tests.ShapeKeyGuiSmokeTests" tools/unity/run-tests.sh` で仮想画面（Xvfb）の上で動かすと、画面の画像が `tools/unity/out/gui/` に出る（Docker の Unity には日本語フォントが無いので、画像は英語表示にしてある）
 - Unity での見た目の確認（Docker、画面あり）: `tools/unity/render.sh`
   - 仮想画面（Xvfb）とソフトウェア描画（Mesa の llvmpipe）で Unity を起動し、テスト用の衣装の編集前・編集中のプレビュー・保存したシェイプキーを画像にする
-  - 描画の中身は `tools/unity/render/RenderScenes.cs`。出力は `tools/unity/out/render/`（`edit_and_save.png` に編集と保存を、`tools.png` に対称でつまむ・回す・拡大縮小・元に戻すブラシの結果を、それぞれ1枚にまとめる）
+  - 描画の中身は `tools/unity/render/RenderScenes.cs`。出力は `tools/unity/out/render/`（`edit_and_save.png` に編集と保存を、`tools.png` に対称でつまむ・回す・拡大縮小・元に戻すブラシの結果を、それぞれ1枚にまとめる。動作チェックは `pose_check.png`・`pose_escape.png`。`tools/unity/render.sh RenderScenes.PoseCheck` でそれだけ描ける）
   - 開発用の `unity/` とは別の作業用プロジェクトを使うので、`run-tests.sh` と同時に動かせる
   - `-executeMethod` では毎フレームの更新が回らないので、SkinnedMeshRenderer は `BakeMesh` で取り出して描く
 - NDMF 連携のテスト（Docker、NDMF 入りの作業用プロジェクト）: `tools/unity/ndmf-tests.sh`
