@@ -136,16 +136,25 @@ namespace GP02.Core
             if (particlePositions.Length != Model.ParticleCount) throw new ArgumentException("粒子数が一致しません。", nameof(particlePositions));
             if (weldedPositions == null || weldedPositions.Length != Topology.Positions.Length) throw new ArgumentException("頂点数が一致しません。", nameof(weldedPositions));
 
+            // Unity の Mono では Vector3 の演算子が遅いので、成分ごとに計算する（ClothSolver.SolveDistances を参照）
             Vector3[] rest = Model.RestPositions;
+            Vector3[] basePositions = Topology.Positions;
+            int[] offsets = _bindOffsets;
+            int[] particles = _bindParticles;
+            float[] weights = _bindWeights;
             for (int v = 0; v < weldedPositions.Length; v++)
             {
-                Vector3 delta = Vector3.Zero;
-                for (int k = _bindOffsets[v]; k < _bindOffsets[v + 1]; k++)
+                float dx = 0f, dy = 0f, dz = 0f;
+                int end = offsets[v + 1];
+                for (int k = offsets[v]; k < end; k++)
                 {
-                    int p = _bindParticles[k];
-                    delta += (particlePositions[p] - rest[p]) * _bindWeights[k];
+                    int p = particles[k];
+                    float w = weights[k];
+                    dx += (particlePositions[p].X - rest[p].X) * w;
+                    dy += (particlePositions[p].Y - rest[p].Y) * w;
+                    dz += (particlePositions[p].Z - rest[p].Z) * w;
                 }
-                weldedPositions[v] = Topology.Positions[v] + delta;
+                weldedPositions[v] = new Vector3(basePositions[v].X + dx, basePositions[v].Y + dy, basePositions[v].Z + dz);
             }
         }
 

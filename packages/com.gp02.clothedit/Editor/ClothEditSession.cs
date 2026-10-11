@@ -293,12 +293,14 @@ namespace GP02.EditorTools
         public void UpdateCurrentShape()
         {
             _cloth.DeformWelded(_solver.Positions, _welded);
-            for (int v = 0; v < CurrentWorldVertices.Length; v++)
+            // Mono ではベクトルの演算子が遅いので、成分ごとに計算する
+            Vector3[] current = CurrentWorldVertices;
+            for (int v = 0; v < current.Length; v++)
             {
                 int w = _vertexToWelded[v];
-                NVector3 delta = _welded[w] - _toposRest[w];
-                Vector3 b = _baseWorld[v];
-                CurrentWorldVertices[v] = new Vector3(b.x + delta.X, b.y + delta.Y, b.z + delta.Z);
+                current[v].x = _baseWorld[v].x + (_welded[w].X - _toposRest[w].X);
+                current[v].y = _baseWorld[v].y + (_welded[w].Y - _toposRest[w].Y);
+                current[v].z = _baseWorld[v].z + (_welded[w].Z - _toposRest[w].Z);
             }
             _previewDirty = true;
             _bvhDirty = true;

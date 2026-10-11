@@ -344,19 +344,8 @@ namespace GP02.Core
             for (int it = 0; it < iterations; it++)
             {
                 // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
-                float bendCompliance = BendCompliance;
-                for (int a = 0; a < _activeBendCount; a++)
-                {
-                    int k = _activeBend[a];
-                    SolveDistance(bendPairs[2 * k], bendPairs[2 * k + 1], bendRest[k], bendCompliance, ref _bendLambda[k]);
-                }
-
-                float stretchCompliance = StretchCompliance;
-                for (int a = 0; a < _activeStretchCount; a++)
-                {
-                    int k = _activeStretch[a];
-                    SolveDistance(stretchPairs[2 * k], stretchPairs[2 * k + 1], stretchRest[k], stretchCompliance, ref _stretchLambda[k]);
-                }
+                SolveDistances(_activeBend, _activeBendCount, bendPairs, bendRest, _bendLambda, BendCompliance);
+                SolveDistances(_activeStretch, _activeStretchCount, stretchPairs, stretchRest, _stretchLambda, StretchCompliance);
 
                 SolveTethers();
             }
@@ -365,7 +354,9 @@ namespace GP02.Core
             for (int a = 0; a < _activeParticleCount; a++)
             {
                 int i = _activeParticles[a];
-                _worldPositions[i] = _positions[i] + _origin;
+                _worldPositions[i].X = _positions[i].X + _origin.X;
+                _worldPositions[i].Y = _positions[i].Y + _origin.Y;
+                _worldPositions[i].Z = _positions[i].Z + _origin.Z;
             }
         }
 
@@ -375,47 +366,58 @@ namespace GP02.Core
             {
                 foreach (int m in level.Members) _levelStart[m] = _positions[m];
 
-                int[] pairs = level.StretchPairs;
-                float[] rest = level.RestLengths;
-                for (int it = 0; it < CoarseIterations; it++)
-                {
-                    for (int k = 0; k < rest.Length; k++) SolveStretchOnly(pairs[2 * k], pairs[2 * k + 1], rest[k]);
-                }
+                for (int it = 0; it < CoarseIterations; it++) SolveStretchOnly(level.StretchPairs, level.RestLengths);
 
                 // この段の粒子の動きを、この段に含まれない粒子へ配る
+                Vector3[] p = _positions;
+                Vector3[] start = _levelStart;
+                int[] offsets = level.BindOffsets;
+                int[] parents = level.BindParents;
+                float[] weights = level.BindWeights;
                 for (int a = 0; a < _activeParticleCount; a++)
                 {
                     int i = _activeParticles[a];
                     if (_inverseMass[i] == 0f) continue;
-                    int end = level.BindOffsets[i + 1];
-                    int begin = level.BindOffsets[i];
-                    if (begin == end) continue;
-                    Vector3 delta = Vector3.Zero;
-                    for (int k = begin; k < end; k++)
+                    int end = offsets[i + 1];
+                    float dx = 0f, dy = 0f, dz = 0f;
+                    for (int k = offsets[i]; k < end; k++)
                     {
-                        int parent = level.BindParents[k];
-                        delta += (_positions[parent] - _levelStart[parent]) * level.BindWeights[k];
+                        int parent = parents[k];
+                        float w = weights[k];
+                        dx += (p[parent].X - start[parent].X) * w;
+                        dy += (p[parent].Y - start[parent].Y) * w;
+                        dz += (p[parent].Z - start[parent].Z) * w;
                     }
-                    _positions[i] += delta;
+                    p[i].X += dx;
+                    p[i].Y += dy;
+                    p[i].Z += dz;
                 }
             }
         }
 
         // 伸びているときだけ縮める（縮んでいるのは許す）
-        void SolveStretchOnly(int i, int j, float restLength)
+        void SolveStretchOnly(int[] pairs, float[] rest)
         {
-            float wi = _inverseMass[i];
-            float wj = _inverseMass[j];
-            float w = wi + wj;
-            if (w == 0f) return;
+            Vector3[] p = _positions;
+            float[] inverseMass = _inverseMass;
+            for (int k = 0; k < rest.Length; k++)
+            {
+                int i = pairs[2 * k], j = pairs[2 * k + 1];
+                float wi = inverseMass[i], wj = inverseMass[j];
+                float w = wi + wj;
+                if (w == 0f) continue;
 
-            Vector3 d = _positions[i] - _positions[j];
-            float length = d.Length();
-            if (length <= restLength) return;
+                float dx = p[i].X - p[j].X, dy = p[i].Y - p[j].Y, dz = p[i].Z - p[j].Z;
+                float length = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+                if (length <= rest[k]) continue;
 
-            Vector3 correction = d / length * (-(length - restLength) / w);
-            _positions[i] += wi * correction;
-            _positions[j] -= wj * correction;
+                float s = -(length - rest[k]) / (w * length);
+                dx *= s;
+                dy *= s;
+                dz *= s;
+                p[i].X += wi * dx; p[i].Y += wi * dy; p[i].Z += wi * dz;
+                p[j].X -= wj * dx; p[j].Y -= wj * dy; p[j].Z -= wj * dz;
+            }
         }
 
         void UpdateActiveRegion()
@@ -459,7 +461,11 @@ namespace GP02.Core
             for (int a = 0; a < _activeParticleCount; a++)
             {
                 int i = _activeParticles[a];
-                _positions[i] += delta * Falloff(_grabDistance[i]);
+                float f = Falloff(_grabDistance[i]);
+                if (f == 0f) continue;
+                _positions[i].X += delta.X * f;
+                _positions[i].Y += delta.Y * f;
+                _positions[i].Z += delta.Z * f;
             }
         }
 
@@ -489,44 +495,58 @@ namespace GP02.Core
             for (int a = 0; a < _activeParticleCount; a++)
             {
                 int i = _activeParticles[a];
-                if (_grabbed >= 0 && !_inBrush[i]) SolveTether(i, _positions[_grabbed], _grabDistance[i]);
+                if (_grabbed >= 0 && !_inBrush[i]) SolveTether(i, _grabbed, _grabDistance[i]);
 
                 // つまんだ範囲も、ピンから布の長さ以上は離れない。
                 // 布の長さが足りない方向へ引っ張ると、本物の布のように目標の手前で止まる（持ち上がる）。
                 int pin = _nearestPin[i];
-                if (pin >= 0) SolveTether(i, _positions[pin], _pinDistance[i]);
+                if (pin >= 0) SolveTether(i, pin, _pinDistance[i]);
             }
         }
 
-        void SolveTether(int i, Vector3 origin, float maxLength)
+        void SolveTether(int i, int origin, float maxLength)
         {
             if (float.IsInfinity(maxLength)) return;
-            Vector3 d = _positions[i] - origin;
-            float length = d.Length();
-            if (length <= maxLength) return;
-            _positions[i] = origin + d / length * maxLength;
+            Vector3[] p = _positions;
+            float ox = p[origin].X, oy = p[origin].Y, oz = p[origin].Z;
+            float dx = p[i].X - ox, dy = p[i].Y - oy, dz = p[i].Z - oz;
+            float lengthSquared = dx * dx + dy * dy + dz * dz;
+            if (lengthSquared <= maxLength * maxLength) return;
+            float s = maxLength / MathF.Sqrt(lengthSquared);
+            p[i].X = ox + dx * s;
+            p[i].Y = oy + dy * s;
+            p[i].Z = oz + dz * s;
         }
 
-        void SolveDistance(int i, int j, float restLength, float alpha, ref float lambda)
+        // XPBD の距離の制約を、active の先頭 count 個について順に解く。
+        // Unity の Mono では System.Numerics.Vector3 の演算子が1つずつ関数の呼び出しになり、成分ごとに書くより約3倍遅い。
+        // 1制約ごとのメソッドの呼び出しも避けるため、ループの中に直接書いている
+        void SolveDistances(int[] active, int count, int[] pairs, float[] rest, float[] lambda, float alpha)
         {
-            float wi = InverseMass(i);
-            float wj = InverseMass(j);
-            float w = wi + wj;
-            if (w == 0f) return;
+            Vector3[] p = _positions;
+            float[] inverseMass = _inverseMass;
+            for (int a = 0; a < count; a++)
+            {
+                int k = active[a];
+                int i = pairs[2 * k], j = pairs[2 * k + 1];
+                float wi = inverseMass[i], wj = inverseMass[j];
+                float w = wi + wj;
+                if (w == 0f) continue;
 
-            Vector3 d = _positions[i] - _positions[j];
-            float length = d.Length();
-            if (length < 1e-12f) return;
+                float dx = p[i].X - p[j].X, dy = p[i].Y - p[j].Y, dz = p[i].Z - p[j].Z;
+                float length = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+                if (length < 1e-12f) continue;
 
-            float c = length - restLength;
-            float deltaLambda = (-c - alpha * lambda) / (w + alpha);
-            lambda += deltaLambda;
+                float deltaLambda = (-(length - rest[k]) - alpha * lambda[k]) / (w + alpha);
+                lambda[k] += deltaLambda;
 
-            Vector3 correction = d / length * deltaLambda;
-            _positions[i] += wi * correction;
-            _positions[j] -= wj * correction;
+                float s = deltaLambda / length;
+                dx *= s;
+                dy *= s;
+                dz *= s;
+                p[i].X += wi * dx; p[i].Y += wi * dy; p[i].Z += wi * dz;
+                p[j].X -= wj * dx; p[j].Y -= wj * dy; p[j].Z -= wj * dz;
+            }
         }
-
-        float InverseMass(int particle) => _inverseMass[particle];
     }
 }
