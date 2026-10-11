@@ -311,6 +311,30 @@ namespace GP02.Core
             return normals;
         }
 
+        /// <summary>
+        /// 粒子ごとの値（選んだ粒子を 1 とするなど）を、まとめた後の頂点ごとの値にする。
+        /// 頂点は近くの粒子に結びついているので、結びついた粒子の値の重み付き平均（重みの合計は 1）になる。
+        /// 選んだ点の範囲を、頂点ごとの 0〜1 の重み（マスク）にするのに使う。
+        /// </summary>
+        /// <param name="particleValues">粒子ごとの値。長さは粒子の数</param>
+        /// <param name="weldedValues">まとめた後の頂点ごとの結果を入れる配列。長さは <see cref="MeshTopology.Positions"/> と同じ</param>
+        public void AverageOverBinding(float[] particleValues, float[] weldedValues)
+        {
+            if (particleValues == null || particleValues.Length != Model.ParticleCount) throw new ArgumentException("粒子数が一致しません。", nameof(particleValues));
+            if (weldedValues == null || weldedValues.Length != Topology.Positions.Length) throw new ArgumentException("頂点数が一致しません。", nameof(weldedValues));
+
+            for (int w = 0; w < weldedValues.Length; w++)
+            {
+                float sum = 0f, weightSum = 0f;
+                for (int k = _bindOffsets[w]; k < _bindOffsets[w + 1]; k++)
+                {
+                    sum += particleValues[_bindParticles[k]] * _bindWeights[k];
+                    weightSum += _bindWeights[k];
+                }
+                weldedValues[w] = weightSum > 0f ? sum / weightSum : 0f;
+            }
+        }
+
         /// <summary>頂点ごとに結びつけた粒子の数（確認用）。</summary>
         public int BoundParticleCount(int weldedVertex) => _bindOffsets[weldedVertex + 1] - _bindOffsets[weldedVertex];
 

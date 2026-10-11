@@ -47,7 +47,7 @@ namespace GP02.EditorTools
     /// データ（<see cref="GP02ShapeKeyData"/>）を書き換える操作は、すべて Unity の Undo で戻せる。
     /// 入力が正しくないとき（頂点数が合わない、名前が空など）は ArgumentException などを投げるので、画面側は利用者に見せる文章にして受ける。
     /// </summary>
-    public static class ShapeKeyListOperations
+    public static partial class ShapeKeyListOperations
     {
         public static readonly ShapeKeyClipboard Clipboard = new ShapeKeyClipboard();
 
@@ -58,6 +58,13 @@ namespace GP02.EditorTools
         static void Record(GP02ShapeKeyData data, string japanese, string english)
         {
             Undo.RecordObject(data, "GP02 " + L10n.Tr(japanese, english));
+        }
+
+        // バックアップを取ってから Undo の記録を取る。エントリを消す・書き換える操作で使う（Undo とは別の安全網）
+        static void RecordDestructive(GP02ShapeKeyData data, string japanese, string english)
+        {
+            ShapeKeyBackup.Create(data, english);
+            Record(data, japanese, english);
         }
 
         static void Touch(GP02ShapeKeyData data) => EditorUtility.SetDirty(data);
@@ -167,7 +174,9 @@ namespace GP02.EditorTools
             {
                 string name = UniqueName(data, source.Name + "_copy", usedNow);
                 usedNow.Add(name);
-                copies[source] = ShapeKeyLibrary.CloneEntry(source, name);
+                ShapeKeyEntry copy = ShapeKeyLibrary.CloneEntry(source, name);
+                ShapeKeyLibrary.StampCreated(copy);
+                copies[source] = copy;
             }
             // 後ろから入れると、前のものの番号がずれない
             for (int i = targets.Count - 1; i >= 0; i--)
@@ -220,6 +229,7 @@ namespace GP02.EditorTools
             {
                 copy.Name = UniqueName(data, copy.Name, usedNow);
                 usedNow.Add(copy.Name);
+                ShapeKeyLibrary.StampCreated(copy);
                 data.Entries.Add(copy);
                 if (!string.IsNullOrEmpty(copy.Group) && !data.Groups.Contains(copy.Group)) data.Groups.Add(copy.Group);
                 pasted.Add(copy);
@@ -234,7 +244,7 @@ namespace GP02.EditorTools
             Require(data);
             List<ShapeKeyEntry> targets = InDataOrder(data, entries);
             if (targets.Count == 0) return 0;
-            Record(data, "削除", "Delete");
+            RecordDestructive(data, "削除", "Delete");
             var set = new HashSet<ShapeKeyEntry>(targets);
             data.Entries.RemoveAll(e => set.Contains(e));
             Touch(data);
@@ -457,8 +467,10 @@ namespace GP02.EditorTools
             frame.DeltaNormals = normals ?? new Vector3[0];
             frame.DeltaTangents = tangents ?? new Vector3[0];
 
-            Record(data, "合成", "Merge");
+            if (disableSources) RecordDestructive(data, "合成", "Merge");
+            else Record(data, "合成", "Merge");
             var merged = new ShapeKeyEntry { Name = UniqueName(data, string.IsNullOrWhiteSpace(name) ? targets[0].Name + "_merge" : name), Group = targets[0].Group };
+            ShapeKeyLibrary.StampCreated(merged);
             merged.Frames.Add(frame);
             data.Entries.Insert(IndexOfLast(data, targets) + 1, merged);
             if (disableSources)
@@ -503,7 +515,10 @@ namespace GP02.EditorTools
             used.Add(left.Name);
             right.Name = UniqueName(data, right.Name, used);
 
-            Record(data, "左右に分割", "Split left/right");
+            if (disableOriginal) RecordDestructive(data, "左右に分割", "Split left/right");
+            else Record(data, "左右に分割", "Split left/right");
+            ShapeKeyLibrary.StampCreated(left);
+            ShapeKeyLibrary.StampCreated(right);
             int at = data.Entries.IndexOf(entry);
             data.Entries.Insert(at + 1, left);
             data.Entries.Insert(at + 2, right);
@@ -554,8 +569,11 @@ namespace GP02.EditorTools
             var results = new List<ShapeKeyEntry>();
             foreach (ShapeKeyEntry e in targets) results.Add(ShapeKeyLibrary.ScaleEntry(e, factor));
 
-            Record(data, "量の拡大縮小", "Scale");
-            for (int i = 0; i < targets.Count; i++) targets[i].Frames = results[i].Frames;
+            RecordDestructive(data, "量の拡大縮小", "Scale");
+            for (int i = 0; i < targets.Count; i++)
+            {
+                ShapeKeyHistory.Overwrite(targets[i], results[i].Frames, targets[i].PinnedVertices, L10n.Tr("量の拡大縮小", "Scale amount"));
+            }
             Touch(data);
         }
 
@@ -575,24 +593,28 @@ namespace GP02.EditorTools
             var results = new List<ShapeKeyEntry>();
             foreach (ShapeKeyEntry e in targets) results.Add(ShapeKeyLibrary.RecomputeNormalsEntry(e, mesh, smoothAngleDegrees, mergeCoincident));
 
-            Record(data, "法線を計算し直す", "Recompute normals");
-            for (int i = 0; i < targets.Count; i++) targets[i].Frames = results[i].Frames;
+            RecordDestructive(data, "法線を計算し直す", "Recompute normals");
+            for (int i = 0; i < targets.Count; i++)
+            {
+                ShapeKeyHistory.Overwrite(targets[i], results[i].Frames, targets[i].PinnedVertices, L10n.Tr("法線を計算し直す", "Recompute normals"));
+            }
             Touch(data);
             return targets.Count;
         }
 
         static ShapeKeyEntry ApplyResult(GP02ShapeKeyData data, ShapeKeyEntry original, ShapeKeyEntry result, bool asCopy, string suffix, string japanese, string english)
         {
-            Record(data, japanese, english);
             if (asCopy)
             {
+                Record(data, japanese, english);
                 result.Name = UniqueName(data, original.Name + suffix);
+                ShapeKeyLibrary.StampCreated(result);
                 data.Entries.Insert(data.Entries.IndexOf(original) + 1, result);
                 Touch(data);
                 return result;
             }
-            original.Frames = result.Frames;
-            original.PinnedVertices = result.PinnedVertices;
+            RecordDestructive(data, japanese, english);
+            ShapeKeyHistory.Overwrite(original, result.Frames, result.PinnedVertices, L10n.Tr(japanese, english));
             Touch(data);
             return original;
         }
@@ -671,7 +693,9 @@ namespace GP02.EditorTools
                 });
             }
 
-            Record(data, "in-between の作成", "Create in-between");
+            if (disableSources) RecordDestructive(data, "in-between の作成", "Create in-between");
+            else Record(data, "in-between の作成", "Create in-between");
+            ShapeKeyLibrary.StampCreated(result);
             data.Entries.Insert(IndexOfLast(data, targets) + 1, result);
             if (disableSources)
             {
@@ -721,6 +745,15 @@ namespace GP02.EditorTools
         /// <summary>メッシュの BlendShape を、番号で選んでデータに取り込む（全フレームごと）。取り込んだエントリを返す。</summary>
         public static List<ShapeKeyEntry> ImportBlendShapes(GP02ShapeKeyData data, Mesh mesh, IReadOnlyList<int> shapeIndices)
         {
+            return ImportBlendShapes(data, mesh, shapeIndices, false);
+        }
+
+        /// <summary>
+        /// メッシュの BlendShape を、番号で選んでデータに取り込む（全フレームごと）。
+        /// overwriteSameName が true なら、同じ名前のエントリがあれば新しいエントリを作らず、そのエントリを上書きする（前の形は履歴に残す）。
+        /// </summary>
+        public static List<ShapeKeyEntry> ImportBlendShapes(GP02ShapeKeyData data, Mesh mesh, IReadOnlyList<int> shapeIndices, bool overwriteSameName)
+        {
             RequireImportable(data, mesh);
             if (shapeIndices == null) throw new ArgumentNullException(nameof(shapeIndices));
             var result = new List<ShapeKeyEntry>();
@@ -729,12 +762,28 @@ namespace GP02.EditorTools
             var created = new List<ShapeKeyEntry>();
             foreach (int index in shapeIndices) created.Add(ShapeKeyLibrary.ImportFromBlendShape(mesh, index));
 
-            Record(data, "BlendShape の取り込み", "Import BlendShapes");
+            bool anyOverwrite = false;
+            if (overwriteSameName)
+            {
+                foreach (ShapeKeyEntry entry in created) anyOverwrite |= data.FindEntry(entry.Name) != null;
+            }
+            if (anyOverwrite) RecordDestructive(data, "BlendShape の取り込み", "Import BlendShapes");
+            else Record(data, "BlendShape の取り込み", "Import BlendShapes");
+
             var used = new HashSet<string>();
             foreach (ShapeKeyEntry entry in created)
             {
+                ShapeKeyEntry existing = overwriteSameName ? data.FindEntry(entry.Name) : null;
+                if (existing != null)
+                {
+                    ShapeKeyHistory.Overwrite(existing, entry.Frames, new int[0], L10n.Tr("取り込みで上書き", "Overwritten by import"));
+                    existing.InBetweenMode = entry.InBetweenMode;
+                    result.Add(existing);
+                    continue;
+                }
                 entry.Name = UniqueName(data, entry.Name, used);
                 used.Add(entry.Name);
+                ShapeKeyLibrary.StampCreated(entry);
                 data.Entries.Add(entry);
                 result.Add(entry);
             }
@@ -743,40 +792,64 @@ namespace GP02.EditorTools
         }
 
         /// <summary>メッシュの BlendShape を全部、データに取り込む。</summary>
-        public static List<ShapeKeyEntry> ImportAllBlendShapes(GP02ShapeKeyData data, Mesh mesh)
+        public static List<ShapeKeyEntry> ImportAllBlendShapes(GP02ShapeKeyData data, Mesh mesh, bool overwriteSameName = false)
         {
             RequireImportable(data, mesh);
             var indices = new List<int>();
             for (int i = 0; i < mesh.blendShapeCount; i++) indices.Add(i);
-            return ImportBlendShapes(data, mesh, indices);
+            return ImportBlendShapes(data, mesh, indices, overwriteSameName);
         }
 
         /// <summary>
         /// 別のメッシュ（このメッシュを編集して書き出したもの）を、元のメッシュとの差としてデータに取り込む。
+        /// overwriteSameName が true なら、同じ名前のエントリを上書きする（前の形は履歴に残す）。
         /// </summary>
-        public static ShapeKeyEntry ImportFromMeshAsset(GP02ShapeKeyData data, Mesh edited)
+        public static ShapeKeyEntry ImportFromMeshAsset(GP02ShapeKeyData data, Mesh edited, bool overwriteSameName = false)
         {
             Require(data);
             if (edited == null) throw new ArgumentNullException(nameof(edited));
             Mesh source = RequireSourceMesh(data);
             ShapeKeyEntry entry = ShapeKeyLibrary.ImportFromMesh(source, edited);
-            return AddImported(data, entry, "メッシュの取り込み", "Import mesh");
+            return AddImported(data, entry, "メッシュの取り込み", "Import mesh", overwriteSameName);
         }
 
         /// <summary>アニメーションクリップの指定の時刻の BlendShape の値から、1つのエントリを作って取り込む。</summary>
-        public static ShapeKeyEntry ImportFromClip(GP02ShapeKeyData data, AnimationClip clip, string rendererPath, float time)
+        public static ShapeKeyEntry ImportFromClip(GP02ShapeKeyData data, AnimationClip clip, string rendererPath, float time, bool overwriteSameName = false)
         {
             Require(data);
             if (clip == null) throw new ArgumentNullException(nameof(clip));
             Mesh source = RequireSourceMesh(data);
             ShapeKeyEntry entry = ShapeKeyLibrary.ImportFromAnimationClip(source, clip, rendererPath, time);
-            return AddImported(data, entry, "アニメーションクリップの取り込み", "Import animation clip");
+            return AddImported(data, entry, "アニメーションクリップの取り込み", "Import animation clip", overwriteSameName);
         }
 
-        static ShapeKeyEntry AddImported(GP02ShapeKeyData data, ShapeKeyEntry entry, string japanese, string english)
+        /// <summary>
+        /// アニメーションクリップの、すべてのキーフレームを、1つの in-between 付きシェイプキーとして取り込む
+        /// （<see cref="ShapeKeyLibrary.ImportFromAnimationClipKeyframes"/>）。
+        /// </summary>
+        public static ShapeKeyEntry ImportFromClipKeyframes(GP02ShapeKeyData data, AnimationClip clip, string rendererPath, bool overwriteSameName = false)
         {
+            Require(data);
+            if (clip == null) throw new ArgumentNullException(nameof(clip));
+            Mesh source = RequireSourceMesh(data);
+            ShapeKeyEntry entry = ShapeKeyLibrary.ImportFromAnimationClipKeyframes(source, clip, rendererPath);
+            return AddImported(data, entry, "アニメーションクリップのキーフレームの取り込み", "Import animation clip keyframes", overwriteSameName);
+        }
+
+        static ShapeKeyEntry AddImported(GP02ShapeKeyData data, ShapeKeyEntry entry, string japanese, string english, bool overwriteSameName = false)
+        {
+            ShapeKeyEntry existing = overwriteSameName ? data.FindEntry(entry.Name) : null;
+            if (existing != null)
+            {
+                RecordDestructive(data, japanese, english);
+                ShapeKeyHistory.Overwrite(existing, entry.Frames, new int[0], L10n.Tr("取り込みで上書き", "Overwritten by import"));
+                existing.InBetweenMode = entry.InBetweenMode;
+                Touch(data);
+                return existing;
+            }
             Record(data, japanese, english);
             entry.Name = UniqueName(data, entry.Name);
+            ShapeKeyLibrary.StampCreated(entry);
             data.Entries.Add(entry);
             Touch(data);
             return entry;

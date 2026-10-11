@@ -16,6 +16,8 @@ namespace GP02.EditorTools
         const string DragKey = "GP02.ShapeKeyDrag";
         const float ToggleWidth = 18f;
         const float IconWidth = 18f;
+        const float SoloWidth = 20f;
+        static readonly Color PrebakeColor = new Color(0.20f, 0.45f, 0.95f, 0.30f);
 
         sealed class EntryItem : TreeViewItem
         {
@@ -70,19 +72,24 @@ namespace GP02.EditorTools
                     if (e != null && !string.IsNullOrEmpty(e.Group) && !_groupNames.Contains(e.Group)) _groupNames.Add(e.Group);
                 }
 
+                // 検索と並べ替えは表示だけのもの（データの並びは変えない）。行の番号（id）はデータでの位置なので、表示の順が違っても選択は崩れない
+                List<int> order = DisplayOrder(data, out bool filtering);
                 for (int g = 0; g < _groupNames.Count; g++)
                 {
+                    int groupRow = items.Count;
                     items.Add(new GroupItem { id = GroupIdBase + g, depth = 0, displayName = _groupNames[g], Group = _groupNames[g] });
-                    for (int i = 0; i < data.Entries.Count; i++)
+                    foreach (int i in order)
                     {
                         ShapeKeyEntry e = data.Entries[i];
-                        if (e != null && e.Group == _groupNames[g]) items.Add(MakeEntryItem(e, i, 1));
+                        if (e.Group == _groupNames[g]) items.Add(MakeEntryItem(e, i, 1));
                     }
+                    // 検索中は、合うものが無いグループは隠す
+                    if (filtering && items.Count == groupRow + 1) items.RemoveAt(groupRow);
                 }
-                for (int i = 0; i < data.Entries.Count; i++)
+                foreach (int i in order)
                 {
                     ShapeKeyEntry e = data.Entries[i];
-                    if (e != null && string.IsNullOrEmpty(e.Group)) items.Add(MakeEntryItem(e, i, 0));
+                    if (string.IsNullOrEmpty(e.Group)) items.Add(MakeEntryItem(e, i, 0));
                 }
             }
             _builtEntryCount = data != null ? data.Entries.Count : 0;
@@ -91,6 +98,27 @@ namespace GP02.EditorTools
             if (items.Count == 0) root.children = new List<TreeViewItem>();
             else SetupParentsAndChildrenFromDepths(root, items);
             return root;
+        }
+
+        // 検索に合うエントリの、データでの位置を、並べ替えた順に返す
+        List<int> DisplayOrder(GP02ShapeKeyData data, out bool filtering)
+        {
+            ShapeKeyViewSettings settings = _owner.Settings;
+            string filter = settings != null ? settings.FilterText : "";
+            filtering = !string.IsNullOrWhiteSpace(filter);
+            List<ShapeKeyEntry> ordered = ShapeKeyListOperations.OrderForDisplay(data.Entries, settings != null ? settings.Sort : ShapeKeyListSort.DataOrder);
+            var positions = new Dictionary<ShapeKeyEntry, int>();
+            for (int i = 0; i < data.Entries.Count; i++)
+            {
+                if (data.Entries[i] != null && !positions.ContainsKey(data.Entries[i])) positions.Add(data.Entries[i], i);
+            }
+            var result = new List<int>(ordered.Count);
+            foreach (ShapeKeyEntry e in ordered)
+            {
+                if (filtering && !ShapeKeyListOperations.MatchesFilter(e, filter)) continue;
+                result.Add(positions[e]);
+            }
+            return result;
         }
 
         static EntryItem MakeEntryItem(ShapeKeyEntry entry, int index, int depth)
@@ -167,9 +195,11 @@ namespace GP02.EditorTools
             GP02ShapeKeyData data = _owner.Data;
             string problem = _owner.GetProblem(entry, out bool isError);
             Rect row = args.rowRect;
-            if (problem != null && Event.current.type == EventType.Repaint)
+            if (Event.current.type == EventType.Repaint)
             {
-                EditorGUI.DrawRect(row, isError ? new Color(0.85f, 0.15f, 0.15f, 0.40f) : new Color(0.9f, 0.7f, 0.1f, 0.25f));
+                // 素体に焼き込む印のあるものは青い背景（BlendShape にならず、素体の形になる）
+                if (entry.Prebake) EditorGUI.DrawRect(row, PrebakeColor);
+                if (problem != null) EditorGUI.DrawRect(row, isError ? new Color(0.85f, 0.15f, 0.15f, 0.40f) : new Color(0.9f, 0.7f, 0.1f, 0.25f));
             }
 
             float indent = GetContentIndent(item);
@@ -177,8 +207,9 @@ namespace GP02.EditorTools
             var toggleRect = new Rect(row.x + indent, row.y + 2f, ToggleWidth, EditorGUIUtility.singleLineHeight);
             var iconRect = new Rect(row.xMax - IconWidth - 2f, row.y + 2f, IconWidth, EditorGUIUtility.singleLineHeight);
             var sliderRect = new Rect(iconRect.x - sliderWidth - 2f, row.y + 2f, sliderWidth, EditorGUIUtility.singleLineHeight);
+            var soloRect = new Rect(sliderRect.x - SoloWidth - 2f, row.y + 2f, SoloWidth, EditorGUIUtility.singleLineHeight);
             float nameX = toggleRect.xMax + 2f;
-            var nameRect = new Rect(nameX, row.y + 2f, Mathf.Max(30f, sliderRect.x - nameX - 4f), EditorGUIUtility.singleLineHeight);
+            var nameRect = new Rect(nameX, row.y + 2f, Mathf.Max(30f, soloRect.x - nameX - 4f), EditorGUIUtility.singleLineHeight);
 
             EditorGUI.BeginChangeCheck();
             bool enabled = EditorGUI.Toggle(toggleRect, entry.Enabled);
@@ -187,6 +218,13 @@ namespace GP02.EditorTools
             EditorGUI.BeginChangeCheck();
             string newName = EditorGUI.DelayedTextField(nameRect, entry.Name);
             if (EditorGUI.EndChangeCheck()) _owner.Rename(entry, newName);
+
+            bool isSolo = _owner.IsSolo(entry);
+            EditorGUI.BeginChangeCheck();
+            bool solo = GUI.Toggle(soloRect, isSolo, new GUIContent("S", L10n.Tr(
+                "これだけ表示（ソロ）。このシェイプキーだけをシーンに見せます（他の重みは変えません）。スライダーが 0 のときは 100 で見せます",
+                "Show only this one (solo). Only this shape key is shown in the scene (other weights are unchanged). Shown at 100 when the slider is 0")), EditorStyles.miniButton);
+            if (EditorGUI.EndChangeCheck()) _owner.SetSolo(solo ? entry : null);
 
             using (new EditorGUI.DisabledScope(!entry.Enabled))
             {
@@ -315,7 +353,8 @@ namespace GP02.EditorTools
         // ドラッグ＆ドロップ（並べ替えとグループの移動）
         // ------------------------------------------------------------------
 
-        protected override bool CanStartDrag(CanStartDragArgs args) => args.draggedItem is EntryItem;
+        // 検索や並べ替えで表示がデータの並びと違うときは、ドラッグでの並べ替えはしない（行の位置とデータの位置が合わないため）
+        protected override bool CanStartDrag(CanStartDragArgs args) => args.draggedItem is EntryItem && _owner.IsReorderAllowed;
 
         protected override void SetupDragAndDrop(SetupDragAndDropArgs args)
         {

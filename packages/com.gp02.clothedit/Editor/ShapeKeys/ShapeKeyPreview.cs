@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using GP02.Core;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
@@ -37,12 +38,14 @@ namespace GP02.EditorTools
             public Vector3[] BaseVertices;
             public Vector3[] BaseNormals;       // メッシュに法線が無ければ空
             public Vector4[] BaseTangents;      // メッシュに接線が無ければ空
+            public ShapeKeyEntry Solo;          // null でなければ、このエントリだけを見せる（ソロ）
         }
 
         struct Suspended
         {
             public Renderer Renderer;
             public GP02ShapeKeyData Data;
+            public ShapeKeyEntry Solo;
         }
 
         static readonly List<Item> Items = new List<Item>();
@@ -78,6 +81,41 @@ namespace GP02.EditorTools
         /// <summary>プレビューに使っている一時メッシュ。始めていなければ null。</summary>
         public static Mesh GetTempMesh(Renderer renderer) => Find(renderer)?.Temp;
 
+        /// <summary>ソロ中のエントリ。ソロでなければ null。</summary>
+        public static ShapeKeyEntry GetSolo(Renderer renderer) => Find(renderer)?.Solo;
+
+        /// <summary>
+        /// 「これだけ表示」: entry だけを見せて、他のシェイプキーは重みに関係なく見せない（プレビューが始まっていなければ始める）。
+        /// 見せる重みは、エントリのプレビューの重み。0 のときは 100。entry が null なら、ソロをやめて通常のプレビュー（各エントリの重み）に戻る。
+        /// 他のエントリの重みの値は変えない。
+        /// </summary>
+        public static bool SetSolo(Renderer renderer, GP02ShapeKeyData data, ShapeKeyEntry entry, out string error)
+        {
+            error = null;
+            if (entry == null)
+            {
+                Item item = Find(renderer);
+                if (item != null) item.Solo = null;
+                return Apply(renderer, data, out error);
+            }
+            Item running = Find(renderer);
+            if (running != null)
+            {
+                // 動いているプレビューなら、ソロを切り替えて 1 回だけ計算し直す（スライダーを動かすたびに呼ばれる）
+                running.Data = data;
+                running.Solo = entry;
+                Recompute(running);
+                Changed?.Invoke();
+                return true;
+            }
+            if (!Begin(renderer, data, out error)) return false;
+            Item started = Find(renderer);
+            started.Solo = entry;
+            Recompute(started);
+            Changed?.Invoke();
+            return true;
+        }
+
         /// <summary>プレビューを始める前のメッシュ。始めていなければ null。</summary>
         public static Mesh GetOriginalMesh(Renderer renderer) => Find(renderer)?.Original;
 
@@ -88,7 +126,8 @@ namespace GP02.EditorTools
         public static bool Apply(Renderer renderer, GP02ShapeKeyData data, out string error)
         {
             error = null;
-            if (!ShapeKeyListOperations.HasActivePreviewWeight(data))
+            // ソロ中は、重みがすべて 0 でも見せ続ける
+            if (GetSolo(renderer) == null && !ShapeKeyListOperations.HasActivePreviewWeight(data))
             {
                 End(renderer);
                 return true;
@@ -241,9 +280,20 @@ namespace GP02.EditorTools
             {
                 foreach (ShapeKeyEntry entry in data.Entries)
                 {
-                    if (entry == null || !entry.Enabled || entry.Frames.Count == 0 || entry.PreviewWeight == 0f) continue;
+                    if (entry == null || entry.Frames.Count == 0) continue;
+                    float weight = entry.PreviewWeight;
+                    if (item.Solo != null)
+                    {
+                        // ソロ: 選んだものだけを、無効のものでも見せる。スライダーが 0 なら 100
+                        if (entry != item.Solo) continue;
+                        if (weight == 0f) weight = ShapeKeyMath.FullWeight;
+                    }
+                    else if (!entry.Enabled || weight == 0f)
+                    {
+                        continue;
+                    }
                     if (!ShapeKeyLibrary.IsEntryCompatible(entry, count)) continue;
-                    ShapeKeyFrame frame = ShapeKeyLibrary.EvaluateEntry(entry, entry.PreviewWeight, count);
+                    ShapeKeyFrame frame = ShapeKeyLibrary.EvaluateEntry(entry, weight, count);
                     for (int v = 0; v < count; v++) vertices[v] += frame.DeltaVertices[v];
                     if (normals != null && frame.HasNormals)
                     {
@@ -347,7 +397,7 @@ namespace GP02.EditorTools
         {
             if (Items.Count == 0) return;
             SuspendedItems.Clear();
-            foreach (Item item in Items) SuspendedItems.Add(new Suspended { Renderer = item.Renderer, Data = item.Data });
+            foreach (Item item in Items) SuspendedItems.Add(new Suspended { Renderer = item.Renderer, Data = item.Data, Solo = item.Solo });
             EndAll();
         }
 
@@ -358,7 +408,9 @@ namespace GP02.EditorTools
             SuspendedItems.Clear();
             foreach (Suspended s in resume)
             {
-                if (s.Renderer != null && s.Data != null) Apply(s.Renderer, s.Data, out _);
+                if (s.Renderer == null || s.Data == null) continue;
+                if (s.Solo != null) SetSolo(s.Renderer, s.Data, s.Solo, out _);
+                else Apply(s.Renderer, s.Data, out _);
             }
         }
 

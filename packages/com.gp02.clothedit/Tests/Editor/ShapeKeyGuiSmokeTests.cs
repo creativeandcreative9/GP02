@@ -62,6 +62,8 @@ namespace GP02.Tests
         {
             Mesh mesh = CreateGridMesh("GuiTarget");
             int n = mesh.vertexCount;
+            // 元のメッシュに同じ名前の BlendShape があると、書き出しの一覧に「上書き」が出る
+            mesh.AddBlendShapeFrame("Smile", 100f, Ramp(n, 0.001f), null, null);
             var a = Entry("Smile", Ramp(n, 0.002f));
             var b = Entry("Mouth_Open", Ramp(n, 0.003f));
             b.Group = "Face";
@@ -125,6 +127,67 @@ namespace GP02.Tests
                 yield return Pump();
                 Shot(window, "window_selected");
 
+                // 詳細: 素体に焼き込む印・in-between のフレーム・前の版
+                data.Entries[1].Prebake = true;
+                data.Entries[1].PrebakeWeight = 60f;
+                ShapeKeyHistory.Push(data.Entries[4], "布で編集して上書き");
+                ShapeKeyHistory.Push(data.Entries[4], "取り込みで上書き");
+                window.View.Tree.SelectEntries(new[] { data.Entries[4] });
+                yield return Pump();
+                Shot(window, "window_details_frames");
+                window.View.Tree.SelectEntries(new[] { data.Entries[1] });
+                yield return Pump();
+                Shot(window, "window_details_prebake");
+
+                // 検索・並べ替え・ソロ
+                window.View.Settings.FilterText = "mouth";
+                window.View.Settings.Sort = ShapeKeyListSort.Name;
+                window.View.SetSolo(data.Entries[2]);
+                window.View.Tree.Reload();
+                window.View.Tree.ExpandAll();
+                yield return Pump();
+                Shot(window, "window_filter_solo");
+                window.View.SetSolo(null);
+                window.View.Settings.FilterText = "";
+                window.View.Settings.Sort = ShapeKeyListSort.DataOrder;
+                window.View.Tree.Reload();
+                window.View.StopPreview();
+
+                // 書き出しの確認の一覧・名前の前置き・後置き・トグル用 AnimationClip・バックアップ
+                bool showOperations = window.View.Settings.ShowOperations, showDetails = window.View.Settings.ShowDetails;
+                window.View.Settings.ShowOperations = false;
+                window.View.Settings.ShowDetails = false;
+                component.NamePrefix = "GP02_";
+                component.SkipIncompatible = true;
+                window.View.Settings.CreateClips = true;
+                window.View.Settings.ShowBackups = true;
+                yield return Pump();
+                Shot(window, "window_export");
+                component.SkipIncompatible = false;
+                yield return Pump();
+                Shot(window, "window_export_error");
+                component.NamePrefix = "";
+                window.View.Settings.CreateClips = false;
+                window.View.Settings.ShowBackups = false;
+
+                // 選んだ点の範囲・別のメッシュへ写す
+                window.View.Settings.ShowOperations = true;
+                window.View.Settings.ShowRangeTools = true;
+                window.View.Settings.ShowTransfer = true;
+                window.View.Settings.ShowOperationSettings = true;
+                window.View.Settings.SplitInAvatarSpace = true;
+                window.View.Settings.ShowExport = false;
+                yield return Pump();
+                Shot(window, "window_range_transfer");
+                window.View.Settings.ShowRangeTools = false;
+                window.View.Settings.ShowTransfer = false;
+                window.View.Settings.ShowOperationSettings = false;
+                window.View.Settings.SplitInAvatarSpace = false;
+                window.View.Settings.ShowExport = true;
+                window.View.Settings.ShowOperations = showOperations;
+                window.View.Settings.ShowDetails = showDetails;
+                data.Entries[1].Prebake = false;
+
                 // 折りたたみを開いた状態（操作の設定・取り込み）
                 window.View.Settings.ShowOperationSettings = true;
                 window.View.Settings.ShowImport = true;
@@ -163,6 +226,44 @@ namespace GP02.Tests
             }
             Assert.That(ShapeKeyPreview.IsActive(renderer), Is.False, "ウィンドウを閉じるとプレビューは戻る");
             Assert.That(ClothEditController.GetMesh(renderer), Is.SameAs(data.SourceMesh));
+        }
+
+        [UnityTest]
+        public IEnumerator DataInspector_ListsTheBackupsOfASavedData()
+        {
+            string savedFolder = ShapeKeyBackup.Folder;
+            ShapeKeyBackup.Folder = TempRoot + "/Backups";
+            if (!AssetDatabase.IsValidFolder(TempRoot)) AssetDatabase.CreateFolder("Assets", "GP02_ShapeKeyUiTestTemp");
+            if (!AssetDatabase.IsValidFolder(MeshFolder)) AssetDatabase.CreateFolder(TempRoot, "Meshes");
+            Mesh mesh = Object.Instantiate(CreateGridMesh("InspectorGrid"));
+            AssetDatabase.CreateAsset(mesh, MeshFolder + "/InspectorGrid.asset");
+            GP02ShapeKeyData data = ShapeKeyLibrary.CreateData(mesh, DataFolder);
+            int n = mesh.vertexCount;
+            data.Entries.Add(Entry("Smile", Ramp(n, 0.002f)));
+            data.Entries.Add(Entry("Open", Ramp(n, 0.003f)));
+            data.Entries.Add(Entry("Brow", Ramp(n, 0.001f)));
+            ShapeKeyListOperations.Scale(data, new[] { data.Entries[0] }, 0.5f);
+            ShapeKeyListOperations.Delete(data, new[] { data.Entries[2] });
+            ShapeKeyListOperations.Merge(data, new[] { data.Entries[0], data.Entries[1] }, null, "Both", true);
+
+            Editor editor = Editor.CreateEditor(data);
+            var host = ScriptableObject.CreateInstance<HostWindow>();
+            host.position = new Rect(10, 10, 440, 420);
+            host.Draw = () => editor.OnInspectorGUI();
+            host.ShowUtility();
+            try
+            {
+                yield return Pump();
+                Assert.That(host.Calls, Is.GreaterThan(0), "描画が走っていない");
+                Assert.That(ShapeKeyBackup.List(data).Count, Is.EqualTo(3));
+                Shot(host, "data_inspector");
+            }
+            finally
+            {
+                host.Close();
+                Object.DestroyImmediate(editor);
+                ShapeKeyBackup.Folder = savedFolder;
+            }
         }
 
         [UnityTest]

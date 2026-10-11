@@ -41,11 +41,33 @@ namespace GP02
     }
 
     /// <summary>
+    /// シェイプキーの前の版（上書き保存する前の形）。最大 <see cref="ShapeKeyEntry.MaxHistory"/> 個まで、エントリの中に残す。
+    /// </summary>
+    [Serializable]
+    public sealed class ShapeKeyVersion
+    {
+        /// <summary>この版を残した日時（"yyyy-MM-dd HH:mm:ss"。端末の時刻）。</summary>
+        public string SavedAt = "";
+
+        /// <summary>何をして残したか（"布で編集して上書き"、"取り込みで上書き" など）。</summary>
+        public string Reason = "";
+
+        /// <summary>この版のフレーム（深いコピー）。</summary>
+        public List<ShapeKeyFrame> Frames = new List<ShapeKeyFrame>();
+
+        /// <summary>この版のピン留めの頂点番号。</summary>
+        public int[] PinnedVertices = new int[0];
+    }
+
+    /// <summary>
     /// シェイプキー1つ分の編集データ。Unity のメッシュに書き出すと、同じ名前の BlendShape になる。
     /// </summary>
     [Serializable]
     public sealed class ShapeKeyEntry
     {
+        /// <summary>前の版として残す数の上限。</summary>
+        public const int MaxHistory = 10;
+
         /// <summary>BlendShape の名前。</summary>
         public string Name = "";
 
@@ -72,6 +94,22 @@ namespace GP02
 
         /// <summary>再編集するときに、ピン留めする頂点の番号（元メッシュの頂点番号）。</summary>
         public int[] PinnedVertices = new int[0];
+
+        /// <summary>
+        /// true なら、BlendShape にせず、書き出し（とビルド時の適用）で先に <see cref="PrebakeWeight"/> の重みで素体に焼き込む。
+        /// 印はデータに残るので、外して書き出し直せば素体は元に戻る（書き出すメッシュは元のメッシュから毎回作り直す）。
+        /// </summary>
+        public bool Prebake;
+
+        /// <summary>素体に焼き込むときの重み（0〜100）。</summary>
+        [Range(0f, 100f)]
+        public float PrebakeWeight = 100f;
+
+        /// <summary>作った日時（DateTime.UtcNow.Ticks）。0 は不明（古いデータ）。並べ替えの「作った順」に使う。</summary>
+        public long CreatedTicks;
+
+        /// <summary>上書き保存する前の版（古い順）。最大 <see cref="MaxHistory"/> 個。</summary>
+        public List<ShapeKeyVersion> History = new List<ShapeKeyVersion>();
     }
 
     /// <summary>
