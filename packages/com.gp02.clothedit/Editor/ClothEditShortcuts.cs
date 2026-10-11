@@ -47,8 +47,12 @@ namespace GP02.EditorTools
 
         /// <summary>拡大縮小（「選んで動かす」の間は拡大縮小ハンドル）。</summary>
         Scale,
+
+        /// <summary>ピン留め（「塗ると外す」はオフ）。</summary>
         Pin,
-        Unpin,
+
+        /// <summary>ピン留め＋外す（ピン留めの道具で「塗ると外す」をオン）。昔の「ピン解除」にあたる。</summary>
+        PinErase,
         Relax,
 
         /// <summary>「選んで動かす」（もう一度で前の道具）。</summary>
@@ -91,7 +95,7 @@ namespace GP02.EditorTools
                 case ClothEditShortcutAction.Rotate: return selecting ? new ToolKeyResult(current, SelectionHandle.Rotate) : new ToolKeyResult(ClothEditMode.Rotate, handle);
                 case ClothEditShortcutAction.Scale: return selecting ? new ToolKeyResult(current, SelectionHandle.Scale) : new ToolKeyResult(ClothEditMode.Scale, handle);
                 case ClothEditShortcutAction.Pin: return new ToolKeyResult(ClothEditMode.Pin, handle);
-                case ClothEditShortcutAction.Unpin: return new ToolKeyResult(ClothEditMode.Unpin, handle);
+                case ClothEditShortcutAction.PinErase: return new ToolKeyResult(ClothEditMode.Unpin, handle);   // Unpin は「ピン留め＋外す」
                 case ClothEditShortcutAction.Relax: return new ToolKeyResult(ClothEditMode.Relax, handle);
                 case ClothEditShortcutAction.SelectTool: return new ToolKeyResult(selecting ? LeaveSelectTool(previousTool) : ClothEditMode.Select, handle);
                 default: return default;
@@ -117,7 +121,7 @@ namespace GP02.EditorTools
         /// <summary>ホイール1目盛り（Event.delta.y で 3）が何ステップか。</summary>
         const float WheelDeltaPerStep = 3f;
 
-        /// <summary>キーに対応する道具。W つまむ、E 回す、R 拡大縮小、P ピン留め（Shift で解除）、T 元に戻すブラシ。</summary>
+        /// <summary>キーに対応する道具。W つまむ、E 回す、R 拡大縮小、P ピン留め（Shift で「ピン留め＋外す」。道具は Unpin で返す）、T 元に戻すブラシ。</summary>
         public static bool TryGetTool(KeyCode key, bool shift, out ClothEditMode tool)
         {
             switch (key)
@@ -160,6 +164,30 @@ namespace GP02.EditorTools
                 }
             }
             return TryGetTool(key, shift, out ClothEditMode tool) ? new ToolKeyResult(tool, handle) : default;
+        }
+
+        /// <summary>
+        /// 道具の切り替えの結果を、設定に入れる道具と「塗ると外す」にする。
+        /// Pin（P）は「塗ると外す」をオフにしたピン留め、Unpin（Shift+P）は「塗ると外す」をオンにしたピン留め。
+        /// ほかの道具では、「塗ると外す」は今のまま。
+        /// </summary>
+        public static void ResolvePinMode(ClothEditMode requested, bool currentErase, out ClothEditMode tool, out bool erase)
+        {
+            switch (requested)
+            {
+                case ClothEditMode.Unpin:
+                    tool = ClothEditMode.Pin;
+                    erase = true;
+                    break;
+                case ClothEditMode.Pin:
+                    tool = ClothEditMode.Pin;
+                    erase = false;
+                    break;
+                default:
+                    tool = requested;
+                    erase = currentErase;
+                    break;
+            }
         }
 
         /// <summary>「選んで動かす」をやめたときに戻る道具。前の道具が分からない（「選んで動かす」自身）なら、つまむ。</summary>

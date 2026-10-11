@@ -8,8 +8,10 @@ namespace GP02.EditorTools
     /// <summary>
     /// 布の編集の操作画面。道具（つまむ・回す・拡大縮小・ピン留め・元に戻すブラシ・選んで動かす）をシーンビューで使い、結果をシェイプキーとして保存する。
     /// 操作の流れは <see cref="ClothEditController"/> が持ち、ここはイベントを読んで渡すことと、表示だけを受け持つ。
+    /// 画面は状態に合わせて出し分ける: 編集前は「手順」「対象」と大きな「編集を開始」だけ、道具・ブラシ・対称・選んだ点・保存は編集中だけ。
+    /// 上部の「かんたん／くわしく」（<see cref="ClothEditView"/>）で、出す項目の量を切り替える。
     /// ウィンドウの内容はこのファイル、シーンビューの入力と重ね描きは ClothEditWindow.SceneView.cs、
-    /// 「選んで動かす」の区切りとハンドルは ClothEditWindow.Selection.cs。
+    /// 「選んで動かす」の区切りとハンドルは ClothEditWindow.Selection.cs、前回の編集の復元・始め方・確認は ClothEditWindow.Recovery.cs。
     /// </summary>
     public sealed partial class ClothEditWindow : EditorWindow
     {
@@ -19,11 +21,12 @@ namespace GP02.EditorTools
         const float InfluenceMinCm = 5f;
         const float InfluenceMaxCm = 100f;
 
-        // ツールバーに並べる順（ClothEditMode の数値とは別）。「選んで動かす」は、道具の下に1つだけ広いボタンで置く
+        // ツールバーに並べる順（ClothEditMode の数値とは別）。シーンビューの道具バーと同じ並びにする。
+        // ピン解除は「ピン留め＋外す」としてピン留めに含める。かんたん表示では、回す・拡大縮小のボタンを出さない（キーは今のまま使える）
         static readonly ClothEditMode[] ToolOrder =
         {
-            ClothEditMode.Grab, ClothEditMode.Rotate, ClothEditMode.Scale,
-            ClothEditMode.Pin, ClothEditMode.Unpin, ClothEditMode.Relax,
+            ClothEditMode.Grab, ClothEditMode.Select, ClothEditMode.Pin,
+            ClothEditMode.Relax, ClothEditMode.Rotate, ClothEditMode.Scale,
         };
 
         // ウィンドウの内容は再読み込み後も残るが、セッションは作り直しになる
@@ -36,7 +39,7 @@ namespace GP02.EditorTools
         [SerializeField] bool _foldTarget = true;
         [SerializeField] bool _foldTool = true;
         [SerializeField] bool _foldBrush = true;
-        [SerializeField] bool _foldSymmetry;
+        [SerializeField] bool _foldSymmetry = true;
         [SerializeField] bool _foldDisplay = true;
         [SerializeField] bool _foldSave = true;
         [SerializeField] bool _foldAdvanced;
@@ -48,6 +51,7 @@ namespace GP02.EditorTools
         readonly List<TargetWarning> _warnings = new List<TargetWarning>();
         Renderer _warningsTarget;
         bool _warningsDirty = true;
+        GUIStyle _startButtonStyle;
 
         // 手順の案内（編集を始めるたびに最初からやり直す）
         bool _guideWasEditing;
@@ -72,24 +76,37 @@ namespace GP02.EditorTools
             _controller.Changed += OnControllerChanged;
             // シェイプキーの一覧の「布で編集する」から、このウィンドウの編集を使う
             ShapeKeyClothEdit.ControllerProvider = () => _controller;
+            ShapeKeyClothEdit.ConfirmLeave = ConfirmLeaveForShapeKeyEdit;
             ClothEditShortcutBindings.Handler = OnShortcut;
             SyncController();
             SceneView.beforeSceneGui += OnBeforeSceneGUI;
             SceneView.duringSceneGui += OnSceneGUI;
             EditorApplication.update += OnUpdate;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
+            Selection.selectionChanged += OnHierarchySelectionChanged;
+            AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
+            ClothEditView.Changed += OnViewModeChanged;
             _warningsDirty = true;
             _overlayOwner = this;
+            ClothEditStash.DeleteOlderThan(ClothEditStash.MaxAge);
+            InitTargetOnEnable();
+            RefreshStashInfo(true);
         }
 
         void OnDisable()
         {
             if (_overlayOwner == this) _overlayOwner = null;
+            // ウィンドウを閉じる・スクリプトの再読み込みの前に、保存していない編集を取っておく
+            if (_controller != null) StashNow();
             SceneView.beforeSceneGui -= OnBeforeSceneGUI;
             SceneView.duringSceneGui -= OnSceneGUI;
             EditorApplication.update -= OnUpdate;
             EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            Selection.selectionChanged -= OnHierarchySelectionChanged;
+            AssemblyReloadEvents.beforeAssemblyReload -= OnBeforeAssemblyReload;
+            ClothEditView.Changed -= OnViewModeChanged;
             if (ShapeKeyClothEdit.ControllerProvider != null && ShapeKeyClothEdit.ControllerProvider() == _controller) ShapeKeyClothEdit.ControllerProvider = null;
+            if (ShapeKeyClothEdit.ConfirmLeave == (System.Func<ClothEditLeaveReason, bool>)ConfirmLeaveForShapeKeyEdit) ShapeKeyClothEdit.ConfirmLeave = null;
             if (ClothEditShortcutBindings.Handler == (System.Action<ClothEditShortcutAction, bool>)OnShortcut) ClothEditShortcutBindings.Handler = null;
             ClothEditShortcutBindings.SetEditing(false);
             if (_controller != null)
@@ -110,9 +127,31 @@ namespace GP02.EditorTools
             _warningsDirty = true;
         }
 
+        void OnViewModeChanged()
+        {
+            Repaint();
+        }
+
         void OnPlayModeStateChanged(PlayModeStateChange state)
         {
-            if (state == PlayModeStateChange.ExitingEditMode || state == PlayModeStateChange.ExitingPlayMode) _controller.End();
+            if (_controller == null) return;
+            switch (state)
+            {
+                case PlayModeStateChange.ExitingEditMode:
+                    // プレイモードに入る前に、保存していない編集を取っておく
+                    StashNow();
+                    _controller.End();
+                    break;
+                case PlayModeStateChange.ExitingPlayMode:
+                    _controller.End();
+                    break;
+                case PlayModeStateChange.EnteredEditMode:
+                    // プレイモードから戻ったら、前回の編集が残っていないか探し直す
+                    _warningsDirty = true;
+                    RefreshStashInfo(true);
+                    Repaint();
+                    break;
+            }
         }
 
         void OnControllerChanged()
@@ -136,17 +175,23 @@ namespace GP02.EditorTools
             if (_radiusDrag.Active && (_controller == null || !_controller.IsEditing)) _radiusDrag.Cancel();
         }
 
+        static bool Shows(ClothEditUiItem item) => ClothEditView.Shows(item);
+
         void OnGUI()
         {
             if (_controller == null) return;
             string title = L10n.Tr("GP02 布の編集", "GP02 Cloth Edit");
             if (titleContent.text != title) titleContent = new GUIContent(title);
 
-            if (Event.current.type == EventType.Layout) RefreshTargetWarnings();
+            if (Event.current.type == EventType.Layout)
+            {
+                RefreshTargetWarnings();
+                RefreshStashInfo(false);
+            }
             DrawTopBar();
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
+            DrawBands();
             DrawGuide();
-            if (!_controller.IsEditing && ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
             DrawTargetSection();
             DrawDiagnosticsSection();
             DrawToolSection();
@@ -154,9 +199,10 @@ namespace GP02.EditorTools
             DrawBrushSection();
             DrawSymmetrySection();
             DrawDisplaySection();
-            if (_controller.IsEditing) DrawSaveSection();
+            DrawSaveSection();
             DrawAdvancedSection();
             EditorGUILayout.EndScrollView();
+            DrawStatusLine();
 
             if (_settingsDirty)
             {
@@ -174,19 +220,20 @@ namespace GP02.EditorTools
             return EditorGUILayout.Foldout(open, label, true, EditorStyles.foldoutHeader);
         }
 
-        // ---- 上部（言語、ショートカット一覧） ----
+        // ---- 上部（かんたん／くわしく、言語、ショートカット一覧） ----
 
         void DrawTopBar()
         {
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
-                GUILayout.Label(L10n.Tr("言語", "Language"), EditorStyles.miniLabel, GUILayout.Width(50f));
+                ClothEditView.DrawToggle(EditorStyles.toolbarButton, 112f);
+                GUILayout.Space(2f);
                 var languageLabels = new[]
                 {
                     new GUIContent("日本語", L10n.Tr("画面の言葉を日本語にします", "Show the interface in Japanese")),
                     new GUIContent("English", L10n.Tr("画面の言葉を英語にします", "Show the interface in English")),
                 };
-                int language = GUILayout.Toolbar((int)L10n.Language, languageLabels, EditorStyles.toolbarButton, GUILayout.Width(150f));
+                int language = GUILayout.Toolbar((int)L10n.Language, languageLabels, EditorStyles.toolbarButton, GUILayout.Width(104f));
                 if (language != (int)L10n.Language)
                 {
                     L10n.Language = (UiLanguage)language;
@@ -195,13 +242,13 @@ namespace GP02.EditorTools
                 }
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button(new GUIContent(L10n.Tr("説明書", "Manual"), L10n.Tr("使い方の説明書を開きます（Documentation~ フォルダの文書）", "Opens the manual (a document in the Documentation~ folder)")),
-                    EditorStyles.toolbarButton, GUILayout.Width(56f)))
+                    EditorStyles.toolbarButton, GUILayout.Width(52f)))
                 {
                     OpenManual();
                 }
                 bool show = GUILayout.Toggle(_showShortcuts,
                     new GUIContent("?", L10n.Tr("ショートカット一覧を出す・隠す（F1）", "Show / hide the shortcut list (F1)")),
-                    EditorStyles.toolbarButton, GUILayout.Width(26f));
+                    EditorStyles.toolbarButton, GUILayout.Width(22f));
                 if (show != _showShortcuts)
                 {
                     _showShortcuts = show;
@@ -246,6 +293,7 @@ namespace GP02.EditorTools
             UpdateGuideProgress(editing);
             ClothEditSession session = _controller.Session;
             ClothEditGuide.Evaluate(_target != null, editing, session != null && session.PinnedCount > 0, editing && _guideEdited, editing && _guideSaved, _guideStates);
+            if (!Shows(ClothEditUiItem.Guide)) return;
 
             if (editing)
             {
@@ -305,102 +353,123 @@ namespace GP02.EditorTools
 
         void DrawTargetSection()
         {
-            _foldTarget = Section(_foldTarget, L10n.Tr("対象", "Target"));
-            if (!_foldTarget) return;
-
-            bool editing = _controller.IsEditing;
-            using (new EditorGUI.DisabledScope(editing))
+            if (_controller.IsEditing)
             {
-                EditorGUI.BeginChangeCheck();
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    _target = (Renderer)EditorGUILayout.ObjectField(L10n.Tr("対象", "Target"), _target, typeof(Renderer), true);
-                    if (_extraTargets.Count > 0 && GUILayout.Button(new GUIContent(L10n.Tr("外す", "Remove"), L10n.Tr("この対象を一覧から外す", "Remove this target from the list")), GUILayout.Width(48f)))
-                    {
-                        _target = _extraTargets[0];
-                        _extraTargets.RemoveAt(0);
-                    }
-                }
-                for (int i = 0; i < _extraTargets.Count; i++)
-                {
-                    using (new EditorGUILayout.HorizontalScope())
-                    {
-                        _extraTargets[i] = (Renderer)EditorGUILayout.ObjectField(L10n.Tr($"対象 {i + 2}", $"Target {i + 2}"), _extraTargets[i], typeof(Renderer), true);
-                        if (GUILayout.Button(new GUIContent(L10n.Tr("外す", "Remove"), L10n.Tr("この対象を一覧から外す", "Remove this target from the list")), GUILayout.Width(48f)))
-                        {
-                            _extraTargets.RemoveAt(i);
-                            GUIUtility.ExitGUI();
-                        }
-                    }
-                }
-                if (EditorGUI.EndChangeCheck()) _warningsDirty = true;
-
-                if (GUILayout.Button(new GUIContent(L10n.Tr("選択中のオブジェクトから設定", "Set from Selection"),
-                    L10n.Tr("ヒエラルキーで選んでいる衣装（SkinnedMeshRenderer か MeshRenderer）を対象にします", "Use the clothing selected in the Hierarchy (SkinnedMeshRenderer or MeshRenderer) as the target"))))
-                {
-                    PickFromSelection();
-                    _warningsDirty = true;
-                }
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    if (GUILayout.Button(new GUIContent(L10n.Tr("選択中のオブジェクトを追加", "Add Selection"),
-                        L10n.Tr("選んだオブジェクトの布を対象に加えます。重ね着をまとめて1つの布として編集し、保存すると全部に同じ名前のシェイプキーが入ります",
-                            "Adds the selected objects' cloth to the targets. Layers are edited together as one cloth, and saving adds a shape key with the same name to all of them"))))
-                    {
-                        AddSelectionToTargets();
-                        _warningsDirty = true;
-                    }
-                    using (new EditorGUI.DisabledScope(_target == null))
-                    {
-                        if (GUILayout.Button(new GUIContent(L10n.Tr("同じアバターの重ね着をまとめて追加", "Add Layers of the Same Avatar"),
-                            L10n.Tr($"同じアバターの SkinnedMeshRenderer のうち、今の対象と重なっているもの（頂点の半分以上が {ClothEditController.DefaultLayerDistance * 100f:F0}cm 以内）を加えます",
-                                $"Adds the SkinnedMeshRenderers of the same avatar that overlap the current targets (at least half of the vertices within {ClothEditController.DefaultLayerDistance * 100f:F0} cm)"))))
-                        {
-                            AddLayeredTargets();
-                            _warningsDirty = true;
-                        }
-                    }
-                }
+                DrawEditingHeader();
+                return;
             }
 
-            // 問題の一覧と「直す」ボタンは「診断」の区切りに出す。ここでは始められないものだけを見る
+            _foldTarget = Section(_foldTarget, L10n.Tr("対象", "Target"));
+            if (_foldTarget && Shows(ClothEditUiItem.TargetField)) DrawTargetFields();
+
+            // 問題の一覧と「直す」ボタンは「診断」に出す。ここでは始められないものだけを見る
             bool blocked = false;
             foreach (TargetWarning warning in _warnings)
             {
                 if (warning.Kind == TargetWarningKind.CannotStart) blocked = true;
             }
-            if (!editing && blocked) EditorGUILayout.HelpBox(L10n.Tr("この対象では編集を始められません。理由は下の「診断」を見てください。", "Editing cannot start with this target. See Diagnostics below for the reason."), MessageType.Error);
-            if (!editing && !string.IsNullOrEmpty(_controller.LastError)) EditorGUILayout.HelpBox(_controller.LastError, MessageType.Error);
+            if (blocked) EditorGUILayout.HelpBox(L10n.Tr("この対象では編集を始められません。理由は下の診断を見てください。", "Editing cannot start with this target. See the diagnostics below for the reason."), MessageType.Error);
+            if (!string.IsNullOrEmpty(_controller.LastError)) EditorGUILayout.HelpBox(_controller.LastError, MessageType.Error);
 
             EditorGUILayout.Space();
+            if (_startButtonStyle == null)
+            {
+                _startButtonStyle = new GUIStyle(GUI.skin.button) { fontSize = 15, fontStyle = FontStyle.Bold };
+            }
+            using (new EditorGUI.DisabledScope(_target == null || blocked))
+            {
+                if (GUILayout.Button(new GUIContent(L10n.Tr("編集を開始", "Start Editing"),
+                    L10n.Tr("衣装を粒子にして、つまんで引っ張れる状態にします（数秒かかります）", "Turns the outfit into particles so you can grab and pull it (takes a few seconds)")),
+                    _startButtonStyle, GUILayout.Height(42f)))
+                {
+                    StartEdit();
+                    GUIUtility.ExitGUI();
+                }
+            }
+            if (_target == null)
+            {
+                EditorGUILayout.LabelField(L10n.Tr("Hierarchy で衣装を選ぶと、ここに入ります", "Select the outfit in the Hierarchy and it appears here"), EditorStyles.centeredGreyMiniLabel);
+            }
+            EditorGUILayout.Space();
+        }
+
+        // 編集中の見出し: 衣装の名前と「編集を終了」
+        void DrawEditingHeader()
+        {
+            ClothEditSession session = _controller.Session;
+            string names = session != null ? session.DescribeTargets() : "";
             using (new EditorGUILayout.HorizontalScope())
             {
-                using (new EditorGUI.DisabledScope(editing || _target == null || blocked))
+                GUILayout.Label(new GUIContent(L10n.Tr("編集中: ", "Editing: ") + names,
+                    session != null && session.RendererCount > 1
+                        ? L10n.Tr($"{session.RendererCount} 個をまとめて編集しています（層どうしの接触 {session.LayerContacts.Count:N0} 組）", $"Editing {session.RendererCount} renderers together ({session.LayerContacts.Count:N0} layer contacts)")
+                        : ""), EditorStyles.boldLabel);
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button(new GUIContent(L10n.Tr("編集を終了", "End Editing"), L10n.Tr("編集を終えて、元の表示に戻します。保存していない編集があれば、先に確認します", "Ends editing and restores the normal display. Asks first if there are unsaved edits")),
+                    GUILayout.Width(96f)))
                 {
-                    if (GUILayout.Button(L10n.Tr("編集を開始", "Start Editing"))) StartEdit();
+                    RequestEnd();
+                    GUIUtility.ExitGUI();
                 }
-                using (new EditorGUI.DisabledScope(!editing))
-                {
-                    if (GUILayout.Button(L10n.Tr("編集を終了", "End Editing"))) _controller.End();
-                }
-            }
-
-            ClothEditSession session = _controller.Session;
-            if (editing && session != null)
-            {
-                EditorGUILayout.Space();
-                if (session.RendererCount > 1)
-                {
-                    EditorGUILayout.LabelField(L10n.Tr("まとめて編集", "Editing Together"), L10n.Tr($"{session.RendererCount} 個（層どうしの接触 {session.LayerContacts.Count:N0} 組）", $"{session.RendererCount} renderers ({session.LayerContacts.Count:N0} layer contacts)"));
-                }
-                EditorGUILayout.LabelField(L10n.Tr("粒子の数", "Particles"), session.ParticleCount.ToString("N0"));
-                EditorGUILayout.LabelField(L10n.Tr("ピンの数", "Pins"), session.PinnedCount.ToString("N0"));
-                EditorGUILayout.LabelField(L10n.Tr("最大の伸び", "Max Stretch"), $"{_controller.LastStretch * 100f:F1} %");
-                EditorGUILayout.LabelField(L10n.Tr("高速化", "Acceleration"), ClothEditSession.DescribeAcceleration(session.Solver.Kernel));
-                EditorGUILayout.LabelField(L10n.Tr("状態", "State"), _controller.StateLabel);
-                if (ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
             }
             EditorGUILayout.Space();
+        }
+
+        void DrawTargetFields()
+        {
+            EditorGUI.BeginChangeCheck();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                _target = (Renderer)EditorGUILayout.ObjectField(L10n.Tr("対象", "Target"), _target, typeof(Renderer), true);
+                if (_extraTargets.Count > 0 && GUILayout.Button(new GUIContent(L10n.Tr("外す", "Remove"), L10n.Tr("この対象を一覧から外す", "Remove this target from the list")), GUILayout.Width(48f)))
+                {
+                    _target = _extraTargets[0];
+                    _extraTargets.RemoveAt(0);
+                }
+            }
+            for (int i = 0; i < _extraTargets.Count; i++)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    _extraTargets[i] = (Renderer)EditorGUILayout.ObjectField(L10n.Tr($"対象 {i + 2}", $"Target {i + 2}"), _extraTargets[i], typeof(Renderer), true);
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("外す", "Remove"), L10n.Tr("この対象を一覧から外す", "Remove this target from the list")), GUILayout.Width(48f)))
+                    {
+                        _extraTargets.RemoveAt(i);
+                        GUIUtility.ExitGUI();
+                    }
+                }
+            }
+            if (EditorGUI.EndChangeCheck()) _warningsDirty = true;
+
+            if (GUILayout.Button(new GUIContent(L10n.Tr("選択中のオブジェクトから設定", "Set from Selection"),
+                L10n.Tr("ヒエラルキーで選んでいる衣装（SkinnedMeshRenderer か MeshRenderer）を対象にします。編集していないときは、選ぶだけで自動で対象になります",
+                    "Use the clothing selected in the Hierarchy (SkinnedMeshRenderer or MeshRenderer) as the target. While you are not editing, selecting it is enough"))))
+            {
+                PickFromSelection();
+                _warningsDirty = true;
+            }
+            if (!Shows(ClothEditUiItem.TargetAddLayers)) return;
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button(new GUIContent(L10n.Tr("選択中のオブジェクトを追加", "Add Selection"),
+                    L10n.Tr("選んだオブジェクトの布を対象に加えます。重ね着をまとめて1つの布として編集し、保存すると全部に同じ名前のシェイプキーが入ります",
+                        "Adds the selected objects' cloth to the targets. Layers are edited together as one cloth, and saving adds a shape key with the same name to all of them"))))
+                {
+                    AddSelectionToTargets();
+                    _warningsDirty = true;
+                }
+                using (new EditorGUI.DisabledScope(_target == null))
+                {
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("同じアバターの重ね着をまとめて追加", "Add Layers of the Same Avatar"),
+                        L10n.Tr($"同じアバターの SkinnedMeshRenderer のうち、今の対象と重なっているもの（頂点の半分以上が {ClothEditController.DefaultLayerDistance * 100f:F0}cm 以内）を加えます",
+                            $"Adds the SkinnedMeshRenderers of the same avatar that overlap the current targets (at least half of the vertices within {ClothEditController.DefaultLayerDistance * 100f:F0} cm)"))))
+                    {
+                        AddLayeredTargets();
+                        _warningsDirty = true;
+                    }
+                }
+            }
         }
 
         // 対象ごとの点検（ClothEditWarnings.Collect）を、対象や内容が変わったときだけ作り直す（OnGUI の Layout で呼ぶ）
@@ -491,14 +560,19 @@ namespace GP02.EditorTools
             EditorUtility.DisplayDialog("GP02", message, "OK");
         }
 
-        void StartEdit()
+        // 編集を始める。始められたら true
+        bool StartEdit()
         {
-            if (!_controller.TryStartLayered(CollectTargets(), out string error))
+            List<Renderer> targets = CollectTargets();
+            // 重みのプレビュー（一時メッシュ）が出たままだと、その形が編集の基準になってしまう
+            foreach (Renderer target in targets) ShapeKeyPreview.End(target);
+            if (!_controller.TryStartLayered(targets, out string error))
             {
                 EditorUtility.DisplayDialog("GP02", error, "OK");
-                return;
+                return false;
             }
             _shapeName = _controller.SuggestShapeName();
+            ShapeKeyClothEdit.Clear();   // 一覧から「布で編集する」で始めたのではないので、前の再編集の記録は使わない
 
             // 初めて編集を始めたときは、ショートカット一覧を自動で出す
             if (!EditorPrefs.GetBool(ClothEditHelp.ShownOncePrefKey, false))
@@ -506,46 +580,24 @@ namespace GP02.EditorTools
                 _showShortcuts = true;
                 EditorPrefs.SetBool(ClothEditHelp.ShownOncePrefKey, true);
             }
+            return true;
         }
 
         // ---- 道具 ----
 
         void DrawToolSection()
         {
+            if (!_controller.IsEditing) return;
             _foldTool = Section(_foldTool, L10n.Tr("道具", "Tools"));
             if (!_foldTool) return;
 
-            var labels = new GUIContent[ToolOrder.Length];
-            for (int i = 0; i < labels.Length; i++)
-            {
-                ClothEditMode mode = ToolOrder[i];
-                labels[i] = new GUIContent(ClothEditHelp.ToolName(mode) + " (" + ClothEditHelp.ToolKey(mode) + ")", ClothEditHelp.ToolTip(mode));
-            }
-            // 「選んで動かす」を使っているときは、上の6つはどれも選ばれていない（-1）
-            int current = System.Array.IndexOf(ToolOrder, _settings.Tool);
-            int selected = GUILayout.SelectionGrid(current, labels, 3);
-            if (selected != current && selected >= 0)
-            {
-                RememberToolBeforeSelect();
-                _settings.Tool = ToolOrder[selected];
-                _settingsDirty = true;
-                SceneView.RepaintAll();
-            }
-            bool selectOn = GUILayout.Toggle(_settings.Tool == ClothEditMode.Select,
-                new GUIContent(ClothEditHelp.ToolName(ClothEditMode.Select) + " (" + ClothEditHelp.ToolKey(ClothEditMode.Select) + ")", ClothEditHelp.ToolTip(ClothEditMode.Select)), "Button");
-            if (selectOn != (_settings.Tool == ClothEditMode.Select))
-            {
-                RememberToolBeforeSelect();
-                // もう一度押すと、直前の道具に戻る（Q と同じ）
-                _settings.Tool = selectOn ? ClothEditMode.Select : ClothEditShortcuts.LeaveSelectTool(_toolBeforeSelect);
-                _settingsDirty = true;
-                SceneView.RepaintAll();
-            }
+            DrawToolButtons();
 
             EditorGUI.BeginChangeCheck();
             switch (_settings.Tool)
             {
                 case ClothEditMode.Grab:
+                    if (!Shows(ClothEditUiItem.ToolOptions)) break;
                     _settings.MoveDirection = (MoveDirection)EditorGUILayout.Popup(
                         new GUIContent(L10n.Tr("動かす向き", "Move Direction"),
                             L10n.Tr("自由: 視点の平面の上を動かす。面の法線: つまんだ所の面に垂直な向きだけ。X/Y/Z: その軸の向きだけ。視線: 画面の奥・手前の向きだけ（上下のドラッグで）。",
@@ -570,6 +622,7 @@ namespace GP02.EditorTools
                     }
                     break;
                 case ClothEditMode.Rotate:
+                    if (!Shows(ClothEditUiItem.ToolOptions)) break;
                     _settings.RotateAxis = (RotateAxisMode)EditorGUILayout.Popup(new GUIContent(L10n.Tr("回転軸", "Rotation Axis"),
                         L10n.Tr("視線の向き: 画面に向かって回る。面の法線: つまんだ所の面に垂直な軸のまわりに回る。", "View direction: rotates facing the screen. Surface normal: rotates around the axis perpendicular to the grabbed surface.")),
                         (int)_settings.RotateAxis,
@@ -577,12 +630,10 @@ namespace GP02.EditorTools
                     break;
                 case ClothEditMode.Pin:
                 case ClothEditMode.Unpin:
-                    _settings.PinRectFrontOnly = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("矩形は表側だけ", "Rectangle: front only"),
-                        L10n.Tr("Shift+ドラッグの矩形で、カメラ側を向いた粒子だけを対象にします。オフにすると、裏側（裏の面）の粒子も入ります。", "In a Shift+Drag rectangle, only particles facing the camera are used. Turn off to include the back side as well.")),
-                        _settings.PinRectFrontOnly);
-                    EditorGUILayout.LabelField(L10n.Tr("Shift+ドラッグ: 矩形で一度に / Ctrl+クリック: 部品（島）ごと", "Shift+Drag: rectangle / Ctrl+Click: whole part (island)"), EditorStyles.miniLabel);
+                    DrawPinOptions();
                     break;
                 case ClothEditMode.Relax:
+                    if (!Shows(ClothEditUiItem.ToolOptions)) break;
                     _settings.RelaxStrength = EditorGUILayout.Slider(new GUIContent(L10n.Tr("強さ", "Strength"),
                         L10n.Tr("1回塗るごとに、元の形へ近づける割合です。1 で元の形に戻ります。", "How far each stroke brings the cloth back to its original shape. 1 restores it fully.")),
                         _settings.RelaxStrength, 0f, 1f);
@@ -594,7 +645,6 @@ namespace GP02.EditorTools
             }
             if (EditorGUI.EndChangeCheck()) _settingsDirty = true;
 
-            if (!_controller.IsEditing) return;
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -609,36 +659,134 @@ namespace GP02.EditorTools
                     GUIUtility.ExitGUI();
                 }
             }
-            if (GUILayout.Button(new GUIContent(L10n.Tr("すべて元に戻す", "Reset All"), L10n.Tr("引いた形をすべて元の形に戻します（ピンは残ります）。Ctrl+Z で取り消せます", "Returns all pulled shapes to the original (pins stay). Ctrl+Z undoes this"))))
+            if (Shows(ClothEditUiItem.HistoryExtras))
             {
-                _controller.ResetAll();
-            }
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                if (GUILayout.Button(new GUIContent(L10n.Tr("ピンをすべて外す", "Clear All Pins"), L10n.Tr("ピン留めをすべて外します。Ctrl+Z で取り消せます", "Removes every pin. Ctrl+Z undoes this"))))
+                if (GUILayout.Button(new GUIContent(L10n.Tr("すべて元に戻す", "Reset All"), L10n.Tr("引いた形をすべて元の形に戻します（ピンは残ります）。Ctrl+Z で取り消せます", "Returns all pulled shapes to the original (pins stay). Ctrl+Z undoes this"))))
                 {
-                    _controller.ClearPins();
+                    _controller.ResetAll();
                 }
-                if (GUILayout.Button(new GUIContent(L10n.Tr("ピンを反転", "Invert Pins"), L10n.Tr("ピン留めした所を外し、留めていなかった所を留めます（「この辺りだけ動かす」をしたいときに便利）。Ctrl+Z で取り消せます",
-                    "Unpins what was pinned and pins what was not (handy to move only one area). Ctrl+Z undoes this"))))
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    _controller.InvertPins();
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("ピンをすべて外す", "Clear All Pins"), L10n.Tr("ピン留めをすべて外します。Ctrl+Z で取り消せます", "Removes every pin. Ctrl+Z undoes this"))))
+                    {
+                        _controller.ClearPins();
+                    }
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("ピンを反転", "Invert Pins"), L10n.Tr("ピン留めした所を外し、留めていなかった所を留めます（「この辺りだけ動かす」をしたいときに便利）。Ctrl+Z で取り消せます",
+                        "Unpins what was pinned and pins what was not (handy to move only one area). Ctrl+Z undoes this"))))
+                    {
+                        _controller.InvertPins();
+                    }
                 }
             }
             EditorGUILayout.LabelField(L10n.Tr("Ctrl+Z / Ctrl+Y で戻す・やり直す。ドラッグ中は Esc で取り消し", "Ctrl+Z / Ctrl+Y to undo / redo. Esc cancels while dragging"), EditorStyles.miniLabel);
             EditorGUILayout.Space();
         }
 
+        // 出す道具のボタン。今の道具が、かんたん表示で隠れているもの（回す・拡大縮小）でも、ボタンを出して選ばれている印を見せる
+        List<ClothEditMode> ToolsToShow()
+        {
+            var tools = new List<ClothEditMode>();
+            foreach (ClothEditMode mode in ToolOrder)
+            {
+                if (ShowsTool(mode) || IsCurrentTool(mode)) tools.Add(mode);
+            }
+            return tools;
+        }
+
+        static bool ShowsTool(ClothEditMode mode)
+        {
+            switch (mode)
+            {
+                case ClothEditMode.Rotate: return Shows(ClothEditUiItem.ToolRotate);
+                case ClothEditMode.Scale: return Shows(ClothEditUiItem.ToolScale);
+                case ClothEditMode.Pin: return Shows(ClothEditUiItem.ToolPin);
+                case ClothEditMode.Relax: return Shows(ClothEditUiItem.ToolRelax);
+                case ClothEditMode.Select: return Shows(ClothEditUiItem.ToolSelect);
+                default: return Shows(ClothEditUiItem.ToolGrab);
+            }
+        }
+
+        bool IsCurrentTool(ClothEditMode mode)
+        {
+            return _settings.Tool == mode || (mode == ClothEditMode.Pin && _settings.Tool == ClothEditMode.Unpin);
+        }
+
+        void DrawToolButtons()
+        {
+            List<ClothEditMode> tools = ToolsToShow();
+            int columns = ClothEditView.IsDetailed ? 3 : 2;
+            for (int start = 0; start < tools.Count; start += columns)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    for (int k = 0; k < columns; k++)
+                    {
+                        if (start + k < tools.Count) DrawToolButton(tools[start + k]);
+                        else GUILayout.FlexibleSpace();
+                    }
+                }
+            }
+        }
+
+        // 道具のボタン。「選んで動かす」だけは、もう一度押すと直前の道具に戻る（Q と同じ）
+        void DrawToolButton(ClothEditMode mode)
+        {
+            bool isOn = IsCurrentTool(mode);
+            var content = new GUIContent(ClothEditHelp.ToolName(mode) + " (" + ClothEditHelp.ToolKey(mode) + ")", ClothEditHelp.ToolTip(mode));
+            bool now = GUILayout.Toggle(isOn, content, "Button", GUILayout.MinHeight(24f));
+            if (now == isOn) return;
+            RememberToolBeforeSelect();
+            if (mode == ClothEditMode.Select) _settings.Tool = now ? ClothEditMode.Select : ClothEditShortcuts.LeaveSelectTool(_toolBeforeSelect);
+            else if (now) _settings.Tool = mode;
+            else return;
+            _settingsDirty = true;
+            SceneView.RepaintAll();
+        }
+
+        // ピン留めの道具: 「塗ると外す」と、操作のしかた
+        void DrawPinOptions()
+        {
+            bool erase = _settings.PinEraseMode || _settings.Tool == ClothEditMode.Unpin;
+            if (Shows(ClothEditUiItem.PinEraseToggle))
+            {
+                bool newErase = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("塗ると外す", "Paint to erase"),
+                    L10n.Tr("オンにすると、ドラッグでピンを外し、Ctrl+ドラッグで留めます（Ctrl を押さずに外したいとき、マウスだけで操作したいときに）。Shift+P でも入ります",
+                        "When on, dragging removes pins and Ctrl+Drag adds them (for removing without Ctrl, or when using only the mouse). Shift+P also turns it on")), erase);
+                if (newErase != erase)
+                {
+                    _settings.PinEraseMode = newErase;
+                    if (_settings.Tool == ClothEditMode.Unpin) _settings.Tool = ClothEditMode.Pin;
+                }
+            }
+            if (Shows(ClothEditUiItem.ToolOptions))
+            {
+                _settings.PinRectFrontOnly = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("矩形は表側だけ", "Rectangle: front only"),
+                    L10n.Tr("Shift+ドラッグの矩形で、カメラ側を向いた粒子だけを対象にします。オフにすると、裏側（裏の面）の粒子も入ります。", "In a Shift+Drag rectangle, only particles facing the camera are used. Turn off to include the back side as well.")),
+                    _settings.PinRectFrontOnly);
+            }
+            EditorGUILayout.LabelField(erase
+                ? L10n.Tr("ドラッグ: 外す / Ctrl+ドラッグ: 留める / Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと", "Drag: remove / Ctrl+Drag: add / Shift+Drag: rectangle / Double-click: whole part")
+                : L10n.Tr("ドラッグ: 留める / Ctrl+ドラッグ: 外す / Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと（Ctrl で外す）", "Drag: pin / Ctrl+Drag: remove / Shift+Drag: rectangle / Double-click: whole part (Ctrl removes)"),
+                EditorStyles.wordWrappedMiniLabel);
+        }
+
         // ---- ブラシ ----
 
         void DrawBrushSection()
         {
+            if (!_controller.IsEditing) return;
             _foldBrush = Section(_foldBrush, L10n.Tr("ブラシ", "Brush"));
             if (!_foldBrush) return;
 
             _brushCentimeters = EditorGUILayout.Slider(new GUIContent(L10n.Tr("ブラシ半径（cm）", "Brush Radius (cm)"),
                 L10n.Tr("つまむ範囲の半径。Ctrl+ホイール、または [ ] キーでも変えられます。", "Radius of the grabbed area. Also Ctrl+Wheel or the [ ] keys.")),
                 _brushCentimeters, BrushMinCm, BrushMaxCm);
+            if (!Shows(ClothEditUiItem.BrushDetails))
+            {
+                SyncController();
+                EditorGUILayout.Space();
+                return;
+            }
             _influenceCentimeters = EditorGUILayout.Slider(new GUIContent(L10n.Tr("影響範囲（cm）", "Influence (cm)"),
                 L10n.Tr("つまんだ動きが周りへ広がる範囲。Ctrl+Shift+ホイール、または Shift+[ ] でも変えられます。", "How far the grabbed motion spreads to the surroundings. Also Ctrl+Shift+Wheel or Shift+[ ].")),
                 _influenceCentimeters, InfluenceMinCm, InfluenceMaxCm);
@@ -694,36 +842,44 @@ namespace GP02.EditorTools
 
         void DrawSymmetrySection()
         {
+            if (!_controller.IsEditing) return;
             _foldSymmetry = Section(_foldSymmetry, L10n.Tr("対称", "Symmetry"));
             if (!_foldSymmetry) return;
 
+            bool detailed = Shows(ClothEditUiItem.SymmetryDetails);
             EditorGUI.BeginChangeCheck();
             _settings.SymmetryEnabled = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("対称編集", "Symmetric Editing"),
                 L10n.Tr("オンにすると、つまむ・回す・拡大縮小・ピン・元に戻すブラシが、反対側にも鏡に映したように働きます。", "When on, grab / rotate / scale / pin / restore also act on the opposite side, mirrored.")),
                 _settings.SymmetryEnabled);
-            _settings.SymmetryAxis = (SymmetryAxis)EditorGUILayout.Popup(new GUIContent(L10n.Tr("軸", "Axis"),
-                L10n.Tr("アバターのローカル座標の軸。この軸に垂直な面が鏡になります（左右対称なら X）。", "An axis in the avatar's local space. The plane perpendicular to it is the mirror (X for left / right).")),
-                (int)_settings.SymmetryAxis, new[] { "X", "Y", "Z" });
-            float offsetCm = EditorGUILayout.FloatField(new GUIContent(L10n.Tr("中心のずれ（cm）", "Center Offset (cm)"),
-                L10n.Tr("アバターの中心から、鏡の面までのずれ（アバターのローカル座標）。「鏡の面を自動で合わせる」で衣装に合わせられます。", "Offset of the mirror plane from the avatar's center (in the avatar's local space). Auto-Fit Mirror Plane matches it to the outfit.")),
-                _settings.SymmetryOffset * 100f);
-            _settings.SymmetryOffset = offsetCm * 0.01f;
-            float toleranceCm = EditorGUILayout.Slider(new GUIContent(L10n.Tr("鏡像を探す許容距離（cm）", "Mirror Tolerance (cm)"),
-                L10n.Tr("鏡に映した位置から、この距離以内の点を反対側の相手にします。左右で形が少し違う衣装では広げます。広げすぎると、別の部分を相手にすることがあります。既定 2cm",
-                    "A point within this distance of the mirrored position becomes the partner on the opposite side. Widen it for outfits whose sides differ slightly; too wide may pick an unrelated part. Default 2 cm")),
-                _settings.MirrorTolerance * 100f, ClothEditSettings.MinMirrorTolerance * 100f, ClothEditSettings.MaxMirrorTolerance * 100f);
-            _settings.MirrorTolerance = toleranceCm * 0.01f;
+            if (detailed)
+            {
+                _settings.SymmetryAxis = (SymmetryAxis)EditorGUILayout.Popup(new GUIContent(L10n.Tr("軸", "Axis"),
+                    L10n.Tr("アバターのローカル座標の軸。この軸に垂直な面が鏡になります（左右対称なら X）。", "An axis in the avatar's local space. The plane perpendicular to it is the mirror (X for left / right).")),
+                    (int)_settings.SymmetryAxis, new[] { "X", "Y", "Z" });
+                float offsetCm = EditorGUILayout.FloatField(new GUIContent(L10n.Tr("中心のずれ（cm）", "Center Offset (cm)"),
+                    L10n.Tr("アバターの中心から、鏡の面までのずれ（アバターのローカル座標）。「鏡の面を自動で合わせる」で衣装に合わせられます。", "Offset of the mirror plane from the avatar's center (in the avatar's local space). Auto-Fit Mirror Plane matches it to the outfit.")),
+                    _settings.SymmetryOffset * 100f);
+                _settings.SymmetryOffset = offsetCm * 0.01f;
+                float toleranceCm = EditorGUILayout.Slider(new GUIContent(L10n.Tr("鏡像を探す許容距離（cm）", "Mirror Tolerance (cm)"),
+                    L10n.Tr("鏡に映した位置から、この距離以内の点を反対側の相手にします。左右で形が少し違う衣装では広げます。広げすぎると、別の部分を相手にすることがあります。既定 2cm",
+                        "A point within this distance of the mirrored position becomes the partner on the opposite side. Widen it for outfits whose sides differ slightly; too wide may pick an unrelated part. Default 2 cm")),
+                    _settings.MirrorTolerance * 100f, ClothEditSettings.MinMirrorTolerance * 100f, ClothEditSettings.MaxMirrorTolerance * 100f);
+                _settings.MirrorTolerance = toleranceCm * 0.01f;
+            }
             bool symmetryChanged = EditorGUI.EndChangeCheck();
             if (symmetryChanged) _settingsDirty = true;
 
             bool editing = _controller.IsEditing;
-            using (new EditorGUI.DisabledScope(!editing || _controller.IsBusy))
+            if (Shows(ClothEditUiItem.SymmetryAutoFit))
             {
-                if (GUILayout.Button(new GUIContent(L10n.Tr("鏡の面を自動で合わせる", "Auto-Fit Mirror Plane"),
-                    L10n.Tr("元の形を鏡に映したとき一番よく重なる位置を探して、「中心のずれ」に入れます。衣装がアバターの中心からずれていても、衣装の左右対称の面で編集できます（編集中に使えます）",
-                        "Finds where the original shape best overlaps its mirror image and puts it in Center Offset, so you can edit symmetrically around the outfit's own plane even if it is off the avatar's center (while editing)"))))
+                using (new EditorGUI.DisabledScope(!editing || _controller.IsBusy))
                 {
-                    FitMirrorPlane();
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("鏡の面を自動で合わせる", "Auto-Fit Mirror Plane"),
+                        L10n.Tr("元の形を鏡に映したとき一番よく重なる位置を探して、「中心のずれ」に入れます。衣装がアバターの中心からずれていても、衣装の左右対称の面で編集できます（編集中に使えます）",
+                            "Finds where the original shape best overlaps its mirror image and puts it in Center Offset, so you can edit symmetrically around the outfit's own plane even if it is off the avatar's center (while editing)"))))
+                    {
+                        FitMirrorPlane();
+                    }
                 }
             }
 
@@ -731,12 +887,18 @@ namespace GP02.EditorTools
             {
                 int unmatched = _controller.UnmatchedMirrorCount;
                 float ratio = _controller.UnmatchedMirrorRatio;
-                EditorGUILayout.LabelField(L10n.Tr("相手のいない点", "Unmatched Points"), L10n.Tr($"{unmatched:N0} 個（{ratio * 100f:F1}%）", $"{unmatched:N0} ({ratio * 100f:F1}%)"));
+                if (detailed) EditorGUILayout.LabelField(L10n.Tr("相手のいない点", "Unmatched Points"), L10n.Tr($"{unmatched:N0} 個（{ratio * 100f:F1}%）", $"{unmatched:N0} ({ratio * 100f:F1}%)"));
                 if (ratio > ClothEditSettings.UnmatchedMirrorWarnRatio)
                 {
                     EditorGUILayout.HelpBox(L10n.Tr("相手のいない点が多いです。その点をつまんでも、反対側は動きません。「鏡の面を自動で合わせる」か、許容距離を広げてください。",
                         "Many points have no partner. Grabbing them does not move the opposite side. Use Auto-Fit Mirror Plane or widen the tolerance."), MessageType.Warning);
                 }
+            }
+
+            if (!detailed)
+            {
+                EditorGUILayout.Space();
+                return;
             }
 
             EditorGUI.BeginChangeCheck();
@@ -814,6 +976,7 @@ namespace GP02.EditorTools
 
         void DrawDisplaySection()
         {
+            if (!_controller.IsEditing || !Shows(ClothEditUiItem.DisplaySection)) return;
             _foldDisplay = Section(_foldDisplay, L10n.Tr("表示", "Display"));
             if (!_foldDisplay) return;
 
@@ -840,21 +1003,18 @@ namespace GP02.EditorTools
                 SceneView.RepaintAll();
             }
 
-            if (_controller.IsEditing)
+            EditorGUI.BeginChangeCheck();
+            bool showOriginal = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("元の形を表示", "Show Original Shape"),
+                L10n.Tr("編集前の形を見せます。C キーを押している間だけ見せることもできます。", "Shows the shape before editing. You can also hold the C key.")),
+                _controller.ShowOriginal);
+            float blend = EditorGUILayout.Slider(new GUIContent(L10n.Tr("見せる形（%）", "Blend (%)"),
+                L10n.Tr("0 で元の形、100 で編集中の形。間は元の形と編集中の形の中間です。", "0 shows the original shape, 100 the edited shape. In between is a mix of the two.")),
+                _controller.CompareBlend * 100f, 0f, 100f) * 0.01f;
+            if (EditorGUI.EndChangeCheck())
             {
-                EditorGUI.BeginChangeCheck();
-                bool showOriginal = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("元の形を表示", "Show Original Shape"),
-                    L10n.Tr("編集前の形を見せます。C キーを押している間だけ見せることもできます。", "Shows the shape before editing. You can also hold the C key.")),
-                    _controller.ShowOriginal);
-                float blend = EditorGUILayout.Slider(new GUIContent(L10n.Tr("見せる形（%）", "Blend (%)"),
-                    L10n.Tr("0 で元の形、100 で編集中の形。間は元の形と編集中の形の中間です。", "0 shows the original shape, 100 the edited shape. In between is a mix of the two.")),
-                    _controller.CompareBlend * 100f, 0f, 100f) * 0.01f;
-                if (EditorGUI.EndChangeCheck())
-                {
-                    _controller.ShowOriginal = showOriginal;
-                    _controller.CompareBlend = blend;
-                    SceneView.RepaintAll();
-                }
+                _controller.ShowOriginal = showOriginal;
+                _controller.CompareBlend = blend;
+                SceneView.RepaintAll();
             }
             EditorGUILayout.Space();
         }
@@ -864,6 +1024,7 @@ namespace GP02.EditorTools
 
         void DrawSaveSection()
         {
+            if (!_controller.IsEditing) return;
             _foldSave = Section(_foldSave, L10n.Tr("保存", "Save"));
             if (!_foldSave) return;
 
@@ -878,7 +1039,8 @@ namespace GP02.EditorTools
                     if (GUILayout.Button(new GUIContent(L10n.Tr("同じ名前で上書き保存", "Save (overwrite)"), L10n.Tr("編集したシェイプキーを、同じ名前で上書きします。Ctrl+Z で取り消せます", "Overwrites the shape key being edited, under the same name. Ctrl+Z undoes this")))) SaveEntry(true);
                     if (GUILayout.Button(new GUIContent(L10n.Tr("別名で追加", "Save as new"), L10n.Tr("今の形を、新しいシェイプキーとして一覧に加えます", "Adds the current shape to the list as a new shape key")))) SaveEntry(false);
                 }
-                if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーの一覧を開く", "Open the shape key list"), L10n.Tr("保存したシェイプキーの再編集・分割・反転・書き出しをする一覧を開きます", "Opens the list for re-editing, splitting, flipping and exporting saved shape keys")))) EditorApplication.ExecuteMenuItem("Tools/GP02/シェイプキーの一覧");
+                if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーの一覧を開く", "Open the shape key list"), L10n.Tr("保存したシェイプキーの再編集・分割・反転・書き出しをする一覧を開きます", "Opens the list for re-editing, splitting, flipping and exporting saved shape keys")))) OpenShapeKeyList();
+                DrawSavedKeys();
                 EditorGUILayout.Space();
                 return;
             }
@@ -888,39 +1050,50 @@ namespace GP02.EditorTools
             if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーとして保存", "Save as Shape Key"),
                 L10n.Tr("メッシュの複製にシェイプキーとして入れ、編集の内容をデータにも記録します（あとでシェイプキーの一覧から再編集・分割・反転できます）",
                     "Adds it to a copy of the mesh as a shape key and records the edit in the data (you can re-edit, split, or flip it later from the shape key list)")))) Save();
+            DrawSavedKeys();
             EditorGUILayout.Space();
         }
 
-        void SaveEntry(bool overwrite)
+        // 保存できたら true
+        bool SaveEntry(bool overwrite)
         {
             ShapeKeyEntry saved = ShapeKeyClothEdit.SaveActive(_controller, overwrite, overwrite ? null : _controller.SuggestShapeName());
             if (saved == null)
             {
                 EditorUtility.DisplayDialog("GP02", string.IsNullOrEmpty(_controller.LastError) ? L10n.Tr("保存できませんでした。", "Could not save.") : _controller.LastError, "OK");
-                return;
+                return false;
             }
             _guideSaved = true;
-            ShowNotification(new GUIContent(L10n.Tr($"「{saved.Name}」を保存しました", $"Saved \"{saved.Name}\"")));
+            AfterSaved();
+            Toast(L10n.Tr($"「{saved.Name}」を保存しました", $"Saved \"{saved.Name}\""));
+            return true;
         }
 
-        void Save()
+        // 保存できたら true
+        bool Save()
         {
             if (!_controller.Save(_shapeName, out string message))
             {
                 EditorUtility.DisplayDialog("GP02", message, "OK");
-                return;
+                return false;
             }
+            AfterSaved();
             if (_controller.LastSavedMesh != null) EditorGUIUtility.PingObject(_controller.LastSavedMesh);
             if (_controller.IsEditing) _shapeName = _controller.SuggestShapeName();
             else EditorUtility.DisplayDialog("GP02", message, "OK");   // 保存はできたが、編集を続けられなかった
+            return true;
         }
 
         // ---- 詳細設定 ----
 
         void DrawAdvancedSection()
         {
+            if (!Shows(ClothEditUiItem.AdvancedSettings)) return;
             _foldAdvanced = Section(_foldAdvanced, L10n.Tr("詳細設定", "Advanced"));
             if (!_foldAdvanced) return;
+
+            // Burst が無いときは、いつでもここから入れられる
+            if (ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
 
             EditorGUI.indentLevel++;
             EditorGUI.BeginChangeCheck();
@@ -999,6 +1172,28 @@ namespace GP02.EditorTools
             EditorGUI.indentLevel--;
 
             if (changed) _settingsDirty = true;
+        }
+
+        // ---- ウィンドウの一番下: 状態の数値を1行に ----
+
+        void DrawStatusLine()
+        {
+            if (!_controller.IsEditing || !Shows(ClothEditUiItem.StatusLine)) return;
+            ClothEditSession session = _controller.Session;
+            if (session == null) return;
+
+            string acceleration = ClothEditSession.DescribeAccelerationShort(session.Solver.Kernel);
+            string text = L10n.Tr(
+                $"粒子 {session.ParticleCount:N0} ・ ピン {session.PinnedCount:N0} ・ 最大の伸び {_controller.LastStretch * 100f:F1}% ・ 高速化 {acceleration} ・ {_controller.StateLabel}",
+                $"Particles {session.ParticleCount:N0} · Pins {session.PinnedCount:N0} · Max stretch {_controller.LastStretch * 100f:F1}% · Acceleration {acceleration} · {_controller.StateLabel}");
+            string tooltip = L10n.Tr(
+                $"粒子の数 {session.ParticleCount:N0} / ピンの数 {session.PinnedCount:N0} / 最大の伸び {_controller.LastStretch * 100f:F1}% / 高速化 {ClothEditSession.DescribeAcceleration(session.Solver.Kernel)} / 状態 {_controller.StateLabel}",
+                $"Particles {session.ParticleCount:N0} / Pins {session.PinnedCount:N0} / Max stretch {_controller.LastStretch * 100f:F1}% / Acceleration {ClothEditSession.DescribeAcceleration(session.Solver.Kernel)} / State {_controller.StateLabel}");
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
+            {
+                GUILayout.Label(new GUIContent(text, tooltip), EditorStyles.miniLabel);
+                GUILayout.FlexibleSpace();
+            }
         }
     }
 }

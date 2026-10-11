@@ -19,13 +19,21 @@ namespace GP02.EditorTools
         // 診断の区切りの中に出す（編集中だけ）
         void DrawPenetrationDiagnostics()
         {
-            if (_controller == null || !_controller.IsEditing) return;
+            if (_controller == null || !_controller.IsEditing || !Shows(ClothEditUiItem.PenetrationFix)) return;
+            bool detailed = Shows(ClothEditUiItem.PenetrationMargin);
             EditorGUILayout.Space(2f);
-            EditorGUILayout.LabelField(L10n.Tr("体との貫通", "Body Penetration"), EditorStyles.boldLabel);
+            if (detailed) EditorGUILayout.LabelField(L10n.Tr("体との貫通", "Body Penetration"), EditorStyles.boldLabel);
 
             PenetrationReport report = _controller.LastPenetration;
             bool stale = report != null && (_controller.IsPenetrationStale || Mathf.Abs(report.Margin - _settings.PenetrationMargin) > 1e-6f);
-            EditorGUILayout.HelpBox(PenetrationStatus(report, stale), report != null && report.HasBody && report.PenetratingCount > 0 ? MessageType.Warning : MessageType.Info);
+            bool penetrating = report != null && report.HasBody && report.PenetratingCount > 0;
+            // 突き抜けている所があるときは、同じ内容が診断の注意として上に出ているので繰り返さない（かんたん表示では1行で済ませる）
+            if (!penetrating || stale)
+            {
+                string status = PenetrationStatus(report, stale);
+                if (detailed) EditorGUILayout.HelpBox(status, MessageType.Info);
+                else EditorGUILayout.LabelField(status, EditorStyles.wordWrappedMiniLabel);
+            }
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -55,6 +63,7 @@ namespace GP02.EditorTools
                 }
             }
 
+            if (!detailed) return;
             EditorGUI.BeginChangeCheck();
             float marginMm = EditorGUILayout.Slider(new GUIContent(L10n.Tr("余白（mm）", "Margin (mm)"),
                 L10n.Tr("体と布の間に保つ距離。これより体に近い所も「貫通を直す」で押し出し、編集中も布はこれより体に近づきません。既定 2mm",

@@ -30,6 +30,8 @@ namespace GP02.Tests
 
         readonly List<Object> _created = new List<Object>();
         UiLanguage _savedLanguage;
+        ClothEditViewMode _savedViewMode;
+        bool _viewModeSaved;
 
         [SetUp]
         public void RequireAScreen()
@@ -41,12 +43,18 @@ namespace GP02.Tests
             // Docker の Unity には日本語のフォントが無く、日本語の文字が空白になる。画像で読めるように英語で描く
             _savedLanguage = L10n.Language;
             L10n.Language = UiLanguage.English;
+            // 表示のしかたは、既定（かんたん）から始める。くわしく表示を見るテストは、自分で切り替える
+            _savedViewMode = ClothEditView.Mode;
+            _viewModeSaved = true;
+            ClothEditView.Mode = ClothEditViewMode.Simple;
         }
 
         [TearDown]
         public void Cleanup()
         {
             L10n.Language = _savedLanguage;
+            if (_viewModeSaved) ClothEditView.Mode = _savedViewMode;
+            _viewModeSaved = false;
             foreach (Object o in _created)
             {
                 if (o == null) continue;
@@ -76,8 +84,10 @@ namespace GP02.Tests
             if (!Directory.Exists("/repo/tools/unity/out")) return;
             Directory.CreateDirectory(ShotFolder);
             Rect rect = window.position;
-            Color[] pixels = InternalEditorUtility.ReadScreenPixel(rect.position, (int)rect.width, (int)rect.height);
-            var texture = new Texture2D((int)rect.width, (int)rect.height, TextureFormat.RGB24, false);
+            // 内容は、ウィンドウの上のタブの分だけ下にずれる。その分も写す（画面の外には出ない）
+            int height = Mathf.Min((int)rect.height + 24, Screen.currentResolution.height - (int)rect.y);
+            Color[] pixels = InternalEditorUtility.ReadScreenPixel(rect.position, (int)rect.width, height);
+            var texture = new Texture2D((int)rect.width, height, TextureFormat.RGB24, false);
             texture.SetPixels(pixels);
             texture.Apply();
             File.WriteAllBytes(Path.Combine(ShotFolder, name + ".png"), texture.EncodeToPNG());
@@ -228,8 +238,9 @@ namespace GP02.Tests
             readonly ClothEditMode _tool;
             readonly SelectionHandle _handle;
             readonly HandleOrientation _space;
-            readonly bool _symmetry, _asCloth;
+            readonly bool _symmetry, _asCloth, _pinErase;
             readonly float _radius;
+            readonly MoveDirection _moveDirection;
 
             public SettingsBackup(ClothEditSettings settings)
             {
@@ -240,6 +251,8 @@ namespace GP02.Tests
                 _symmetry = settings.SymmetryEnabled;
                 _asCloth = settings.SelectionMovesAsCloth;
                 _radius = settings.SelectionFalloffRadius;
+                _pinErase = settings.PinEraseMode;
+                _moveDirection = settings.MoveDirection;
             }
 
             public void Restore()
@@ -250,6 +263,8 @@ namespace GP02.Tests
                 _settings.SymmetryEnabled = _symmetry;
                 _settings.SelectionMovesAsCloth = _asCloth;
                 _settings.SelectionFalloffRadius = _radius;
+                _settings.PinEraseMode = _pinErase;
+                _settings.MoveDirection = _moveDirection;
                 _settings.Save();
             }
         }
@@ -263,6 +278,7 @@ namespace GP02.Tests
             SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
             try
             {
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
                 SetField(window, "_target", cloth);
                 typeof(ClothEditWindow).GetMethod("StartEdit", Private).Invoke(window, null);
                 var controller = GetField<ClothEditController>(window, "_controller");
@@ -430,6 +446,7 @@ namespace GP02.Tests
             cloth.transform.SetParent(avatar.transform, true);
             try
             {
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
                 SetField(window, "_target", cloth);
                 typeof(ClothEditWindow).GetMethod("StartEdit", Private).Invoke(window, null);
                 var controller = GetField<ClothEditController>(window, "_controller");
@@ -524,6 +541,386 @@ namespace GP02.Tests
             finally
             {
                 savedSettings.Save();
+                window.Close();
+                sceneView.Close();
+            }
+        }
+
+        // ---- 簡単さ・使いやすさ（かんたん表示／くわしく表示、帯、保存したシェイプキーの一覧、届かない表示） ----
+
+        // 編集を始める。始められなければテストを止める
+        ClothEditController BeginEditing(ClothEditWindow window, Renderer cloth)
+        {
+            SetField(window, "_target", cloth);
+            typeof(ClothEditWindow).GetMethod("StartEdit", Private).Invoke(window, null);
+            var controller = GetField<ClothEditController>(window, "_controller");
+            Assert.That(controller.IsEditing, Is.True, controller.LastError);
+            return controller;
+        }
+
+        // 下を少し引く（手を離して、仕上げまで進める）
+        static void PullDown(ClothEditController controller, float x, float fromY, float distance)
+        {
+            Assert.That(controller.PointerDown(ClothRay(x, fromY), Vector3.forward, Vector3.up, 0f), Is.True);
+            for (int k = 1; k <= 5; k++)
+            {
+                controller.PointerDrag(ClothRay(x, fromY - distance * k / 5f));
+                controller.Tick(EditorApplication.timeSinceStartup + k * 0.016);
+            }
+            controller.PointerUp();
+            for (int i = 0; i < 400 && controller.IsBusy; i++) controller.Tick(EditorApplication.timeSinceStartup + 10 + i * 0.016);
+        }
+
+        [UnityTest]
+        public IEnumerator Window_BeforeEditing_ShowsOnlyTheGuideTargetAndStart_AndDetailedShowsTheDiagnosticsToo()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 760);
+            Renderer cloth = CreateCloth();
+            try
+            {
+                ClothEditView.Mode = ClothEditViewMode.Simple;
+                SetField(window, "_target", null);
+                yield return Pump();
+                Shot(window, "simplicity_before_editing_no_target");
+
+                SetField(window, "_target", cloth);
+                yield return Pump();
+                Shot(window, "simplicity_before_editing_simple");
+
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
+                yield return Pump();
+                Shot(window, "simplicity_before_editing_detailed");
+
+                // いちばん狭い幅（最小幅）でも、上の切り替えが収まる
+                ClothEditView.Mode = ClothEditViewMode.Simple;
+                window.position = new Rect(10, 10, 300, 560);
+                yield return Pump();
+                Shot(window, "simplicity_before_editing_narrow");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator Window_Editing_ShowsTheMainItemsInSimple_AndEverythingInDetailed()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 900);
+            Renderer cloth = CreateCloth();
+            SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
+            try
+            {
+                ClothEditController controller = BeginEditing(window, cloth);
+                SetField(window, "_showShortcuts", false);
+                SetField(window, "_foldGuide", false);
+                controller.Settings.SymmetryEnabled = true;
+                controller.Settings.Tool = ClothEditMode.Grab;
+
+                // 0. ピンが無いと、診断の「情報」が1行に畳まれて出る（押すと開く）
+                ClothEditView.Mode = ClothEditViewMode.Simple;
+                yield return Pump();
+                Shot(window, "simplicity_editing_simple_no_pins");
+
+                controller.Session.PaintPins(new Vector3(0f, 1.5f, 0f), 0.1f, true);
+                PullDown(controller, 0.2f, 0.8f, 0.15f);
+
+                // 1. かんたん表示: つまむ
+                yield return Pump();
+                Shot(window, "simplicity_editing_simple_grab");
+
+                // 2. ピン留め（「塗ると外す」が出る）
+                controller.Settings.Tool = ClothEditMode.Pin;
+                yield return Pump();
+                Shot(window, "simplicity_editing_simple_pin");
+
+                // 3. 選んで動かす（選んだあと。主な項目だけ）
+                SetField(window, "_brushCentimeters", 12f);
+                controller.BrushRadius = 0.12f;
+                Assert.That(controller.SelectPaintBegin(ClothRay(0.05f, 1.2f), false), Is.True);
+                controller.SelectPaintEnd();
+                controller.Settings.Tool = ClothEditMode.Select;
+                yield return Pump();
+                Shot(window, "simplicity_editing_simple_select");
+
+                // 4. くわしく表示（同じ状態）。上から見た所と、下までスクロールした所
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
+                SetField(window, "_scroll", Vector2.zero);
+                yield return Pump();
+                Shot(window, "simplicity_editing_detailed_top");
+                SetField(window, "_scroll", new Vector2(0f, 900f));
+                yield return Pump();
+                Shot(window, "simplicity_editing_detailed_bottom");
+
+                // 5. くわしく表示: つまむ（動かす向きなどが出る）
+                controller.Settings.Tool = ClothEditMode.Grab;
+                SetField(window, "_scroll", Vector2.zero);
+                yield return Pump();
+                Shot(window, "simplicity_editing_detailed_grab");
+
+                // 6. いちばん狭い幅（最小幅）の、かんたん表示
+                ClothEditView.Mode = ClothEditViewMode.Simple;
+                controller.Settings.Tool = ClothEditMode.Select;
+                window.position = new Rect(10, 10, 300, 900);
+                yield return Pump();
+                Shot(window, "simplicity_editing_simple_narrow");
+            }
+            finally
+            {
+                backup.Restore();
+                window.Close();
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator Window_ShowsThePreviousEditBand_AndTheBurstBand()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 640);
+            Renderer cloth = CreateCloth();
+            IClothSolverKernel savedKernel = ClothSolver.DefaultKernel;
+            SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
+            try
+            {
+                // 1. 前回の編集が残っている（編集して取っておき、編集を終えた状態）
+                ClothEditController controller = BeginEditing(window, cloth);
+                controller.Settings.Tool = ClothEditMode.Grab;
+                controller.Session.PaintPins(new Vector3(0f, 1.5f, 0f), 0.1f, true);
+                PullDown(controller, 0.2f, 0.8f, 0.15f);
+                window.StashNow();
+                controller.End();
+                window.RefreshStashInfo(true);
+                Assert.That(window.HasStashBand, Is.True);
+                yield return Pump();
+                Shot(window, "simplicity_restore_band");
+
+                // 2. Burst が無いときの案内（初めて開いたときに1回だけ）。取っておきの帯と並ぶ所も見る
+                ClothSolver.DefaultKernel = null;
+                SetField(window, "_burstBandDecided", true);
+                SetField(window, "_burstBandVisible", true);
+                yield return Pump();
+                Shot(window, "simplicity_both_bands");
+
+                window.DiscardStash();
+                Assert.That(window.HasStashBand, Is.False);
+                yield return Pump();
+                Shot(window, "simplicity_burst_band");
+
+                // 3. 戻すを押すと、編集が始まって形・ピンが戻る
+                ClothSolver.DefaultKernel = savedKernel;
+                SetField(window, "_burstBandVisible", false);
+                controller = BeginEditing(window, cloth);
+                controller.Settings.Tool = ClothEditMode.Grab;
+                PullDown(controller, 0.2f, 0.8f, 0.15f);
+                window.StashNow();
+                controller.End();
+                window.RefreshStashInfo(true);
+                Assert.That(window.RestoreFromStash(), Is.True, window.StashMessage);
+                Assert.That(controller.HasUnsavedEdits, Is.True);
+                yield return Pump();
+                Shot(window, "simplicity_after_restore");
+            }
+            finally
+            {
+                ClothSolver.DefaultKernel = savedKernel;
+                backup.Restore();
+                window.DiscardStash();
+                window.Close();
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator Window_SavedKeyList_ShowsTheListAndTheKeyGhostInTheScene()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 760);
+            var sceneView = EditorWindow.GetWindow<SceneView>();
+            sceneView.position = new Rect(450, 10, 800, 700);
+            Renderer cloth = CreateCloth();
+            SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
+            const string TempFolder = "Assets/GP02_GuiTemp";
+            try
+            {
+                ClothEditController controller = BeginEditing(window, cloth);
+                controller.SaveFolder = TempFolder + "/Meshes";
+                controller.DataFolder = TempFolder + "/Data";
+                SetField(window, "_showShortcuts", false);
+                foreach (string fold in new[] { "_foldTarget", "_foldTool", "_foldBrush", "_foldSymmetry", "_foldGuide" }) SetField(window, fold, false);
+                controller.Settings.Tool = ClothEditMode.Grab;
+                controller.Settings.SymmetryEnabled = false;
+                controller.Session.PaintPins(new Vector3(0f, 1.5f, 0f), 0.4f, true);
+
+                // 手前へふくらませて保存し、元に戻して、もう1つ保存する
+                SetField(window, "_brushCentimeters", 15f);
+                controller.BrushRadius = 0.15f;
+                Assert.That(controller.SelectPaintBegin(ClothRay(0f, 0.8f), false), Is.True);
+                controller.SelectPaintEnd();
+                Assert.That(controller.ApplySelectionTransform(new Vector3(0f, 0f, -0.25f), Quaternion.identity, Vector3.one), Is.True);
+                for (int i = 0; i < 600 && controller.IsBusy; i++) controller.Tick(EditorApplication.timeSinceStartup + 10 + i * 0.016);
+                Assert.That(controller.Save("Gui_Bulge", out string message), Is.True, message);
+                controller.ResetAll();
+                controller.ClearSelection();
+                PullDown(controller, 0.3f, 0.7f, 0.1f);
+                Assert.That(controller.Save("Gui_Pulled", out message), Is.True, message);
+                controller.ResetAll();
+
+                GP02ShapeKeyData data = window.FindSavedKeyData(out GP02ShapeKeys component);
+                Assert.That(data, Is.Not.Null);
+                Assert.That(data.Entries.Count, Is.EqualTo(2));
+                yield return Pump();
+                Shot(window, "simplicity_saved_keys");
+
+                // 重みを動かすと、編集中の形に保存した形が橙の半透明で重なる（斜め横から見る）
+                window.SetKeyWeight(data, data.Entries[0], 100f);
+                sceneView.LookAt(new Vector3(0f, 1f, 0f), Quaternion.Euler(10f, 80f, 0f), 1.4f);
+                yield return Pump(20);
+                Shot(window, "simplicity_saved_keys_weight");
+                Shot(sceneView, "simplicity_key_ghost_scene");
+            }
+            finally
+            {
+                backup.Restore();
+                window.Close();
+                sceneView.Close();
+                AssetDatabase.DeleteAsset(TempFolder);
+            }
+        }
+
+        // ピン留めは1つの道具: ドラッグ＝留める、Ctrl＝外す、Shift＝矩形、ダブルクリック＝部品ごと。「塗ると外す」で逆になる。
+        // シーンビューへイベントを送って、ウィンドウの入口から確かめる
+        [UnityTest]
+        public IEnumerator SceneView_PinTool_FollowsTheSameKeysAsSelectMove()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 700);
+            var sceneView = EditorWindow.GetWindow<SceneView>();
+            sceneView.position = new Rect(450, 10, 800, 700);
+            Renderer cloth = CreateCloth();
+            SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
+            try
+            {
+                ClothEditController controller = BeginEditing(window, cloth);
+                SetField(window, "_showShortcuts", false);
+                SetField(window, "_brushCentimeters", 10f);
+                controller.BrushRadius = 0.1f;
+                controller.Settings.Tool = ClothEditMode.Pin;
+                controller.Settings.PinEraseMode = false;
+                controller.Settings.SymmetryEnabled = false;
+                sceneView.LookAt(new Vector3(0f, 1f, 0f), Quaternion.identity, 0.9f);
+                yield return Pump(20);
+
+                // マウスを動かしてからドラッグする（修飾キーと、クリックの回数を指定できる）
+                IEnumerator Drag(Vector3 from, Vector3 to, bool shift = false, bool control = false, int clicks = 1)
+                {
+                    Vector2 a = GuiPoint(sceneView, from), b = GuiPoint(sceneView, to);
+                    sceneView.SendEvent(new Event { type = EventType.MouseMove, mousePosition = a, shift = shift, control = control });
+                    sceneView.SendEvent(new Event { type = EventType.MouseDown, button = 0, clickCount = clicks, mousePosition = a, shift = shift, control = control });
+                    sceneView.SendEvent(new Event { type = EventType.MouseDrag, button = 0, mousePosition = b, shift = shift, control = control });
+                    yield return Pump(3);
+                    sceneView.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = b, shift = shift, control = control });
+                    yield return Pump(4);
+                }
+
+                // 1. ドラッグで留める
+                yield return Drag(new Vector3(-0.3f, 1.3f, 0f), new Vector3(0.3f, 1.3f, 0f));
+                int painted = controller.Session.PinnedCount;
+                Assert.That(painted, Is.GreaterThan(100), "ドラッグで塗った所が留まる");
+
+                // 2. Ctrl+ドラッグで外す（同じ所を通る）
+                yield return Drag(new Vector3(-0.3f, 1.3f, 0f), new Vector3(0.3f, 1.3f, 0f), control: true);
+                Assert.That(controller.Session.PinnedCount, Is.EqualTo(0), "Ctrl+ドラッグで外れる");
+
+                // 3. Shift+ドラッグで矩形に留める。ドラッグ中の矩形を画像にする
+                Vector2 rectA = GuiPoint(sceneView, new Vector3(-0.35f, 1.4f, 0f)), rectB = GuiPoint(sceneView, new Vector3(0.35f, 0.9f, 0f));
+                sceneView.SendEvent(new Event { type = EventType.MouseMove, mousePosition = rectA, shift = true });
+                sceneView.SendEvent(new Event { type = EventType.MouseDown, button = 0, clickCount = 1, mousePosition = rectA, shift = true });
+                sceneView.SendEvent(new Event { type = EventType.MouseDrag, button = 0, mousePosition = rectB, shift = true });
+                yield return Pump(4);
+                Shot(sceneView, "simplicity_pin_rect_pinning");
+                sceneView.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = rectB, shift = true });
+                yield return Pump(4);
+                int rectPinned = controller.Session.PinnedCount;
+                Assert.That(rectPinned, Is.GreaterThan(1000), "矩形の中が一度に留まる");
+
+                // 4. Ctrl+Shift+ドラッグで、矩形の中を外す（黄色の矩形）
+                Vector2 eraseA = GuiPoint(sceneView, new Vector3(-0.2f, 1.25f, 0f)), eraseB = GuiPoint(sceneView, new Vector3(0.2f, 1.05f, 0f));
+                sceneView.SendEvent(new Event { type = EventType.MouseMove, mousePosition = eraseA, shift = true, control = true });
+                sceneView.SendEvent(new Event { type = EventType.MouseDown, button = 0, clickCount = 1, mousePosition = eraseA, shift = true, control = true });
+                sceneView.SendEvent(new Event { type = EventType.MouseDrag, button = 0, mousePosition = eraseB, shift = true, control = true });
+                yield return Pump(4);
+                Shot(sceneView, "simplicity_pin_rect_erasing");
+                sceneView.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = eraseB, shift = true, control = true });
+                yield return Pump(4);
+                Assert.That(controller.Session.PinnedCount, Is.LessThan(rectPinned), "Ctrl+Shift+ドラッグで矩形の中が外れる");
+
+                // 5. ダブルクリックで部品ごと留め、Ctrl+ダブルクリックで部品ごと外す
+                yield return Drag(new Vector3(0.4f, 0.6f, 0f), new Vector3(0.4f, 0.6f, 0f), clicks: 2);
+                Assert.That(controller.Session.PinnedCount, Is.GreaterThan(controller.Session.ParticleCount * 9 / 10), "ダブルクリックで部品全体（この布は1つの島）");
+                yield return Drag(new Vector3(0.4f, 0.6f, 0f), new Vector3(0.4f, 0.6f, 0f), control: true, clicks: 2);
+                Assert.That(controller.Session.PinnedCount, Is.EqualTo(0), "Ctrl+ダブルクリックで部品全体が外れる");
+
+                // 6. 「塗ると外す」をオン: ドラッグで外れ、Ctrl+ドラッグで留まる
+                controller.Settings.PinEraseMode = true;
+                yield return Pump(4);
+                yield return Drag(new Vector3(-0.3f, 1.3f, 0f), new Vector3(0.3f, 1.3f, 0f), control: true);
+                Assert.That(controller.Session.PinnedCount, Is.GreaterThan(100), "塗ると外すがオンなら、Ctrl+ドラッグで留まる");
+                Shot(sceneView, "simplicity_pin_erase_mode");
+                yield return Drag(new Vector3(-0.3f, 1.3f, 0f), new Vector3(0.3f, 1.3f, 0f));
+                Assert.That(controller.Session.PinnedCount, Is.EqualTo(0), "塗ると外すがオンなら、ドラッグで外れる");
+
+                // 7. Undo は1操作ずつ（直前の「外す」を戻すと、留めた状態に戻る）
+                controller.UndoLast();
+                Assert.That(controller.Session.PinnedCount, Is.GreaterThan(100));
+            }
+            finally
+            {
+                backup.Restore();
+                window.Close();
+                sceneView.Close();
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator SceneView_ReachLine_ShowsWhenThePullIsBeyondTheClothLength()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 700);
+            var sceneView = EditorWindow.GetWindow<SceneView>();
+            sceneView.position = new Rect(450, 10, 800, 700);
+            Renderer cloth = CreateCloth();
+            SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
+            try
+            {
+                ClothEditController controller = BeginEditing(window, cloth);
+                SetField(window, "_showShortcuts", false);
+                controller.Settings.Tool = ClothEditMode.Grab;
+                controller.Settings.SymmetryEnabled = false;
+                controller.Session.PaintPins(new Vector3(0f, 1.5f, 0f), 0.12f, true);
+                sceneView.LookAt(new Vector3(0f, 1f, 0f), Quaternion.identity, 1.8f);
+                yield return Pump(10);
+
+                // 布の長さ（約 0.8m）で届かない所まで、下へ 0.8m 引く。実際の更新で計算が進むよう、フレームを回しながら動かす
+                Assert.That(controller.PointerDown(ClothRay(0f, 0.6f), Vector3.forward, Vector3.up, 0f), Is.True);
+                for (int k = 1; k <= 10; k++)
+                {
+                    controller.PointerDrag(ClothRay(0f, 0.6f - 0.8f * k / 10f));
+                    yield return null;
+                }
+                yield return Pump(30);
+                Assert.That(controller.IsReachTracking, Is.True);
+                Assert.That(controller.IsOutOfReach, Is.True, "届かない: " + controller.ReachDistance);
+                Shot(sceneView, "simplicity_reach_scene");
+
+                controller.PointerUp();
+                for (int i = 0; i < 600 && controller.IsBusy; i++) controller.Tick(EditorApplication.timeSinceStartup + 10 + i * 0.016);
+                yield return Pump(10);
+                Assert.That(controller.IsReachTracking, Is.False);
+            }
+            finally
+            {
+                backup.Restore();
                 window.Close();
                 sceneView.Close();
             }

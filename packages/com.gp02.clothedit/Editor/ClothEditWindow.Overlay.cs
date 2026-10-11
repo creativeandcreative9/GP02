@@ -18,11 +18,30 @@ namespace GP02.EditorTools
         internal bool OverlayShortcutsVisible => _showShortcuts;
         internal bool OverlayShowOriginal => _controller != null && _controller.ShowOriginal;
 
+        /// <summary>ピン留めの道具の「塗ると外す」がオンか（昔の「ピン解除」の道具もオン扱い）。</summary>
+        internal bool OverlayPinErase => _settings.PinEraseMode || _settings.Tool == ClothEditMode.Unpin;
+
         internal void OverlaySetTool(ClothEditMode tool)
         {
-            if (_settings.Tool == tool) return;
+            // 昔の「ピン解除」は、「塗ると外す」をオンにしたピン留めにする
+            bool erase = _settings.PinEraseMode;
+            if (tool == ClothEditMode.Unpin)
+            {
+                tool = ClothEditMode.Pin;
+                erase = true;
+            }
+            if (_settings.Tool == tool && _settings.PinEraseMode == erase) return;
             RememberToolBeforeSelect();
             _settings.Tool = tool;
+            _settings.PinEraseMode = erase;
+            CommitOverlaySettings();
+        }
+
+        internal void OverlaySetPinErase(bool erase)
+        {
+            if (_settings.PinEraseMode == erase && _settings.Tool != ClothEditMode.Unpin) return;
+            if (_settings.Tool == ClothEditMode.Unpin) _settings.Tool = ClothEditMode.Pin;
+            _settings.PinEraseMode = erase;
             CommitOverlaySettings();
         }
 

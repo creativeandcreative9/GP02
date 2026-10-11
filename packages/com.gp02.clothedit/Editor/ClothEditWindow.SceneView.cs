@@ -28,7 +28,13 @@ namespace GP02.EditorTools
         Vector2 _rectStart;
         Vector2 _rectEnd;
 
-        static bool IsPinTool(ClothEditMode mode) => mode == ClothEditMode.Pin || mode == ClothEditMode.Unpin;
+        // ピン解除の道具（昔の保存値）は、ピン留めの道具の「外す」モードとして同じ道具に数える
+        static bool IsPinTool(ClothEditMode mode) => ClothEditPinInput.IsPinTool(mode);
+
+        // 届かないときの線と一言。届かない状態が少し続いてから出す（動かし始めの一瞬の遅れで点滅しないように）
+        bool _reachShown;
+        double _reachOutSince = double.PositiveInfinity;
+        GUIStyle _reachStyle;
 
         // 減り方の同心円を出す道具（重みのある道具だけ。ピンと選ぶ道具は円の内側すべて）
         static bool UsesFalloffRings(ClothEditMode mode) => mode == ClothEditMode.Grab || mode == ClothEditMode.Rotate || mode == ClothEditMode.Scale || mode == ClothEditMode.Relax;
@@ -114,15 +120,12 @@ namespace GP02.EditorTools
             if (GUIUtility.hotControl != 0) return;
 
             // Q は「選んで動かす」（もう一度押すと直前の道具）。「選んで動かす」の間の W/E/R はハンドルの種類。
-            // Shift は P（ピン解除）のときだけ意味があり、W/E/R/T/Q に Shift が付いていたら何もしない
+            // Shift は P（ピン留め＋外す）のときだけ意味があり、W/E/R/T/Q に Shift が付いていたら何もしない
             RememberToolBeforeSelect();
             ToolKeyResult keyResult = ClothEditShortcuts.ResolveToolKey(key, e.shift, _settings.Tool, _toolBeforeSelect, _settings.HandleType);
             if (keyResult.Handled)
             {
-                _settings.Tool = keyResult.Tool;
-                _settings.HandleType = keyResult.Handle;
-                _settings.Save();
-                _controller.ApplySettings();
+                SetToolFromKey(keyResult);
                 RefreshHover(e);
                 Repaint();
                 sceneView.Repaint();
@@ -196,6 +199,9 @@ namespace GP02.EditorTools
                 return;
             }
 
+            // Ctrl を押した・離したときも描き直す（ピン留めの円の色が、留める・外すで変わる）
+            if ((e.type == EventType.KeyDown || e.type == EventType.KeyUp) && (e.keyCode == KeyCode.LeftControl || e.keyCode == KeyCode.RightControl)) sceneView.Repaint();
+
             // Esc：ドラッグ中・仕上げ中の操作を取り消して、押す前の形に戻す。何もしていなければ、選んだ点を解除する
             if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
             {
@@ -245,26 +251,29 @@ namespace GP02.EditorTools
                         SelectMouseDown(sceneView, e, controlId);
                         break;
                     }
-                    if (IsPinTool(_controller.Mode) && (e.shift || e.control))
+                    if (IsPinTool(_controller.Mode))
                     {
-                        // ピン留め・解除の範囲指定。Shift＋ドラッグ: 矩形、Ctrl＋クリック: 部品（島）全体
-                        bool pinned = _controller.Mode == ClothEditMode.Pin;
-                        if (e.shift)
+                        // ピン留めは「選んで動かす」と同じ修飾キー: ドラッグ＝留める、Ctrl＝外す、Shift＋ドラッグ＝矩形、ダブルクリック＝部品（島）ごと
+                        // （「塗ると外す」がオンなら、留める・外すが逆）
+                        PinInput pin = ClothEditPinInput.Resolve(e.shift, e.control, e.clickCount, _controller.PinEraseMode);
+                        if (pin.Gesture == PinGesture.Rectangle)
                         {
                             _rectDragging = true;
-                            _rectPurpose = pinned ? RectPurpose.Pin : RectPurpose.Unpin;
+                            _rectPurpose = pin.Erase ? RectPurpose.Unpin : RectPurpose.Pin;
                             _rectStart = _rectEnd = e.mousePosition;
                             GUIUtility.hotControl = controlId;
+                            e.Use();
+                            break;
                         }
-                        else
+                        if (pin.Gesture == PinGesture.Island)
                         {
-                            _controller.PinIslandAt(HandleUtility.GUIPointToWorldRay(e.mousePosition), pinned);
+                            _controller.PinIslandAt(HandleUtility.GUIPointToWorldRay(e.mousePosition), !pin.Erase);
+                            e.Use();
+                            break;
                         }
-                        e.Use();
-                        break;
                     }
                     Transform cameraTransform = sceneView.camera.transform;
-                    if (!_controller.PointerDown(HandleUtility.GUIPointToWorldRay(e.mousePosition), cameraTransform.forward, cameraTransform.up, e.mousePosition.x)) break;
+                    if (!_controller.PointerDown(HandleUtility.GUIPointToWorldRay(e.mousePosition), cameraTransform.forward, cameraTransform.up, e.mousePosition.x, e.control)) break;
                     GUIUtility.hotControl = controlId;
                     e.Use();
                     break;
@@ -325,11 +334,12 @@ namespace GP02.EditorTools
 
         // ---- 重ね描き ----
 
-        static Color ToolColor(ClothEditMode mode)
+        // pinErase: ピン留めの道具で、今の操作が外す操作か（外すときは黄色）
+        static Color ToolColor(ClothEditMode mode, bool pinErase = false)
         {
             switch (mode)
             {
-                case ClothEditMode.Pin: return new Color(1f, 0.3f, 0.2f, 1f);
+                case ClothEditMode.Pin: return pinErase ? new Color(0.9f, 0.9f, 0.2f, 1f) : new Color(1f, 0.3f, 0.2f, 1f);
                 case ClothEditMode.Unpin: return new Color(0.9f, 0.9f, 0.2f, 1f);
                 case ClothEditMode.Rotate: return new Color(0.8f, 0.5f, 1f, 1f);
                 case ClothEditMode.Scale: return new Color(0.4f, 1f, 0.5f, 1f);
@@ -364,6 +374,7 @@ namespace GP02.EditorTools
 
             DrawCompareAndSymmetryDots(session);
             DrawCursor();
+            DrawReachLine();
 
             if (session.PinnedCount > 0)
             {
@@ -404,7 +415,7 @@ namespace GP02.EditorTools
 
             if (selectBusy || (selectMode && (_rectDragging || IsMouseOverHandle()))) return;
 
-            Handles.color = ToolColor(_controller.Mode);
+            Handles.color = ToolColor(_controller.Mode, IsPinTool(_controller.Mode) && ClothEditPinInput.IsErase(_controller.Mode, _settings.PinEraseMode, Event.current.control));
             Handles.DrawWireDisc(_controller.BrushRingCenter, _controller.HoverNormal, _controller.BrushRadius);
             if (UsesFalloffRings(_controller.Mode)) DrawFalloffRings(_controller.BrushRingCenter, _controller.HoverNormal, _controller.BrushRadius, _settings.GetFalloffCurve());
             if (_controller.HasMirrorHover)
@@ -473,7 +484,7 @@ namespace GP02.EditorTools
                 _helpStyle = new GUIStyle(EditorStyles.label) { fontSize = 11, alignment = TextAnchor.MiddleLeft };
             }
 
-            string text = ClothEditHelp.GetHint(_controller.Mode, _controller.IsDragging, _controller.IsSettling, _controller.SelectionCount);
+            string text = ClothEditHelp.GetHint(_controller.Mode, _controller.IsDragging, _controller.IsSettling, _controller.SelectionCount, _controller.PinEraseMode);
             if (_controller.IsComparing)
             {
                 float blend = _controller.ShowOriginal || _controller.HoldOriginal ? 0f : _controller.CompareBlend;
@@ -488,6 +499,24 @@ namespace GP02.EditorTools
             if (_rectDragging) DrawRectSelection();
             GUI.Label(new Rect(10f, 10f, size.x, size.y + 4f), content, _hintStyle);
 
+            // 届かないときの一言（案内の下）
+            float below = 10f + size.y + 12f;
+            if (_reachShown)
+            {
+                if (_reachStyle == null)
+                {
+                    _reachStyle = new GUIStyle(_hintStyle) { fontStyle = FontStyle.Bold };
+                    _reachStyle.normal.textColor = new Color(1f, 0.8f, 0.45f);
+                }
+                var reachContent = new GUIContent(ClothEditReach.Message());
+                Vector2 reachSize = _reachStyle.CalcSize(reachContent);
+                Color previousBackground = GUI.backgroundColor;
+                GUI.backgroundColor = ClothEditReach.LineColor;
+                GUI.Label(new Rect(10f, below - 4f, reachSize.x, reachSize.y + 4f), reachContent, _reachStyle);
+                GUI.backgroundColor = previousBackground;
+                below += reachSize.y + 8f;
+            }
+
             if (_showShortcuts)
             {
                 ClothEditHelp.GetShortcutLines(_shortcutLines);
@@ -500,7 +529,7 @@ namespace GP02.EditorTools
                 const float RowHeight = 18f;
                 float width = keyWidth + textWidth + 32f;
                 float height = _shortcutLines.Count * RowHeight + 12f + RowHeight;
-                float top = 10f + size.y + 12f;
+                float top = below;
                 GUI.Box(new Rect(10f, top, width, height), GUIContent.none, _hintStyle);
                 GUI.Label(new Rect(18f, top + 4f, width - 16f, RowHeight), L10n.Tr("ショートカット（F1 で閉じる）", "Shortcuts (F1 to close)"), _keyStyle);
                 for (int i = 0; i < _shortcutLines.Count; i++)

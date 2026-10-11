@@ -84,14 +84,14 @@ namespace GP02.EditorTools
             switch (step)
             {
                 case 0:
-                    return L10n.Tr("Hierarchy で衣装のオブジェクトを選び、下の「選択中のオブジェクトから設定」を押します。",
-                        "Select the clothing object in the Hierarchy, then press \"Set from Selection\" below.");
+                    return L10n.Tr("Hierarchy で衣装のオブジェクトを選ぶと、自動で対象に入ります（右クリックの「GP02 で布を編集」なら、そのまま編集が始まります）。",
+                        "Select the clothing object in the Hierarchy and it becomes the target automatically (right-click > \"GP02 で布を編集\" (Edit cloth with GP02) starts editing right away).");
                 case 1:
-                    return L10n.Tr("下の「編集を開始」を押します。衣装が粒子になるまで数秒かかります。",
-                        "Press \"Start Editing\" below. It takes a few seconds to turn the clothing into particles.");
+                    return L10n.Tr("下の大きな「編集を開始」を押します。衣装が粒子になるまで数秒かかります。",
+                        "Press the big \"Start Editing\" button below. It takes a few seconds to turn the clothing into particles.");
                 case 2:
-                    return L10n.Tr("シーンビューで P キー（ピン留め）を押し、ウエストなど動かしたくない所を塗ります。Shift+ドラッグで矩形、Ctrl+クリックで部品全体も留められます。",
-                        "In the Scene view press P (Pin) and paint what should stay, such as the waist. Shift+Drag pins a rectangle and Ctrl+Click a whole part.");
+                    return L10n.Tr("シーンビューで P キー（ピン留め）を押し、ウエストなど動かしたくない所を塗ります。Ctrl+ドラッグで外す、Shift+ドラッグで矩形、ダブルクリックで部品全体も留められます。",
+                        "In the Scene view press P (Pin) and paint what should stay, such as the waist. Ctrl+Drag removes, Shift+Drag pins a rectangle and double-click a whole part.");
                 case 3:
                     return L10n.Tr("W キー（つまむ）で、布をドラッグして引っ張ります。手を離すと形が落ち着きます。Ctrl+Z で戻せます。",
                         "Press W (Grab) and drag the cloth. It settles when you release. Ctrl+Z undoes.");

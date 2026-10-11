@@ -20,6 +20,12 @@ namespace GP02.EditorTools
         /// <summary>布の編集ウィンドウを開く処理。既定は Tools/GP02/布の編集 のメニュー。</summary>
         public static Action OpenWindow = () => EditorApplication.ExecuteMenuItem("Tools/GP02/布の編集");
 
+        /// <summary>
+        /// 別の衣装で編集を始める前に、保存していない編集を確認する関数（布の編集ウィンドウが登録する）。続けてよければ true を返す。
+        /// 登録が無ければ確認しない。
+        /// </summary>
+        public static Func<ClothEditLeaveReason, bool> ConfirmLeave;
+
         /// <summary>今「布で編集する」で読み込んでいるエントリのコンポーネント。</summary>
         public static GP02ShapeKeys ActiveComponent { get; private set; }
 
@@ -90,6 +96,12 @@ namespace GP02.EditorTools
             ShapeKeyPreview.End(renderer);
 
             bool sameTarget = controller.IsEditing && controller.Target == renderer;
+            // 別の衣装を編集中に切り替えると、保存していない編集は消える。先に確認する
+            if (!sameTarget && controller.IsEditing && controller.HasUnsavedEdits && ConfirmLeave != null && !ConfirmLeave(ClothEditLeaveReason.SwitchTarget))
+            {
+                message = L10n.Tr("編集の切り替えをやめました。", "Cancelled switching the edit.");
+                return false;
+            }
             if (!sameTarget && !controller.TryStart(renderer, out string error))
             {
                 message = error;

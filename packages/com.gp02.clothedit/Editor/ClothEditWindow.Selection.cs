@@ -69,6 +69,8 @@ namespace GP02.EditorTools
             _foldSelection = Section(_foldSelection, L10n.Tr("選んだ点", "Selection"));
             if (!_foldSelection) return;
 
+            // かんたん表示: ハンドルの種類・布として／形だけ・なめらかさだけ。くわしく表示: 中心・向き・減り方・選ぶ操作のボタン・数値で動かす、も出す
+            bool detailed = Shows(ClothEditUiItem.SelectionDetails);
             EditorGUILayout.LabelField(L10n.Tr("選んだ点の数", "Selected Points"), L10n.Tr($"{count:N0} 個", $"{count:N0}"));
             if (_settings.Tool != ClothEditMode.Select)
             {
@@ -92,6 +94,39 @@ namespace GP02.EditorTools
             };
             _settings.HandleType = (SelectionHandle)GUILayout.Toolbar((int)_settings.HandleType, handleLabels);
 
+            if (detailed) DrawSelectionPivotAndOrientation(count);
+            DrawSelectionMotionOptions(detailed);
+
+            if (EditorGUI.EndChangeCheck())
+            {
+                _settingsDirty = true;
+                SceneView.RepaintAll();
+            }
+
+            if (detailed)
+            {
+                EditorGUILayout.Space();
+                DrawSelectionButtons(count);
+            }
+
+            if (_settings.SymmetryEnabled)
+            {
+                EditorGUILayout.HelpBox(L10n.Tr("対称がオンです。反対側は自動で鏡に映して動くので、選ばなくてよいです。",
+                    "Symmetry is on. The opposite side moves mirrored automatically, so you do not need to select it."), MessageType.Info);
+            }
+            if (count > 0 && _selectionHasPinned)
+            {
+                EditorGUILayout.HelpBox(L10n.Tr("選んだ点にピン留めした点が含まれています。ピン留めした点は動きません。",
+                    "The selection includes pinned points. Pinned points do not move."), MessageType.Warning);
+            }
+
+            if (detailed) DrawNumericMove(count);
+            EditorGUILayout.Space();
+        }
+
+        // 中心と向き（くわしく表示だけ）
+        void DrawSelectionPivotAndOrientation(int count)
+        {
             _settings.PivotMode = (SelectionPivot)EditorGUILayout.Popup(new GUIContent(L10n.Tr("中心", "Pivot"),
                 L10n.Tr("ハンドルを出す位置で、回転・拡大縮小の中心です。選んだ点の中心: 選んだ点の今の位置の平均。クリックした点: 最後にクリックして選んだ面の上の点。" +
                         "3D カーソル: Shift+右クリックで置いた面の上の点（置いていなければ選んだ点の中心）",
@@ -103,7 +138,11 @@ namespace GP02.EditorTools
                 L10n.Tr("ハンドルの軸の向き。グローバル: ワールドの軸。アバター: アバター（対称編集の基準）の向き。面の法線: 選んだ点の面の向きを Z にした向き。視点: 画面の右・上・奥の向き",
                     "The axes of the handle. Global: world axes. Avatar: the avatar's orientation (the symmetry reference). Surface normal: Z is the surface normal of the selected points. View: the screen's right, up and depth")),
                 (int)_settings.HandleSpace, new[] { L10n.Tr("グローバル", "Global"), L10n.Tr("アバター", "Avatar"), L10n.Tr("面の法線", "Surface normal"), L10n.Tr("視点", "View") });
+        }
 
+        // 動かし方・なめらかさ（かんたん表示でも出す）と、減り方・隠れた点・範囲の色分け（くわしく表示だけ）
+        void DrawSelectionMotionOptions(bool detailed)
+        {
             // 動かし方
             int moveStyle = EditorGUILayout.Popup(new GUIContent(L10n.Tr("動かし方", "Move Style"),
                 L10n.Tr("布として動かす: 選んだ点を動かすと、周りの布が布の計算で伸びずに付いてきます。布の長さで届かない所へは、手前で止まります。\n" +
@@ -123,6 +162,8 @@ namespace GP02.EditorTools
                     "Radius of the range around the selected points where the motion fades out smoothly. 0 moves only the selected points (the surrounding cloth still follows through the simulation)")),
                 _settings.SelectionFalloffRadius * 100f, 0f, ClothEditSettings.MaxSelectionFalloffRadius * 100f);
             _settings.SelectionFalloffRadius = smoothCm * 0.01f;
+            if (!detailed) return;
+
             _settings.SelectionFalloff = (FalloffPreset)EditorGUILayout.Popup(new GUIContent(L10n.Tr("減り方", "Falloff"),
                 L10n.Tr("なめらかに減る範囲の、減り方です。ブラシの「減衰カーブ」とは別の設定です（「自由に描く」を選んだときだけ、ブラシで描いたカーブを使います）",
                     "How the motion fades out in the smooth range. This is separate from the brush Falloff (only \"Custom\" uses the curve drawn for the brush)")),
@@ -135,29 +176,6 @@ namespace GP02.EditorTools
             _settings.ShowSelectionWeights = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("範囲の色分け", "Show Range Colors"),
                 L10n.Tr("なめらかに減る範囲の点を、動きの強さで色分けして見せます", "Shows the points in the smooth range colored by how strongly they move")),
                 _settings.ShowSelectionWeights);
-
-            if (EditorGUI.EndChangeCheck())
-            {
-                _settingsDirty = true;
-                SceneView.RepaintAll();
-            }
-
-            EditorGUILayout.Space();
-            DrawSelectionButtons(count);
-
-            if (_settings.SymmetryEnabled)
-            {
-                EditorGUILayout.HelpBox(L10n.Tr("対称がオンです。反対側は自動で鏡に映して動くので、選ばなくてよいです。",
-                    "Symmetry is on. The opposite side moves mirrored automatically, so you do not need to select it."), MessageType.Info);
-            }
-            if (count > 0 && _selectionHasPinned)
-            {
-                EditorGUILayout.HelpBox(L10n.Tr("選んだ点にピン留めした点が含まれています。ピン留めした点は動きません。",
-                    "The selection includes pinned points. Pinned points do not move."), MessageType.Warning);
-            }
-
-            DrawNumericMove(count);
-            EditorGUILayout.Space();
         }
 
         // 3D カーソルの置き方（Shift+右クリックのほか、ボタンで選んだ点の中心に置く・消す）

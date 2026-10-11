@@ -23,7 +23,7 @@ namespace GP02.EditorTools
         public const string IdRotate = "GP02/Rotate";
         public const string IdScale = "GP02/Scale";
         public const string IdPin = "GP02/Pin";
-        public const string IdUnpin = "GP02/Unpin";
+        public const string IdPinErase = "GP02/Pin and Erase";
         public const string IdRelax = "GP02/Restore Brush";
         public const string IdSelectTool = "GP02/Select and Move";
         public const string IdHoldOriginal = "GP02/Show Original Shape (hold)";
@@ -59,7 +59,7 @@ namespace GP02.EditorTools
             new Definition(IdRotate, ClothEditShortcutAction.Rotate, KeyCode.E),
             new Definition(IdScale, ClothEditShortcutAction.Scale, KeyCode.R),
             new Definition(IdPin, ClothEditShortcutAction.Pin, KeyCode.P),
-            new Definition(IdUnpin, ClothEditShortcutAction.Unpin, KeyCode.P, ShortcutModifiers.Shift),
+            new Definition(IdPinErase, ClothEditShortcutAction.PinErase, KeyCode.P, ShortcutModifiers.Shift),
             new Definition(IdRelax, ClothEditShortcutAction.Relax, KeyCode.T),
             new Definition(IdSelectTool, ClothEditShortcutAction.SelectTool, KeyCode.Q),
             new Definition(IdHoldOriginal, ClothEditShortcutAction.HoldOriginal, KeyCode.C),
@@ -138,8 +138,8 @@ namespace GP02.EditorTools
         [Shortcut(IdPin, typeof(SceneView), Tag, KeyCode.P)]
         static void Pin() => Run(ClothEditShortcutAction.Pin);
 
-        [Shortcut(IdUnpin, typeof(SceneView), Tag, KeyCode.P, ShortcutModifiers.Shift)]
-        static void Unpin() => Run(ClothEditShortcutAction.Unpin);
+        [Shortcut(IdPinErase, typeof(SceneView), Tag, KeyCode.P, ShortcutModifiers.Shift)]
+        static void PinErase() => Run(ClothEditShortcutAction.PinErase);
 
         [Shortcut(IdRelax, typeof(SceneView), Tag, KeyCode.T)]
         static void Relax() => Run(ClothEditShortcutAction.Relax);

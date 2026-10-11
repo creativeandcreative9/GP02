@@ -69,13 +69,21 @@ namespace GP02.EditorTools
 
         void ApplyToolKey(ToolKeyResult result)
         {
-            _settings.Tool = result.Tool;
-            _settings.HandleType = result.Handle;
-            _settings.Save();
-            _controller.ApplySettings();
+            SetToolFromKey(result);
             RefreshHoverAtLastMouse();
             Repaint();
             SceneView.RepaintAll();
+        }
+
+        // キーで道具を切り替えた結果を設定に入れる。P はピン留め、Shift+P は「塗ると外す」をオンにしたピン留め（昔の「ピン解除」）
+        void SetToolFromKey(ToolKeyResult result)
+        {
+            ClothEditShortcuts.ResolvePinMode(result.Tool, _settings.PinEraseMode, out ClothEditMode tool, out bool erase);
+            _settings.Tool = tool;
+            _settings.PinEraseMode = erase;
+            _settings.HandleType = result.Handle;
+            _settings.Save();
+            _controller.ApplySettings();
         }
 
         void RefreshHoverAtLastMouse()
