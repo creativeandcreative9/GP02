@@ -2,7 +2,7 @@
 # Docker の Unity を画面あり（仮想画面 Xvfb ＋ ソフトウェア描画）で起動し、見た目を画像にする。
 # 編集中のプレビューや、保存したシェイプキーの見た目を、クラウドで確かめるため。
 #
-# 使い方: tools/unity/render.sh [メソッド名]（既定は RenderScenes.EditAndSave）
+# 使い方: tools/unity/render.sh [メソッド名]（既定は RenderScenes.All。EditAndSave と Tools を続けて描く）
 #   描画の中身は tools/unity/render/RenderScenes.cs
 #
 # 開発用の unity/ とは別の作業用プロジェクト（tools/unity/out/render_project）を使うので、
@@ -10,13 +10,13 @@
 # ライセンスは run-tests.sh と同じ（UNITY_EMAIL と UNITY_PASSWORD、または UNITY_LICENSE_B64）。
 #
 # 出力（Gitには含めない）:
-#   tools/unity/out/render/*.png … 画像（edit_and_save.png に1枚にまとめたもの）
+#   tools/unity/out/render/*.png … 画像（edit_and_save.png ＝ 編集と保存、tools.png ＝ 対称・回す・拡大縮小・元に戻すブラシ）
 #   tools/unity/out/render/unity.log
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO="$(pwd)"
 IMAGE="${GP02_UNITY_IMAGE:-mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-3}"
-METHOD="${1:-RenderScenes.EditAndSave}"
+METHOD="${1:-RenderScenes.All}"
 OUT="$REPO/tools/unity/out/render"
 PROJECT="$REPO/tools/unity/out/render_project"
 

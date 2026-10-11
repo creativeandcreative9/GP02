@@ -1,0 +1,341 @@
+using System;
+using System.Collections.Generic;
+using GP02.Core;
+using UnityEditor;
+using UnityEngine;
+
+namespace GP02.EditorTools
+{
+    // シーンビューの入力（マウス、ショートカット、ホイール）と重ね描き。
+    public sealed partial class ClothEditWindow
+    {
+        const int MaxPinDots = 3000;             // 描画するピンの点の上限（多いと重くなる）
+        const int MaxHeatDots = 3000;            // 伸びのヒートマップの点の上限
+        const double RadiusLabelSeconds = 1.5;   // 半径を変えたあと、数値を出しておく時間
+
+        readonly List<Vector3> _pinDots = new List<Vector3>();
+        readonly List<Vector3> _heatDots = new List<Vector3>();
+        readonly List<float> _heatValues = new List<float>();
+        readonly List<KeyValuePair<string, string>> _shortcutLines = new List<KeyValuePair<string, string>>();
+        GUIStyle _hintStyle;
+        GUIStyle _keyStyle;
+        GUIStyle _helpStyle;
+        double _radiusChangedAt = double.NegativeInfinity;
+
+        // Graphics.DrawMesh は、シーンのカメラが描く前に呼ばないと次のコマまで表示されない。
+        // ショートカットは、シーンビュー自身のキー処理より先に読む必要があるので、ここで受ける
+        void OnBeforeSceneGUI(SceneView sceneView)
+        {
+            if (_controller == null) return;
+            ClothEditSession session = _controller.Session;
+            if (session == null) return;
+
+            Event e = Event.current;
+            if (e.type == EventType.Repaint)
+            {
+                session.DrawPreview(sceneView.camera);
+                return;
+            }
+            HandleShortcuts(sceneView, e);
+        }
+
+        // 編集中で、マウスがこのシーンビューの上にあるときだけ反応して、イベントを使う
+        void HandleShortcuts(SceneView sceneView, Event e)
+        {
+            // C を離したら、マウスの位置にかかわらず元の形の表示をやめる
+            if (e.type == EventType.KeyUp && ClothEditShortcuts.IsHoldOriginalKey(e.keyCode))
+            {
+                _controller.HoldOriginal = false;
+                return;
+            }
+            if (e.type == EventType.MouseLeaveWindow) _controller.HoldOriginal = false;
+            if (EditorWindow.mouseOverWindow != sceneView) return;
+
+            if (e.type == EventType.ScrollWheel)
+            {
+                WheelTarget wheel = ClothEditShortcuts.GetWheelTarget(e.control, e.shift);
+                if (wheel == WheelTarget.None || GUIUtility.hotControl != 0) return;
+                ChangeRadius(wheel, ClothEditShortcuts.WheelSteps(e.delta.y));
+                RefreshHover(e);
+                e.Use();
+                return;
+            }
+
+            if (e.type != EventType.KeyDown) return;
+            // 右ボタンを押してのカメラ移動（W/E など）や、Alt・Ctrl・Command の組み合わせは、Unity に任せる
+            if (e.alt || e.command || Tools.viewTool == ViewTool.FPS) return;
+            KeyCode key = e.keyCode;
+
+            if (ClothEditShortcuts.IsHelpKey(key))
+            {
+                _showShortcuts = !_showShortcuts;
+                Repaint();
+                sceneView.Repaint();
+                e.Use();
+                return;
+            }
+            if (e.control) return;
+            if (ClothEditShortcuts.IsHoldOriginalKey(key))
+            {
+                _controller.HoldOriginal = true;
+                e.Use();
+                return;
+            }
+            // ドラッグ中（押している間）は、道具や半径を変えない
+            if (GUIUtility.hotControl != 0) return;
+
+            if (ClothEditShortcuts.TryGetTool(key, e.shift, out ClothEditMode tool))
+            {
+                // Shift は P（ピン解除）のときだけ意味がある。W/E/R/T に Shift が付いていたら何もしない
+                if (e.shift && key != KeyCode.P) return;
+                _settings.Tool = tool;
+                _settings.Save();
+                _controller.ApplySettings();
+                RefreshHover(e);
+                Repaint();
+                sceneView.Repaint();
+                e.Use();
+                return;
+            }
+            if (ClothEditShortcuts.TryGetRadiusKey(key, e.character, e.shift, out WheelTarget target, out int step))
+            {
+                ChangeRadius(target, step);
+                RefreshHover(e);
+                e.Use();
+            }
+        }
+
+        // マウスを動かさなくても、道具や半径を変えたら、範囲の表示をその場で作り直す
+        void RefreshHover(Event e)
+        {
+            if (_controller.IsEditing && !_controller.IsBusy) _controller.Hover(HandleUtility.GUIPointToWorldRay(e.mousePosition));
+        }
+
+        void ChangeRadius(WheelTarget target, float steps)
+        {
+            if (target == WheelTarget.BrushRadius) _brushCentimeters = ClothEditController.AdjustRadius(_brushCentimeters, steps, BrushMinCm, BrushMaxCm);
+            else if (target == WheelTarget.InfluenceRadius) _influenceCentimeters = ClothEditController.AdjustRadius(_influenceCentimeters, steps, InfluenceMinCm, InfluenceMaxCm);
+            else return;
+            SyncController();
+            _controller.InvalidatePreview();
+            _radiusChangedAt = EditorApplication.timeSinceStartup;
+            Repaint();
+            SceneView.RepaintAll();
+        }
+
+        void OnSceneGUI(SceneView sceneView)
+        {
+            if (_controller == null || !_controller.IsEditing) return;
+            Event e = Event.current;
+            int controlId = GUIUtility.GetControlID(FocusType.Passive);
+            sceneView.wantsMouseMove = true;
+
+            if (e.type == EventType.Layout)
+            {
+                // クリックでオブジェクトの選択が変わらないようにする
+                HandleUtility.AddDefaultControl(controlId);
+                return;
+            }
+
+            if (e.type == EventType.Repaint)
+            {
+                DrawOverlay();
+                DrawHint();
+                return;
+            }
+
+            // Esc：ドラッグ中・仕上げ中の操作を取り消して、押す前の形に戻す
+            if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
+            {
+                if (_controller.Cancel())
+                {
+                    GUIUtility.hotControl = 0;
+                    e.Use();
+                }
+                return;
+            }
+
+            // 視点操作（Alt）と右・中ボタンは何もしない
+            if (e.alt) return;
+
+            switch (e.type)
+            {
+                case EventType.MouseMove:
+                    _controller.Hover(HandleUtility.GUIPointToWorldRay(e.mousePosition));
+                    sceneView.Repaint();
+                    break;
+
+                case EventType.MouseDown:
+                    if (e.button != 0 || HandleUtility.nearestControl != controlId) break;
+                    if (!_controller.PointerDown(HandleUtility.GUIPointToWorldRay(e.mousePosition), sceneView.camera.transform.forward, e.mousePosition.x)) break;
+                    GUIUtility.hotControl = controlId;
+                    e.Use();
+                    break;
+
+                case EventType.MouseDrag:
+                    if (e.button != 0 || GUIUtility.hotControl != controlId) break;
+                    // Shift：精密操作（動きを 1/5 に）。Ctrl：回転を 15° 刻みに
+                    _controller.PointerDrag(HandleUtility.GUIPointToWorldRay(e.mousePosition), e.mousePosition.x, e.shift, e.control);
+                    e.Use();
+                    break;
+
+                case EventType.MouseUp:
+                    if (e.button != 0 || GUIUtility.hotControl != controlId) break;
+                    GUIUtility.hotControl = 0;
+                    _controller.PointerUp();
+                    e.Use();
+                    break;
+            }
+        }
+
+        // ---- 重ね描き ----
+
+        static Color ToolColor(ClothEditMode mode)
+        {
+            switch (mode)
+            {
+                case ClothEditMode.Pin: return new Color(1f, 0.3f, 0.2f, 1f);
+                case ClothEditMode.Unpin: return new Color(0.9f, 0.9f, 0.2f, 1f);
+                case ClothEditMode.Rotate: return new Color(0.8f, 0.5f, 1f, 1f);
+                case ClothEditMode.Scale: return new Color(0.4f, 1f, 0.5f, 1f);
+                case ClothEditMode.Relax: return new Color(1f, 0.65f, 0.2f, 1f);
+                default: return new Color(0.2f, 0.8f, 1f, 1f);
+            }
+        }
+
+        static void Dot(Vector3 p, float size)
+        {
+            Handles.DotHandleCap(0, p, Quaternion.identity, HandleUtility.GetHandleSize(p) * size, EventType.Repaint);
+        }
+
+        void DrawOverlay()
+        {
+            ClothEditSession session = _controller.Session;
+            if (session == null) return;
+
+            if (_settings.SymmetryEnabled) DrawMirrorPlane(session);
+
+            // 伸びのヒートマップ
+            if (_settings.ShowStretchHeatmap)
+            {
+                session.GetStretchDots(_heatDots, _heatValues, MaxHeatDots);
+                for (int i = 0; i < _heatDots.Count; i++)
+                {
+                    Handles.color = ClothEditHelp.HeatColor(_heatValues[i]);
+                    Dot(_heatDots[i], 0.012f);
+                }
+            }
+
+            if (session.PinnedCount > 0)
+            {
+                session.GetPinnedPositions(_pinDots, MaxPinDots);
+                Handles.color = new Color(1f, 0.3f, 0.2f, 1f);
+                for (int i = 0; i < _pinDots.Count; i++) Dot(_pinDots[i], 0.015f);
+            }
+
+            if (!_controller.HasHover) return;
+
+            // ブラシを当てる前の、範囲に入る粒子（重みで色分け）
+            int previewCount = _controller.PreviewCount;
+            if (previewCount > 0)
+            {
+                ReadOnlySpan<System.Numerics.Vector3> positions = session.Solver.Positions;
+                for (int k = 0; k < previewCount; k++)
+                {
+                    int particle = _controller.PreviewParticle(k);
+                    if ((uint)particle >= (uint)positions.Length) continue;
+                    float w = _controller.PreviewWeight(k);
+                    System.Numerics.Vector3 p = positions[particle];
+                    Handles.color = ClothEditHelp.WeightColor(w);
+                    Dot(new Vector3(p.X, p.Y, p.Z), 0.008f + 0.006f * w);
+                }
+            }
+
+            Handles.color = ToolColor(_controller.Mode);
+            Handles.DrawWireDisc(_controller.HoverPoint, _controller.HoverNormal, _controller.BrushRadius);
+            if (_controller.HasMirrorHover)
+            {
+                Color mirrorColor = Handles.color;
+                mirrorColor.a = 0.6f;
+                Handles.color = mirrorColor;
+                Handles.DrawWireDisc(_controller.MirrorHoverPoint, _controller.MirrorHoverNormal, _controller.BrushRadius);
+            }
+
+            // ホイールやキーで半径を変えた直後は、数値を添える
+            if (EditorApplication.timeSinceStartup - _radiusChangedAt < RadiusLabelSeconds)
+            {
+                Handles.Label(_controller.HoverPoint + _controller.HoverNormal * 0.01f,
+                    L10n.Tr($"半径 {_brushCentimeters:F1} cm / 影響範囲 {_influenceCentimeters:F0} cm", $"Radius {_brushCentimeters:F1} cm / Influence {_influenceCentimeters:F0} cm"));
+            }
+        }
+
+        // 対称の鏡の面を、編集中の布のまわりに半透明の四角で示す
+        void DrawMirrorPlane(ClothEditSession session)
+        {
+            if (!_controller.TryGetMirrorPlane(out MirrorPlane plane)) return;
+            Bounds bounds = session.Renderer.bounds;
+            Vector3 normal = ClothEditSymmetry.ToUnity(plane.Normal);
+            Vector3 point = ClothEditSymmetry.ToUnity(plane.Point);
+            Vector3 center = bounds.center - normal * Vector3.Dot(bounds.center - point, normal);
+            Vector3 u = Vector3.Cross(normal, Mathf.Abs(normal.y) < 0.9f ? Vector3.up : Vector3.right).normalized;
+            Vector3 v = Vector3.Cross(normal, u);
+            float half = Mathf.Max(0.1f, bounds.extents.magnitude);
+            var corners = new[] { center + (u + v) * half, center + (u - v) * half, center + (-u - v) * half, center + (-u + v) * half };
+            Handles.DrawSolidRectangleWithOutline(corners, new Color(0.3f, 0.7f, 1f, 0.08f), new Color(0.3f, 0.7f, 1f, 0.5f));
+        }
+
+        // シーンビューの左上に出す案内と、ショートカット一覧
+        void DrawHint()
+        {
+            if (_hintStyle == null)
+            {
+                _hintStyle = new GUIStyle(EditorStyles.helpBox)
+                {
+                    fontSize = 12,
+                    alignment = TextAnchor.MiddleLeft,
+                    padding = new RectOffset(8, 8, 4, 4),
+                };
+                _keyStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 11, alignment = TextAnchor.MiddleLeft };
+                _helpStyle = new GUIStyle(EditorStyles.label) { fontSize = 11, alignment = TextAnchor.MiddleLeft };
+            }
+
+            string text = ClothEditHelp.GetHint(_controller.Mode, _controller.IsDragging, _controller.IsSettling);
+            if (_controller.IsComparing)
+            {
+                float blend = _controller.ShowOriginal || _controller.HoldOriginal ? 0f : _controller.CompareBlend;
+                text += "\n" + (blend <= 0f
+                    ? L10n.Tr("表示中: 元の形（編集前）", "Showing: original shape (before editing)")
+                    : L10n.Tr($"表示中: 元と編集中の中間（編集中 {blend * 100f:F0}%）", $"Showing: blend of original and edited ({blend * 100f:F0}% edited)"));
+            }
+
+            var content = new GUIContent(text);
+            Vector2 size = _hintStyle.CalcSize(content);
+            Handles.BeginGUI();
+            GUI.Label(new Rect(10f, 10f, size.x, size.y + 4f), content, _hintStyle);
+
+            if (_showShortcuts)
+            {
+                ClothEditHelp.GetShortcutLines(_shortcutLines);
+                float keyWidth = 0f, textWidth = 0f;
+                for (int i = 0; i < _shortcutLines.Count; i++)
+                {
+                    keyWidth = Mathf.Max(keyWidth, _keyStyle.CalcSize(new GUIContent(_shortcutLines[i].Key)).x);
+                    textWidth = Mathf.Max(textWidth, _helpStyle.CalcSize(new GUIContent(_shortcutLines[i].Value)).x);
+                }
+                const float RowHeight = 18f;
+                float width = keyWidth + textWidth + 32f;
+                float height = _shortcutLines.Count * RowHeight + 12f + RowHeight;
+                float top = 10f + size.y + 12f;
+                GUI.Box(new Rect(10f, top, width, height), GUIContent.none, _hintStyle);
+                GUI.Label(new Rect(18f, top + 4f, width - 16f, RowHeight), L10n.Tr("ショートカット（F1 で閉じる）", "Shortcuts (F1 to close)"), _keyStyle);
+                for (int i = 0; i < _shortcutLines.Count; i++)
+                {
+                    float y = top + 6f + RowHeight * (i + 1);
+                    GUI.Label(new Rect(18f, y, keyWidth + 4f, RowHeight), _shortcutLines[i].Key, _keyStyle);
+                    GUI.Label(new Rect(18f + keyWidth + 12f, y, textWidth + 8f, RowHeight), _shortcutLines[i].Value, _helpStyle);
+                }
+            }
+            Handles.EndGUI();
+        }
+    }
+}

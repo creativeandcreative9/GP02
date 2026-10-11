@@ -7,12 +7,24 @@ using Object = UnityEngine.Object;
 
 namespace GP02.EditorTools
 {
-    /// <summary>ブラシの使い方。</summary>
+    /// <summary>
+    /// 道具（ブラシの使い方）。数値は EditorPrefs に保存するので、並べ替えず、足すときは末尾に足すこと。
+    /// </summary>
     public enum ClothEditMode
     {
+        /// <summary>つまんで動かす。</summary>
         Grab,
         Pin,
         Unpin,
+
+        /// <summary>クリックした点を中心に、横ドラッグで回す。</summary>
+        Rotate,
+
+        /// <summary>クリックした点を中心に、横ドラッグで拡大縮小する。</summary>
+        Scale,
+
+        /// <summary>塗った所を、元の形へ近づける。</summary>
+        Relax,
     }
 
     /// <summary>
@@ -46,6 +58,37 @@ namespace GP02.EditorTools
         double _settleStart;
         Plane _dragPlane;
         Vector3 _dragStartPoint;
+        bool _dragOnLine;               // 動きを直線（法線・軸）に固定している
+        Vector3 _dragLineDirection;
+        Vector3 _dragRawLast;           // 前回のカーソルの位置（平面または直線の上）
+        Vector3 _dragTarget;            // 精密操作を反映した、つまんだ点の動かし先
+        float _startScreenX;
+        float _lastScreenX;
+        float _effectivePixels;         // 回す・拡大縮小の横ドラッグ量（精密操作を反映）
+        Vector3 _rotateAxis;
+        float _grabAngle;
+        float _grabScale = 1f;
+        Transform _avatarRoot;
+        bool _holdOriginal;
+        readonly List<int> _relaxHeld = new List<int>();   // 元に戻すブラシの仕上げの間だけ、一時的にピン留めしている粒子
+
+        // ブラシを当てる前の表示（範囲に入る粒子と重み）
+        public const int MaxPreviewParticles = 1500;
+        readonly int[] _previewIndices = new int[MaxPreviewParticles];
+        readonly float[] _previewWeights = new float[MaxPreviewParticles];
+        int _previewCount;
+        bool _previewKeyValid;
+        int _previewSeed = -1;
+        float _previewRadius;
+        BrushDistanceMode _previewMode;
+        FalloffCurve _previewCurve;
+        bool _previewMirror;
+        MirrorPlane _previewPlane;
+        bool _previewShown;
+        int _hoverMirrorSeed = -1;      // _hoverMirrorParticle を探した中心の粒子
+        int _hoverMirrorParticle = -1;
+        MirrorPlane _hoverMirrorPlane;
+        bool _hoverMirrorValid;
 
         int _hoverTriangle = -1;        // カーソルの下の三角形（重ね着で、どの布をつまむか・ピン留めするかを決める）
 
@@ -78,7 +121,157 @@ namespace GP02.EditorTools
         /// <summary>計算の最後に測った、最大の伸び（0.1 で 10%）。</summary>
         public float LastStretch { get; private set; }
 
-        public ClothEditMode Mode { get; set; }
+        /// <summary>今の道具。<see cref="ClothEditSettings.Tool"/> に持つので、保存される。</summary>
+        public ClothEditMode Mode
+        {
+            get => _settings.Tool;
+            set => _settings.Tool = value;
+        }
+
+        /// <summary>
+        /// アバターの基準の Transform（対称編集の鏡と、軸に固定するときの「アバターのローカル」の基準）。
+        /// 編集を始めたときに <see cref="ClothEditSymmetry.FindAvatarRoot"/> で決める。編集中でなければ null。
+        /// </summary>
+        public Transform AvatarRoot => _avatarRoot;
+
+        /// <summary>つまんでいる点の、今の動かし先（精密操作を反映したワールド座標）。つまんでいなければ意味を持たない。</summary>
+        public Vector3 GrabTarget => _dragTarget;
+
+        /// <summary>回している角度（度）。「回す」で押している間の値。</summary>
+        public float GrabAngle => _grabAngle;
+
+        /// <summary>拡大率。「拡大縮小」で押している間の値。</summary>
+        public float GrabScale => _grabScale;
+
+        // ---- 操作の定数 ----
+
+        /// <summary>横に1ピクセル動かしたときに回る角度（度）。</summary>
+        public const float DegreesPerPixel = 0.5f;
+
+        /// <summary>横に1ピクセル動かしたときの拡大率の対数の増分（exp(px * この値)）。</summary>
+        public const float ScaleLogPerPixel = 0.006f;
+
+        public const float MinScale = 0.2f;
+        public const float MaxScale = 3f;
+
+        /// <summary>Ctrl を押している間の回転の刻み（度）。</summary>
+        public const float SnapDegrees = 15f;
+
+        /// <summary>Shift を押している間の、動きの倍率。</summary>
+        public const float PrecisionFactor = 0.2f;
+
+        /// <summary>横ドラッグの量（ピクセル）から回転角（度）。snap なら <see cref="SnapDegrees"/> の倍数にする。</summary>
+        public static float AngleFromPixels(float pixels, bool snap)
+        {
+            float angle = pixels * DegreesPerPixel;
+            return snap ? Mathf.Round(angle / SnapDegrees) * SnapDegrees : angle;
+        }
+
+        /// <summary>横ドラッグの量（ピクセル）から拡大率（<see cref="MinScale"/>〜<see cref="MaxScale"/>）。</summary>
+        public static float ScaleFromPixels(float pixels)
+        {
+            return Mathf.Clamp(Mathf.Exp(pixels * ScaleLogPerPixel), MinScale, MaxScale);
+        }
+
+        /// <summary>
+        /// ホイールやキーで半径を変える。1ステップごとに 10% 大きく（小さく）なり、min〜max に収める。
+        /// 大きさに比例して変わるので、小さい半径も細かく調整できる。
+        /// </summary>
+        /// <param name="steps">正で大きく、負で小さく</param>
+        public static float AdjustRadius(float current, float steps, float min, float max)
+        {
+            return Mathf.Clamp(current * Mathf.Pow(1.1f, steps), min, max);
+        }
+
+        /// <summary>
+        /// レイと直線（origin を通り direction の向き）の最も近い点。レイが直線とほぼ平行なとき（動かす向きが視線とほぼ同じ）は
+        /// 位置が決まらないので false。
+        /// </summary>
+        public static bool TryClosestPointOnLine(Ray ray, Vector3 origin, Vector3 direction, out Vector3 point)
+        {
+            Vector3 d1 = ray.direction.normalized;
+            Vector3 d2 = direction.normalized;
+            Vector3 w = ray.origin - origin;
+            float b = Vector3.Dot(d1, d2);
+            float d = Vector3.Dot(d1, w);
+            float e = Vector3.Dot(d2, w);
+            float denominator = 1f - b * b;
+            if (denominator < 1e-3f)
+            {
+                point = origin;
+                return false;
+            }
+            float t = (e - b * d) / denominator;
+            // 視線に近い向きでは、少しのカーソルの動きで大きく飛ぶので、遠くへは行かせない
+            t = Mathf.Clamp(t, -3f, 3f);
+            point = origin + d2 * t;
+            return true;
+        }
+
+        // ---- 比較（元の形との間の見せ方） ----
+
+        /// <summary>元の形を表示するか（トグル）。</summary>
+        public bool ShowOriginal
+        {
+            get => _settings.ShowOriginal;
+            set
+            {
+                _settings.ShowOriginal = value;
+                ApplyPreviewBlend();
+            }
+        }
+
+        /// <summary>C キーを押している間だけ元の形を見せる。</summary>
+        public bool HoldOriginal
+        {
+            get => _holdOriginal;
+            set
+            {
+                if (_holdOriginal == value) return;
+                _holdOriginal = value;
+                ApplyPreviewBlend();
+            }
+        }
+
+        /// <summary>編集中の形と元の形の間の見せ方（0 で元の形、1 で編集中の形）。</summary>
+        public float CompareBlend
+        {
+            get => _settings.CompareBlend;
+            set
+            {
+                _settings.CompareBlend = Mathf.Clamp01(value);
+                ApplyPreviewBlend();
+            }
+        }
+
+        /// <summary>今、元の形（または元との中間）を見せているか。</summary>
+        public bool IsComparing => _settings.ShowOriginal || _holdOriginal || _settings.CompareBlend < 1f;
+
+        void ApplyPreviewBlend()
+        {
+            if (_session != null) _session.PreviewBlend = _settings.ShowOriginal || _holdOriginal ? 0f : _settings.CompareBlend;
+            Notify();
+        }
+
+        // ---- ブラシ（範囲の決め方・対称） ----
+
+        /// <summary>設定に従った鏡の面。対称がオフ、または編集中でなければ false。</summary>
+        public bool TryGetMirrorPlane(out MirrorPlane plane)
+        {
+            return ClothEditSymmetry.TryBuildMirrorPlane(_settings, _avatarRoot, out plane);
+        }
+
+        /// <summary>設定に従った、つまむ範囲の決め方（カーブ・距離の測り方・対称）。半径は呼び出し側（BeginGrab など）が決める。</summary>
+        public BrushOptions BuildBrushOptions()
+        {
+            return new BrushOptions
+            {
+                Radius = _brushRadius,
+                Falloff = _settings.GetFalloffCurve(),
+                DistanceMode = _settings.DistanceMode,
+                Mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null,
+            };
+        }
 
         /// <summary>保存先のフォルダ。</summary>
         public string SaveFolder { get; set; } = DefaultSaveFolder;
@@ -110,14 +303,27 @@ namespace GP02.EditorTools
         public Vector3 HoverPoint { get; private set; }
         public Vector3 HoverNormal { get; private set; } = Vector3.up;
 
-        public string StateLabel => _dragging ? "つまんでいる" : _settling ? "仕上げ中" : "待機中";
+        public string StateLabel
+        {
+            get
+            {
+                if (_dragging)
+                {
+                    return _strokeMode == ClothEditMode.Rotate ? L10n.Tr("回している", "Rotating")
+                        : _strokeMode == ClothEditMode.Scale ? L10n.Tr("拡大縮小している", "Scaling")
+                        : L10n.Tr("つまんでいる", "Grabbing");
+                }
+                return _settling ? L10n.Tr("仕上げ中", "Settling") : L10n.Tr("待機中", "Idle");
+            }
+        }
 
         /// <summary>設定を変えたあとに呼ぶ。編集中のソルバーに反映する。</summary>
         public void ApplySettings()
         {
             _settings.Sanitize();
             if (_session != null) _settings.ApplyTo(_session.Solver, _session.RestAllowance);
-            Notify();
+            _previewKeyValid = false;
+            ApplyPreviewBlend();
         }
 
         // ---- 対象の確認 ----
@@ -147,16 +353,19 @@ namespace GP02.EditorTools
         {
             if (renderer == null)
             {
-                return "対象が指定されていません。「対象」に、布の SkinnedMeshRenderer（または MeshFilter 付きの MeshRenderer）を指定してください。";
+                return L10n.Tr("対象が指定されていません。「対象」に、布の SkinnedMeshRenderer（または MeshFilter 付きの MeshRenderer）を指定してください。",
+                    "No target is set. Set the cloth's SkinnedMeshRenderer (or a MeshRenderer with a MeshFilter) as the target.");
             }
             Mesh mesh = GetMesh(renderer);
             if (mesh == null)
             {
-                return $"「{renderer.name}」にメッシュが設定されていません。メッシュを持つ SkinnedMeshRenderer か、MeshFilter 付きの MeshRenderer を指定してください。";
+                return L10n.Tr($"「{renderer.name}」にメッシュが設定されていません。メッシュを持つ SkinnedMeshRenderer か、MeshFilter 付きの MeshRenderer を指定してください。",
+                    $"\"{renderer.name}\" has no mesh. Choose a SkinnedMeshRenderer that has a mesh, or a MeshRenderer with a MeshFilter.");
             }
             if (ClothEditSession.CountTriangles(mesh) == 0)
             {
-                return $"「{renderer.name}」のメッシュには三角形（面）がありません。面のあるメッシュを指定してください。";
+                return L10n.Tr($"「{renderer.name}」のメッシュには三角形（面）がありません。面のあるメッシュを指定してください。",
+                    $"The mesh of \"{renderer.name}\" has no triangles (faces). Choose a mesh that has faces.");
             }
             return null;
         }
@@ -176,6 +385,10 @@ namespace GP02.EditorTools
         public bool TryStart(Renderer target, out string error)
         {
             _target = target;
+            // 見せ方は、編集を始めるたびに編集中の形（100%）から始める
+            _settings.ShowOriginal = false;
+            _settings.CompareBlend = 1f;
+            _holdOriginal = false;
             return StartSession(null, null, null, null, out error);
         }
 
@@ -197,7 +410,7 @@ namespace GP02.EditorTools
             if (reuseCloth != null && !ClothEditSession.IsClothCompatible(_target, reuseCloth)) reuseCloth = null;
             try
             {
-                if (ShowProgress) EditorUtility.DisplayProgressBar("GP02", "メッシュを粒子にしています…", 0.5f);
+                if (ShowProgress) EditorUtility.DisplayProgressBar("GP02", L10n.Tr("メッシュを粒子にしています…", "Converting the mesh to particles..."), 0.5f);
                 _session = new ClothEditSession(_target, reuseCloth);
             }
             catch (ArgumentException ex)
@@ -212,7 +425,8 @@ namespace GP02.EditorTools
             {
                 _session = null;
                 Debug.LogException(ex);
-                error = "編集を始められませんでした。メッシュの形が特殊な可能性があります。Console のエラーを確認してください。\n" + ex.Message;
+                error = L10n.Tr("編集を始められませんでした。メッシュの形が特殊な可能性があります。Console のエラーを確認してください。\n",
+                    "Could not start editing. The mesh may have an unusual shape. Check the errors in the Console.\n") + ex.Message;
                 Fail(error);
                 return false;
             }
@@ -243,6 +457,11 @@ namespace GP02.EditorTools
             // 作り直した直後の形が、Undo の戻り先の基準になる
             _state = ClothEditState.Create();
             _session.WriteState(_state);
+            _avatarRoot = ClothEditSymmetry.FindAvatarRoot(_target.transform);
+            _previewKeyValid = false;
+            _previewCount = 0;
+            _hoverMirrorValid = false;
+            ApplyPreviewBlend();
             LastError = "";
             LastStretch = 0f;
             HasHover = false;
@@ -266,7 +485,11 @@ namespace GP02.EditorTools
             _settling = false;
             _settleClockPending = false;
             _opOpen = false;
+            _relaxHeld.Clear();
             HasHover = false;
+            _previewCount = 0;
+            _previewKeyValid = false;
+            HasMirrorHover = false;
             if (_state != null)
             {
                 Undo.ClearUndo(_state);
@@ -302,7 +525,9 @@ namespace GP02.EditorTools
         public bool Hover(Ray ray)
         {
             if (!EnsureAlive()) return false;
-            return UpdateHover(ray);
+            bool hit = UpdateHover(ray);
+            if (hit && !_pointerDown) RefreshHoverExtras();
+            return hit;
         }
 
         bool UpdateHover(Ray ray)
@@ -314,15 +539,115 @@ namespace GP02.EditorTools
                 HoverPoint = point;
                 HoverNormal = normal;
             }
+            else
+            {
+                HasMirrorHover = false;
+            }
             return hit;
         }
 
+        // ---- ブラシを当てる前の表示 ----
+
+        /// <summary>範囲に入る粒子の数（<see cref="PreviewParticle"/> / <see cref="PreviewWeight"/> の数）。表示しないときは 0。</summary>
+        public int PreviewCount => _previewShown ? _previewCount : 0;
+
+        /// <summary>範囲に入る粒子の番号。位置は <c>Session.Solver.Positions</c> から読む（形が変わっても最新になる）。</summary>
+        public int PreviewParticle(int k) => _previewIndices[k];
+
+        /// <summary>範囲の中の重み（0〜1）。</summary>
+        public float PreviewWeight(int k) => _previewWeights[k];
+
+        /// <summary>対称編集の鏡像側のブラシの中心があるか。</summary>
+        public bool HasMirrorHover { get; private set; }
+
+        /// <summary>鏡像側のブラシの中心（ワールド）と、円を描く面の法線。</summary>
+        public Vector3 MirrorHoverPoint { get; private set; }
+        public Vector3 MirrorHoverNormal { get; private set; } = Vector3.up;
+
+        // 重みをつけて範囲を決める道具か（ピン留めは重みなしで、円の内側すべて）
+        static bool UsesWeights(ClothEditMode mode)
+        {
+            return mode == ClothEditMode.Grab || mode == ClothEditMode.Rotate || mode == ClothEditMode.Scale || mode == ClothEditMode.Relax;
+        }
+
+        /// <summary>範囲の表示を作り直すよう伝える（形や設定が変わったあとに呼ぶ）。</summary>
+        public void InvalidatePreview()
+        {
+            _previewKeyValid = false;
+        }
+
+        // マウスを乗せている間の表示（範囲の粒子と重み、鏡像側の円）を更新する。
+        // マウスの動きごとに呼ばれるので、一番近い粒子や設定が変わらない間は何もしない
+        void RefreshHoverExtras()
+        {
+            bool hasMirror = TryGetMirrorPlane(out MirrorPlane plane);
+            bool wantPreview = _settings.ShowBrushPreview && UsesWeights(Mode);
+            _previewShown = wantPreview;
+            if (!wantPreview && !hasMirror)
+            {
+                HasMirrorHover = false;
+                return;
+            }
+
+            int seed = _session.FindParticle(HoverPoint, _hoverTriangle);
+            if (seed < 0)
+            {
+                _previewCount = 0;
+                HasMirrorHover = false;
+                return;
+            }
+
+            // 鏡像の円
+            HasMirrorHover = false;
+            if (hasMirror)
+            {
+                if (!_hoverMirrorValid || _hoverMirrorSeed != seed || !SamePlane(_hoverMirrorPlane, plane))
+                {
+                    _hoverMirrorSeed = seed;
+                    _hoverMirrorPlane = plane;
+                    _hoverMirrorValid = true;
+                    int mirror = _session.Solver.FindMirrorParticle(seed, plane, BrushOptions.DefaultMirrorTolerance);
+                    _hoverMirrorParticle = mirror == seed ? -1 : mirror;
+                }
+                // 鏡像が範囲の2倍以内にあるとき（中央線の近く）は、同じ範囲なので別の円は出さない
+                if (_hoverMirrorParticle >= 0
+                    && System.Numerics.Vector3.Distance(_session.Solver.Positions[seed], _session.Solver.Positions[_hoverMirrorParticle]) > 2f * _brushRadius)
+                {
+                    System.Numerics.Vector3 offset = ClothEditSymmetry.ToNumerics(HoverPoint) - _session.Solver.Positions[seed];
+                    MirrorHoverPoint = ClothEditSymmetry.ToUnity(_session.Solver.Positions[_hoverMirrorParticle] + plane.ReflectDirection(offset));
+                    MirrorHoverNormal = ClothEditSymmetry.ToUnity(plane.ReflectDirection(ClothEditSymmetry.ToNumerics(HoverNormal)));
+                    HasMirrorHover = true;
+                }
+            }
+
+            if (!wantPreview) return;
+            FalloffCurve curve = _settings.GetFalloffCurve();
+            if (_previewKeyValid && _previewSeed == seed && _previewRadius == _brushRadius && _previewMode == _settings.DistanceMode
+                && ReferenceEquals(_previewCurve, curve) && _previewMirror == hasMirror && (!hasMirror || SamePlane(_previewPlane, plane)))
+            {
+                return;
+            }
+            _previewSeed = seed;
+            _previewRadius = _brushRadius;
+            _previewMode = _settings.DistanceMode;
+            _previewCurve = curve;
+            _previewMirror = hasMirror;
+            _previewPlane = plane;
+            _previewKeyValid = true;
+
+            BrushOptions options = BuildBrushOptions();
+            _previewCount = _session.CollectBrushRange(seed, options, _previewIndices, _previewWeights, MaxPreviewParticles);
+        }
+
+        static bool SamePlane(MirrorPlane a, MirrorPlane b) => a.Point == b.Point && a.Normal == b.Normal;
+
         /// <summary>
-        /// 押した。布に当たったら、モードに応じてつまむ・ピン留め・ピン解除を始め、true を返す（イベントを使ってよい）。
+        /// 押した。布に当たったら、道具に応じてつまむ・回す・拡大縮小・ピン留め・元に戻すブラシを始め、true を返す（イベントを使ってよい）。
         /// 当たらなければ false。
         /// </summary>
-        /// <param name="cameraForward">カメラの向き。つまんだ点を動かす平面（ヒット点を通り、カメラの向きに垂直）を決める</param>
-        public bool PointerDown(Ray ray, Vector3 cameraForward)
+        /// <param name="cameraForward">カメラの向き。つまんだ点を動かす平面（ヒット点を通り、カメラの向きに垂直）と、回す軸（視線）を決める</param>
+        /// <param name="screenX">マウスの横位置（ピクセル）。「回す」「拡大縮小」の横ドラッグの量を測る基準</param>
+        public bool PointerDown(Ray ray, Vector3 cameraForward, float screenX = 0f)
         {
             if (!EnsureAlive()) return false;
             if (!UpdateHover(ray)) return false;
@@ -332,64 +657,169 @@ namespace GP02.EditorTools
             _pointerDown = true;
             _strokeMode = Mode;
             _moved = false;
+            _dragOnLine = false;
+            _startScreenX = screenX;
+            _lastScreenX = screenX;
+            _effectivePixels = 0f;
+            _grabAngle = 0f;
+            _grabScale = 1f;
+            _previewShown = false;
             switch (_strokeMode)
             {
                 case ClothEditMode.Grab:
-                    if (_session.BeginGrab(HoverPoint, _brushRadius, _hoverTriangle))
+                case ClothEditMode.Rotate:
+                case ClothEditMode.Scale:
+                    if (_session.BeginGrab(HoverPoint, _brushRadius, _hoverTriangle, BuildBrushOptions()))
                     {
-                        BeginOperation("GP02 つまむ");
+                        BeginOperation(_strokeMode == ClothEditMode.Grab ? L10n.Tr("GP02 つまむ", "GP02 Grab")
+                            : _strokeMode == ClothEditMode.Rotate ? L10n.Tr("GP02 回す", "GP02 Rotate") : L10n.Tr("GP02 拡大縮小", "GP02 Scale"));
                         _dragPlane = new Plane(-cameraForward, HoverPoint);
                         _dragStartPoint = HoverPoint;
+                        _dragRawLast = HoverPoint;
+                        _dragTarget = HoverPoint;
                         _dragging = true;
+                        if (_strokeMode == ClothEditMode.Grab) ChooseDragLine();
+                        else _rotateAxis = _settings.RotateAxis == RotateAxisMode.SurfaceNormal ? HoverNormal : -cameraForward;
                     }
                     break;
                 case ClothEditMode.Pin:
                 case ClothEditMode.Unpin:
                     // 押してから離すまでのドラッグを、1回の操作にまとめる
-                    BeginOperation(_strokeMode == ClothEditMode.Pin ? "GP02 ピン留め" : "GP02 ピン解除");
+                    BeginOperation(_strokeMode == ClothEditMode.Pin ? L10n.Tr("GP02 ピン留め", "GP02 Pin") : L10n.Tr("GP02 ピン解除", "GP02 Unpin"));
                     PaintPins();
+                    break;
+                case ClothEditMode.Relax:
+                    BeginOperation(L10n.Tr("GP02 元に戻すブラシ", "GP02 Restore Brush"));
+                    RelaxHere();
                     break;
             }
             Notify();
             return true;
         }
 
+        // 「動かす向き」の設定に従って、つまんだ点を直線の上だけで動かすかを決める
+        void ChooseDragLine()
+        {
+            switch (_settings.MoveDirection)
+            {
+                case MoveDirection.SurfaceNormal:
+                    _dragOnLine = true;
+                    _dragLineDirection = HoverNormal;
+                    break;
+                case MoveDirection.AxisX:
+                case MoveDirection.AxisY:
+                case MoveDirection.AxisZ:
+                    _dragOnLine = ClothEditSymmetry.TryGetAxisDirection(_settings.MoveDirection, _settings.DirectionSpace, _avatarRoot, out _dragLineDirection);
+                    break;
+            }
+        }
+
         /// <summary>押したまま動かした。つまんでいれば動かし、ピン留めなら塗る。</summary>
         public void PointerDrag(Ray ray)
         {
-            if (!EnsureAlive() || !_pointerDown) return;
+            PointerDrag(ray, _lastScreenX, false, false);
+        }
 
-            if (_strokeMode == ClothEditMode.Grab)
+        /// <summary>
+        /// 押したまま動かした。つまんでいれば動かし（回す・拡大縮小は横の動きで）、ピン留めや元に戻すブラシなら塗る。
+        /// </summary>
+        /// <param name="screenX">マウスの横位置（ピクセル）</param>
+        /// <param name="precise">Shift：動きを <see cref="PrecisionFactor"/> 倍にする。途中で切り替えても、動かし先は飛ばない</param>
+        /// <param name="snap">Ctrl：回転を <see cref="SnapDegrees"/> の倍数にする</param>
+        public void PointerDrag(Ray ray, float screenX, bool precise, bool snap)
+        {
+            if (!EnsureAlive() || !_pointerDown) return;
+            float factor = precise ? PrecisionFactor : 1f;
+
+            switch (_strokeMode)
             {
-                if (!_dragging) return;
-                // つまんで動かしている間は、カーソルの下の点を調べない（形が変わるたびに境界箱を更新する手間を省く）
-                if (_dragPlane.Raycast(ray, out float distance))
-                {
-                    Vector3 point = ray.GetPoint(distance);
-                    _session.DragTo(point);
-                    if ((point - _dragStartPoint).sqrMagnitude > 1e-12f) _moved = true;
-                }
-            }
-            else
-            {
-                UpdateHover(ray);
-                if (_opOpen) PaintPins();
+                case ClothEditMode.Grab:
+                    if (!_dragging) return;
+                    // つまんで動かしている間は、カーソルの下の点を調べない（形が変わるたびに境界箱を更新する手間を省く）
+                    if (TryGetDragPoint(ray, out Vector3 raw))
+                    {
+                        // 増分に倍率をかけて足す。倍率を途中で変えても、今の動かし先から続きが始まる
+                        _dragTarget += (raw - _dragRawLast) * factor;
+                        _dragRawLast = raw;
+                        _session.DragTo(_dragTarget);
+                        if ((_dragTarget - _dragStartPoint).sqrMagnitude > 1e-12f) _moved = true;
+                    }
+                    break;
+
+                case ClothEditMode.Rotate:
+                case ClothEditMode.Scale:
+                    if (!_dragging) return;
+                    _effectivePixels += (screenX - _lastScreenX) * factor;
+                    _lastScreenX = screenX;
+                    if (_strokeMode == ClothEditMode.Rotate)
+                    {
+                        _grabAngle = AngleFromPixels(_effectivePixels, snap);
+                        _session.UpdateGrab(_dragStartPoint, Quaternion.AngleAxis(_grabAngle, _rotateAxis), 1f);
+                        if (Mathf.Abs(_grabAngle) > 1e-4f) _moved = true;
+                    }
+                    else
+                    {
+                        _grabScale = ScaleFromPixels(_effectivePixels);
+                        _session.UpdateGrab(_dragStartPoint, Quaternion.identity, _grabScale);
+                        if (Mathf.Abs(_grabScale - 1f) > 1e-4f) _moved = true;
+                    }
+                    break;
+
+                case ClothEditMode.Relax:
+                    _lastScreenX = screenX;
+                    UpdateHover(ray);
+                    if (_opOpen) RelaxHere();
+                    break;
+
+                default:
+                    _lastScreenX = screenX;
+                    UpdateHover(ray);
+                    if (_opOpen) PaintPins();
+                    break;
             }
             Notify();
         }
 
+        bool TryGetDragPoint(Ray ray, out Vector3 point)
+        {
+            if (_dragOnLine) return TryClosestPointOnLine(ray, _dragStartPoint, _dragLineDirection, out point);
+            if (_dragPlane.Raycast(ray, out float distance))
+            {
+                point = ray.GetPoint(distance);
+                return true;
+            }
+            point = Vector3.zero;
+            return false;
+        }
+
         /// <summary>
-        /// 離した。ピン留めなら確定する。つまんでいたなら仕上げに入る（以降の <see cref="Tick"/> で進む）。
+        /// 離した。ピン留めなら確定する。つまんでいた（回す・拡大縮小・元に戻すブラシも）なら仕上げに入る（以降の <see cref="Tick"/> で進む）。
         /// 動かさずに離したときは、何も記録せずに終わる。
         /// </summary>
         public void PointerUp()
         {
             if (!EnsureAlive() || !_pointerDown) return;
             _pointerDown = false;
+            InvalidatePreview();
 
-            if (_strokeMode != ClothEditMode.Grab)
+            if (_strokeMode == ClothEditMode.Pin || _strokeMode == ClothEditMode.Unpin)
             {
                 CommitOperation();
+            }
+            else if (_strokeMode == ClothEditMode.Relax)
+            {
+                // 近づけた分の布の伸びを、仕上げで直す。何も変わっていなければ、そのまま終わる
+                if (_opOpen && !_session.MatchesState(_state))
+                {
+                    // 戻した所は留めておく。周りの布の側が、戻した形に合わせる
+                    _session.HoldChangedParticles(_state, _relaxHeld);
+                    _settling = true;
+                    _settleClockPending = true;
+                }
+                else
+                {
+                    CommitOperation();
+                }
             }
             else if (_dragging)
             {
@@ -420,6 +850,7 @@ namespace GP02.EditorTools
             _dragging = false;
             _settling = false;
             _settleClockPending = false;
+            _relaxHeld.Clear();   // ピンの状態は、下で操作の前の形（_state）に戻すときに戻る
             if (_session.IsGrabbing) _session.Release();
             if (_opOpen)
             {
@@ -432,10 +863,19 @@ namespace GP02.EditorTools
             return true;
         }
 
+        // 対称がオンなら、鏡像の側にも同じように塗る
         void PaintPins()
         {
             if (!HasHover) return;
-            _session.PaintPins(HoverPoint, _brushRadius, _strokeMode == ClothEditMode.Pin, _hoverTriangle);
+            MirrorPlane? mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null;
+            _session.PaintPins(HoverPoint, _brushRadius, _strokeMode == ClothEditMode.Pin, _hoverTriangle, mirror);
+        }
+
+        void RelaxHere()
+        {
+            if (!HasHover) return;
+            MirrorPlane? mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null;
+            _session.RelaxAt(HoverPoint, _hoverTriangle, _brushRadius, _settings.RelaxStrength, _settings.GetFalloffCurve(), _settings.DistanceMode, mirror);
         }
 
         // ---- 時間の経過 ----
@@ -465,9 +905,11 @@ namespace GP02.EditorTools
             // つまみを外すのは仕上げが終わってから。先に外すと、つまんでいた範囲が戻ってしまう
             if (_settling && (LastStretch <= _settings.SettleTolerance || now - _settleStart > _settings.SettleTimeoutSeconds))
             {
+                _session.ReleaseHeld(_relaxHeld);
                 _session.Release();
                 _settling = false;
                 CommitOperation();
+                InvalidatePreview();
             }
             Notify();
         }
@@ -479,6 +921,7 @@ namespace GP02.EditorTools
             _dragging = false;
             _settling = false;
             _settleClockPending = false;
+            if (_session != null) _session.ReleaseHeld(_relaxHeld);
             if (_session != null && _session.IsGrabbing) _session.Release();
             CommitOperation();
         }
@@ -545,6 +988,7 @@ namespace GP02.EditorTools
             _settling = false;
             _settleClockPending = false;
             _opOpen = false;
+            _relaxHeld.Clear();
             if (_session.IsGrabbing) _session.Release();
 
             if (!_session.IsTargetUnchanged())
@@ -573,6 +1017,7 @@ namespace GP02.EditorTools
         void AfterShapeChanged()
         {
             LastStretch = _session.Solver.MeasureMaxStretch();
+            InvalidatePreview();
             Notify();
         }
 
@@ -583,7 +1028,7 @@ namespace GP02.EditorTools
         {
             if (!EnsureAlive()) return;
             FinishStroke();
-            BeginOperation("GP02 すべて元に戻す");
+            BeginOperation(L10n.Tr("GP02 すべて元に戻す", "GP02 Reset All"));
             _session.ResetAll();
             CommitOperation();
             AfterShapeChanged();
@@ -601,7 +1046,7 @@ namespace GP02.EditorTools
             message = null;
             if (!EnsureAlive())
             {
-                message = "編集中ではありません。「編集を開始」を押してから保存してください。";
+                message = L10n.Tr("編集中ではありません。「編集を開始」を押してから保存してください。", "You are not editing. Press \"Start Editing\" before saving.");
                 return false;
             }
 
@@ -609,12 +1054,13 @@ namespace GP02.EditorTools
             string name = shapeName == null ? "" : shapeName.Trim();
             if (name.Length == 0)
             {
-                message = "シェイプキーの名前が空です。名前を入れてから保存してください。";
+                message = L10n.Tr("シェイプキーの名前が空です。名前を入れてから保存してください。", "The shape key name is empty. Enter a name before saving.");
                 return false;
             }
             if (_session.SourceMesh.GetBlendShapeIndex(name) >= 0)
             {
-                message = $"同じ名前のシェイプキー「{name}」が既にあります。別の名前にして保存してください。";
+                message = L10n.Tr($"同じ名前のシェイプキー「{name}」が既にあります。別の名前にして保存してください。",
+                    $"A shape key named \"{name}\" already exists. Save it under a different name.");
                 return false;
             }
 
@@ -628,12 +1074,14 @@ namespace GP02.EditorTools
             catch (Exception ex)
             {
                 Debug.LogException(ex);
-                message = $"保存できませんでした。保存先「{SaveFolder}」に書き込めるか確認してください（フォルダが読み取り専用になっていないか、同名のファイルが開かれていないか）。\n{ex.Message}";
+                message = L10n.Tr($"保存できませんでした。保存先「{SaveFolder}」に書き込めるか確認してください（フォルダが読み取り専用になっていないか、同名のファイルが開かれていないか）。\n{ex.Message}",
+                    $"Could not save. Check that the save folder \"{SaveFolder}\" is writable (not read-only, and no file of the same name is open).\n{ex.Message}");
                 return false;
             }
 
             LastSavedMesh = saved;
-            message = $"シェイプキー「{name}」を {AssetDatabase.GetAssetPath(saved)} に保存しました。";
+            message = L10n.Tr($"シェイプキー「{name}」を {AssetDatabase.GetAssetPath(saved)} に保存しました。",
+                $"Saved the shape key \"{name}\" to {AssetDatabase.GetAssetPath(saved)}.");
             Debug.Log("[GP02] " + message);
             // 保存の Undo が、次の編集と同じグループにならないようにする
             Undo.IncrementCurrentGroup();
@@ -655,11 +1103,11 @@ namespace GP02.EditorTools
                 var pins = new List<Vector3>();
                 var pinIslands = new List<int>();
                 _session.GetPinnedPositions(pins, pinIslands);
-                if (!StartSession(pins, pinIslands, null, null, out string retryError)) message += "\n編集を続けられませんでした。「編集を開始」からやり直してください。\n" + retryError;
+                if (!StartSession(pins, pinIslands, null, null, out string retryError)) message += L10n.Tr("\n編集を続けられませんでした。「編集を開始」からやり直してください。\n", "\nCould not continue editing. Press \"Start Editing\" to start over.\n") + retryError;
                 return true;
             }
             double rebaseMs = timer.Elapsed.TotalMilliseconds;
-            if (!StartSession(null, null, rebased, pinParticles, out string error)) message += "\n編集を続けられませんでした。「編集を開始」からやり直してください。\n" + error;
+            if (!StartSession(null, null, rebased, pinParticles, out string error)) message += L10n.Tr("\n編集を続けられませんでした。「編集を開始」からやり直してください。\n", "\nCould not continue editing. Press \"Start Editing\" to start over.\n") + error;
             Debug.Log($"[GP02] 保存後の作り直し {timer.Elapsed.TotalMilliseconds:F0}ms（うち静止状態の更新 {rebaseMs:F0}ms）");
             return true;
         }

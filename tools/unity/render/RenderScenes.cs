@@ -1,8 +1,10 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using GP02.EditorTools;
 using UnityEditor;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 // クラウドで見た目を確かめるための描画（tools/unity/render.sh から -executeMethod で呼ぶ）。
 // テスト用の衣装を作り、編集前・編集中のプレビュー・保存したシェイプキーを画像にして、1枚に並べる。
@@ -11,9 +13,42 @@ public static class RenderScenes
     const int Size = 640;
     const string OutDir = "/out";
 
-    public static void EditAndSave()
+    // 全部まとめて描く（render.sh の既定）。Unity を起動し直さずに済むよう、1回の起動で続けて描く
+    public static void All()
+    {
+        Run(() =>
+        {
+            EditAndSaveScenes();
+            ClearScene();
+            ToolScenes();
+        });
+    }
+
+    public static void EditAndSave() => Run(EditAndSaveScenes);
+
+    public static void Tools() => Run(ToolScenes);
+
+    static void Run(Action action)
     {
         try
+        {
+            action();
+            EditorApplication.Exit(0);
+        }
+        catch (Exception e)
+        {
+            Debug.LogException(e);
+            EditorApplication.Exit(1);
+        }
+    }
+
+    static void ClearScene()
+    {
+        foreach (GameObject root in UnityEngine.SceneManagement.SceneManager.GetActiveScene().GetRootGameObjects()) Object.DestroyImmediate(root);
+    }
+
+    static void EditAndSaveScenes()
+    {
         {
             Camera camera = SetUpCamera(new Vector3(0.9f, 0.95f, -1.3f), new Vector3(0f, 0.7f, 0f));
             GameObject root = TestClothMenu.CreateInScene(null);
@@ -61,12 +96,165 @@ public static class RenderScenes
             }
 
             SaveGrid(shots, 2, "edit_and_save");
-            EditorApplication.Exit(0);
         }
-        catch (System.Exception e)
+    }
+
+    // ---- 道具（対称でつまむ・回す・拡大縮小・元に戻すブラシ）の結果 ----
+    // シーンビューの重ね描き（ブラシの円、範囲の点）は写らないので、形の結果だけを確かめる。
+    // 操作は ClothEditController に、画面と同じ呼び出し（PointerDown / PointerDrag / PointerUp / Tick）で行う
+
+    static void ToolScenes()
+    {
+        Vector3 cameraPosition = new Vector3(0f, 0.75f, -1.35f);
+        Camera camera = SetUpCamera(cameraPosition, new Vector3(0f, 0.55f, 0f));
+        GameObject root = TestClothMenu.CreateInScene(null);
+        var skirt = root.transform.Find("Skirt").GetComponent<SkinnedMeshRenderer>();
+        // テスト用の衣装は脚にポーズが付いていて左右対称でないので、対称編集を見るために、まっすぐ立った姿勢に戻す
+        foreach (Transform bone in skirt.bones) bone.localRotation = Quaternion.identity;
+        var shots = new List<Texture2D> { Shot(camera, "tool_0_before") };
+
+        // 1. 右の裾を外（+X）へ引く。対称がオンなので、左の裾も外（-X）へ出る
+        shots.Add(Scenario(camera, skirt, "tool_1_symmetric_pull",
+            new ClothEditSettings { SymmetryEnabled = true, MoveDirection = MoveDirection.AxisX, Falloff = FalloffPreset.Smooth },
+            c => PullSideways(c, camera, 0.12f)));
+
+        // 2. 同じ操作で対称がオフ（右だけが出る）
+        shots.Add(Scenario(camera, skirt, "tool_2_one_sided_pull",
+            new ClothEditSettings { SymmetryEnabled = false, MoveDirection = MoveDirection.AxisX, Falloff = FalloffPreset.Smooth },
+            c => PullSideways(c, camera, 0.12f)));
+
+        // 3. 前の裾寄りを、面の法線まわりに回す
+        shots.Add(Scenario(camera, skirt, "tool_3_rotate",
+            new ClothEditSettings { RotateAxis = RotateAxisMode.SurfaceNormal, Falloff = FalloffPreset.Smooth },
+            c =>
+            {
+                c.Mode = ClothEditMode.Rotate;
+                c.BrushRadius = 0.12f;
+                Ray ray = FrontRay(0f, 0.5f);
+                c.PointerDown(ray, camera.transform.forward, 100f);
+                for (int k = 1; k <= 20; k++)
+                {
+                    c.PointerDrag(ray, 100f + 6f * k, false, false);
+                    c.Tick(NextTime());
+                }
+                c.PointerUp();
+                Settle(c);
+                Debug.Log($"[GP02描画] 回す: {c.GrabAngle:F0}°");
+            }));
+
+        // 4. 前の裾寄りを、拡大する
+        shots.Add(Scenario(camera, skirt, "tool_4_scale",
+            new ClothEditSettings { Falloff = FalloffPreset.Smooth },
+            c =>
+            {
+                c.Mode = ClothEditMode.Scale;
+                c.BrushRadius = 0.12f;
+                Ray ray = FrontRay(0f, 0.5f);
+                c.PointerDown(ray, camera.transform.forward, 100f);
+                for (int k = 1; k <= 20; k++)
+                {
+                    c.PointerDrag(ray, 100f + 6f * k, false, false);
+                    c.Tick(NextTime());
+                }
+                c.PointerUp();
+                Settle(c);
+                Debug.Log($"[GP02描画] 拡大縮小: ×{c.GrabScale:F2}");
+            }));
+
+        // 5. 右の裾を引いたあと、引いて出た所を元に戻すブラシで戻す
+        shots.Add(Scenario(camera, skirt, "tool_5_relax",
+            new ClothEditSettings { MoveDirection = MoveDirection.AxisX, Falloff = FalloffPreset.Smooth, RelaxStrength = 0.6f },
+            c =>
+            {
+                PullSideways(c, camera, 0.12f);
+                // 引いて右へ一番出た所（カメラから見える位置）を塗る
+                float maxX = float.MinValue;
+                Vector3 outermost = Vector3.zero;
+                foreach (System.Numerics.Vector3 p in c.Session.Solver.Positions)
+                {
+                    if (p.X > maxX && p.Y > 0.45f && p.Y < 0.65f)
+                    {
+                        maxX = p.X;
+                        outermost = new Vector3(p.X, p.Y, p.Z);
+                    }
+                }
+                c.Mode = ClothEditMode.Relax;
+                c.BrushRadius = 0.12f;
+                var ray = new Ray(camera.transform.position, (outermost - camera.transform.position).normalized);
+                c.PointerDown(ray, camera.transform.forward, 100f);
+                for (int k = 0; k < 6; k++) c.PointerDrag(ray);
+                c.PointerUp();
+                Settle(c);
+            }));
+
+        SaveGrid(shots, 3, "tools");
+    }
+
+    static double _time = 100.0;
+
+    static double NextTime()
+    {
+        _time += 0.016;
+        return _time;
+    }
+
+    // 前（-Z 側）から、高さ y・横 x の位置を見るレイ
+    static Ray FrontRay(float x, float y) => new Ray(new Vector3(x, y, -1.5f), Vector3.forward);
+
+    // 右（+X 側）から、高さ y の位置を見るレイ
+    static Ray SideRay(float y) => new Ray(new Vector3(1.5f, y, 0f), Vector3.left);
+
+    // 右の裾を、X 軸に固定して外へ distance だけ引いて離し、仕上げる
+    static void PullSideways(ClothEditController c, Camera camera, float distance)
+    {
+        c.Mode = ClothEditMode.Grab;
+        c.BrushRadius = 0.07f;
+        if (!c.PointerDown(SideRay(0.55f), camera.transform.forward, 100f)) throw new InvalidOperationException("スカートに当たりませんでした。");
+        Vector3 hit = c.HoverPoint;
+        Vector3 cameraPosition = camera.transform.position;
+        for (int k = 1; k <= 20; k++)
         {
-            Debug.LogException(e);
-            EditorApplication.Exit(1);
+            Vector3 target = hit + new Vector3(distance * k / 20f, 0f, 0f);
+            c.PointerDrag(new Ray(cameraPosition, (target - cameraPosition).normalized));
+            c.Tick(NextTime());
+        }
+        c.PointerUp();
+        Settle(c);
+    }
+
+    static void Settle(ClothEditController c)
+    {
+        for (int i = 0; i < 400 && c.IsBusy; i++) c.Tick(NextTime());
+    }
+
+    // 新しい編集を始め（ウエストをピン留め）、act で操作して、結果を撮る
+    static Texture2D Scenario(Camera camera, SkinnedMeshRenderer skirt, string name, ClothEditSettings settings, Action<ClothEditController> act)
+    {
+        var controller = new ClothEditController(settings) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+        try
+        {
+            if (!controller.TryStart(skirt, out string error)) throw new InvalidOperationException(error);
+            ClothEditSession session = controller.Session;
+
+            // 実際の使い方に合わせて、ウエスト（一番上の段）をピン留めする
+            float top = float.MinValue;
+            foreach (Vector3 v in session.CurrentWorldVertices) top = Mathf.Max(top, v.y);
+            var waist = new List<Vector3>();
+            foreach (System.Numerics.Vector3 r in session.Cloth.Model.RestPositions)
+            {
+                if (r.Y > top - 1.5f * session.Cloth.Spacing) waist.Add(new Vector3(r.X, r.Y, r.Z));
+            }
+            session.PinNear(waist, 0.004f);
+
+            act(controller);
+            session.UpdateCurrentShape();
+            session.DrawPreview(camera);
+            Debug.Log($"[GP02描画] {name}: 最大の伸び {controller.LastStretch:P1} / ピン {session.PinnedCount} / 粒子 {session.ParticleCount}");
+            return Shot(camera, name);
+        }
+        finally
+        {
+            controller.Dispose();
         }
     }
 

@@ -40,6 +40,11 @@ namespace GP02.EditorTools
         readonly Mesh _previewMesh;
         readonly Material[] _materials;
         NVector3[] _stateWork;
+        float[] _stretchWork;                     // 粒子ごとの伸び（ヒートマップ用）
+        int _shapeVersion;                        // 形が変わるたびに増やす。伸びを測り直すかどうかの判断に使う
+        int _stretchVersion = -1;
+        float _previewBlend = 1f;
+        Vector3[] _blendWork;
         NVector3[] _deltaVerticesWork;
         NVector3[] _deltaNormalsWork;
         bool _previewDirty = true;
@@ -63,8 +68,10 @@ namespace GP02.EditorTools
         /// </summary>
         public static string DescribeAcceleration(IClothSolverKernel kernel)
         {
-            if (kernel == null) return "なし（Burst を入れると速くなります）";
-            return kernel.IsAccelerated ? $"{kernel.Name}（有効）" : $"{kernel.Name}（無効。Jobs > Burst > Enable Compilation を確認してください）";
+            if (kernel == null) return L10n.Tr("なし（Burst を入れると速くなります）", "None (install Burst to speed things up)");
+            return kernel.IsAccelerated
+                ? L10n.Tr($"{kernel.Name}（有効）", $"{kernel.Name} (enabled)")
+                : L10n.Tr($"{kernel.Name}（無効。Jobs > Burst > Enable Compilation を確認してください）", $"{kernel.Name} (disabled. Check Jobs > Burst > Enable Compilation)");
         }
 
         /// <summary>準備（粒子化）にかかった時間（ミリ秒）。隙間を測る時間は含まない（<see cref="RestGap"/> の Milliseconds）。</summary>
@@ -106,14 +113,14 @@ namespace GP02.EditorTools
             if (renderer == null) throw new ArgumentNullException(nameof(renderer));
             _renderer = renderer;
             _sourceMesh = GetMesh(renderer);
-            if (_sourceMesh == null) throw new ArgumentException("メッシュがありません。MeshFilter か SkinnedMeshRenderer のメッシュを確認してください。", nameof(renderer));
+            if (_sourceMesh == null) throw new ArgumentException(L10n.Tr("メッシュがありません。MeshFilter か SkinnedMeshRenderer のメッシュを確認してください。", "There is no mesh. Check the mesh of the MeshFilter or SkinnedMeshRenderer."), nameof(renderer));
             if (cloth != null && !IsClothCompatible(_sourceMesh, cloth))
             {
-                throw new ArgumentException("布がこのメッシュに合いません（頂点数か三角形数が違います）。", nameof(cloth));
+                throw new ArgumentException(L10n.Tr("布がこのメッシュに合いません（頂点数か三角形数が違います）。", "The cloth does not match this mesh (different vertex or triangle count)."), nameof(cloth));
             }
             if (cloth == null && CountTriangles(_sourceMesh) == 0)
             {
-                throw new ArgumentException($"「{_sourceMesh.name}」には三角形（面）がありません。面のあるメッシュを指定してください。", nameof(renderer));
+                throw new ArgumentException(L10n.Tr($"「{_sourceMesh.name}」には三角形（面）がありません。面のあるメッシュを指定してください。", $"\"{_sourceMesh.name}\" has no triangles (faces). Choose a mesh that has faces."), nameof(renderer));
             }
             _createdWeights = ReadBlendShapeWeights(renderer);
 
@@ -122,7 +129,7 @@ namespace GP02.EditorTools
             // エディタでは Read/Write が無効なメッシュも読めるが、読めない環境では空の配列が返る
             if (baseVertices.Length != _sourceMesh.vertexCount)
             {
-                throw new ArgumentException($"「{_sourceMesh.name}」の頂点を読み取れません。モデルの Import Settings で Read/Write を有効にしてください。", nameof(renderer));
+                throw new ArgumentException(L10n.Tr($"「{_sourceMesh.name}」の頂点を読み取れません。モデルの Import Settings で Read/Write を有効にしてください。", $"Cannot read the vertices of \"{_sourceMesh.name}\". Enable Read/Write in the model's Import Settings."), nameof(renderer));
             }
             if (renderer is SkinnedMeshRenderer skinned) ApplyBlendShapeWeights(skinned, _sourceMesh, baseVertices);
 
@@ -388,6 +395,7 @@ namespace GP02.EditorTools
                 _welded, _toposRest, _vertexToWelded);
             _previewDirty = true;
             _bvhDirty = true;
+            _shapeVersion++;
         }
 
         /// <summary>現在の形に対するレイキャスト（両面）。一番近い交差を返す。</summary>
@@ -462,6 +470,16 @@ namespace GP02.EditorTools
                 }
             }
             return best;
+        }
+
+        /// <summary>
+        /// 指定点に一番近い粒子の番号。当たった三角形と同じ部品（島）の粒子の中から選ぶ（重ね着で別の層を選ばないため）。
+        /// 見つからなければ -1。
+        /// </summary>
+        /// <param name="hitTriangle">Raycast が返した三角形の番号。負の値や範囲外なら、すべての粒子から選ぶ</param>
+        public int FindParticle(Vector3 worldPoint, int hitTriangle)
+        {
+            return FindNearestParticle(ClothEditSymmetry.ToNumerics(worldPoint), IslandOfMeshTriangle(hitTriangle));
         }
 
         /// <summary>
@@ -648,6 +666,202 @@ namespace GP02.EditorTools
                 changed++;
             }
             return changed;
+        }
+
+        /// <summary>
+        /// PaintPins の、対称版。mirror を渡すと、中心の粒子の鏡像（<see cref="ClothSolver.FindMirrorParticle"/>）の側も同じ半径で塗る。
+        /// 鏡像が見つからなければ、中心の側だけ。変えた粒子の数（両側の合計）を返す。
+        /// </summary>
+        public int PaintPins(Vector3 worldPoint, float radius, bool pinned, int hitTriangle, MirrorPlane? mirror)
+        {
+            int changed = PaintPins(worldPoint, radius, pinned, hitTriangle);
+            if (!mirror.HasValue || !TryFindMirror(worldPoint, hitTriangle, mirror.Value, out Vector3 mirrorPoint, out int mirrorParticle)) return changed;
+            return changed + PaintPinsInIsland(mirrorPoint, radius, pinned, _cloth.ParticleIsland[mirrorParticle]);
+        }
+
+        // 鏡像の側の中心。鏡像の粒子の今の位置に、中心からのずれ（カーソルと一番近い粒子の差）を鏡に映して足す
+        bool TryFindMirror(Vector3 worldPoint, int hitTriangle, MirrorPlane plane, out Vector3 mirrorPoint, out int mirrorParticle)
+        {
+            mirrorPoint = worldPoint;
+            mirrorParticle = -1;
+            int seed = FindParticle(worldPoint, hitTriangle);
+            if (seed < 0) return false;
+            int mirror = _solver.FindMirrorParticle(seed, plane, BrushOptions.DefaultMirrorTolerance);
+            if (mirror < 0 || mirror == seed) return false;
+            NVector3 offset = ClothEditSymmetry.ToNumerics(worldPoint) - _solver.Positions[seed];
+            mirrorPoint = ClothEditSymmetry.ToUnity(_solver.Positions[mirror] + plane.ReflectDirection(offset));
+            mirrorParticle = mirror;
+            return true;
+        }
+
+        int PaintPinsInIsland(Vector3 worldPoint, float radius, bool pinned, int island)
+        {
+            int[] particleIsland = _cloth.ParticleIsland;
+            var point = new NVector3(worldPoint.x, worldPoint.y, worldPoint.z);
+            float radiusSq = radius * radius;
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            int changed = 0;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (particleIsland[i] != island) continue;
+                if (NVector3.DistanceSquared(positions[i], point) > radiusSq) continue;
+                if (_solver.IsPinned(i) == pinned) continue;
+                _solver.SetPinned(i, pinned);
+                _pinnedCount += pinned ? 1 : -1;
+                changed++;
+            }
+            return changed;
+        }
+
+        /// <summary>
+        /// state（操作を始める前の形）と比べて位置が変わった粒子のうち、ピン留めでないものを一時的にピン留めし、番号を held に入れる。
+        /// 元に戻すブラシのあとの仕上げで、戻した所をそのまま留めて、周りの布の側を合わせるため（そうしないと、戻した所が周りの形に引き戻される）。
+        /// 仕上げが終わったら <see cref="ReleaseHeld"/> で外す。変えた粒子の数を返す。
+        /// </summary>
+        public int HoldChangedParticles(ClothEditState state, List<int> held)
+        {
+            held.Clear();
+            int count = ParticleCount;
+            if (state == null || state.Positions == null || state.Positions.Length != count * 3) return 0;
+
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            float[] stored = state.Positions;
+            for (int i = 0; i < count; i++)
+            {
+                if (_solver.IsPinned(i)) continue;
+                if (stored[i * 3] == positions[i].X && stored[i * 3 + 1] == positions[i].Y && stored[i * 3 + 2] == positions[i].Z) continue;
+                _solver.SetPinned(i, true);
+                _pinnedCount++;
+                held.Add(i);
+            }
+            return held.Count;
+        }
+
+        /// <summary><see cref="HoldChangedParticles"/> で一時的に留めた粒子のピンを外す。</summary>
+        public void ReleaseHeld(List<int> held)
+        {
+            for (int k = 0; k < held.Count; k++)
+            {
+                int i = held[k];
+                if ((uint)i >= (uint)ParticleCount || !_solver.IsPinned(i)) continue;
+                _solver.SetPinned(i, false);
+                _pinnedCount--;
+            }
+            held.Clear();
+        }
+
+        /// <summary>
+        /// 元に戻すブラシ。指定点の近くの粒子を、元の位置へ strength × 重み だけ近づける（ピン留めの粒子は動かさない）。
+        /// mirror を渡すと、鏡像の側にも同じように適用する。形が変わるので <see cref="UpdateCurrentShape"/> まで行う。
+        /// 変えた粒子の数（両側の合計）を返す。
+        /// </summary>
+        /// <param name="hitTriangle">Raycast が返した三角形の番号（重ね着で、当たった布だけを対象にする）</param>
+        public int RelaxAt(Vector3 worldPoint, int hitTriangle, float radius, float strength, FalloffCurve curve, BrushDistanceMode mode, MirrorPlane? mirror)
+        {
+            int seed = FindParticle(worldPoint, hitTriangle);
+            if (seed < 0) return 0;
+            int changed = _solver.RelaxTowardRest(seed, radius, strength, curve, mode);
+            if (mirror.HasValue)
+            {
+                int other = _solver.FindMirrorParticle(seed, mirror.Value, BrushOptions.DefaultMirrorTolerance);
+                if (other >= 0 && other != seed) changed += _solver.RelaxTowardRest(other, radius, strength, curve, mode);
+            }
+            if (changed > 0) UpdateCurrentShape();
+            return changed;
+        }
+
+        /// <summary>
+        /// ブラシを当てる前の表示用に、範囲に入る粒子と重みを調べる（つまんだ状態は変えない）。
+        /// options の半径・カーブ・距離の測り方を使い、mirror があれば鏡像の側の範囲も続けて入れる
+        /// （中央線の近くで、鏡像が範囲の2倍以内にあるときは、同じ範囲なので入れない）。
+        /// 出力は呼び出し側の配列で、毎回確保しない。範囲が maxCount より多いときは間引く。
+        /// </summary>
+        /// <param name="seed">範囲の中心の粒子（<see cref="FindParticle"/> で探す）</param>
+        /// <returns>書き込んだ数（両側の合計）</returns>
+        public int CollectBrushRange(int seed, BrushOptions options, int[] indices, float[] weights, int maxCount)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            if ((uint)seed >= (uint)ParticleCount) return 0;
+
+            FalloffCurve curve = options.Falloff ?? FalloffCurve.Constant;
+            int mirror = -1;
+            if (options.Mirror.HasValue)
+            {
+                mirror = _solver.FindMirrorParticle(seed, options.Mirror.Value, options.MirrorTolerance);
+                if (mirror >= 0 && NVector3.Distance(_solver.Positions[seed], _solver.Positions[mirror]) <= 2f * options.Radius) mirror = -1;
+            }
+
+            int first = _solver.CollectBrushRange(seed, options.Radius, curve, options.DistanceMode, indices, weights, mirror >= 0 ? maxCount / 2 : maxCount);
+            if (mirror < 0 || mirror == seed) return first;
+            return first + _solver.CollectBrushRange(mirror, options.Radius, curve, options.DistanceMode, indices, weights, maxCount - first, first);
+        }
+
+        /// <summary>
+        /// 伸びのヒートマップ用に、粒子の位置と伸び（0.1 で 10%）を最大 maxCount 個、positions と stretches に入れる。
+        /// 伸びている粒子（hotThreshold 以上）を優先し、残りは一定間隔で間引いた粒子で埋める。
+        /// 伸びは形が変わったとき（<see cref="UpdateCurrentShape"/> のあと）にだけ測り直す。
+        /// </summary>
+        public void GetStretchDots(List<Vector3> positions, List<float> stretches, int maxCount, float hotThreshold = 0.02f)
+        {
+            positions.Clear();
+            stretches.Clear();
+            int n = ParticleCount;
+            if (maxCount <= 0 || n == 0) return;
+
+            if (_stretchWork == null) _stretchWork = new float[n];
+            if (_stretchVersion != _shapeVersion)
+            {
+                _solver.MeasureParticleStretch(_stretchWork);
+                _stretchVersion = _shapeVersion;
+            }
+
+            int hot = 0;
+            for (int i = 0; i < n; i++)
+            {
+                if (_stretchWork[i] >= hotThreshold) hot++;
+            }
+            int hotKept = Math.Min(hot, maxCount * 3 / 4);
+            int hotStride = hotKept > 0 ? (hot + hotKept - 1) / hotKept : 1;
+            int coldBudget = Math.Max(1, maxCount - hotKept);
+            int cold = n - hot;
+            int coldStride = cold <= coldBudget ? 1 : (cold + coldBudget - 1) / coldBudget;
+
+            ReadOnlySpan<NVector3> p = _solver.Positions;
+            int hotSeen = 0, coldSeen = 0;
+            for (int i = 0; i < n && positions.Count < maxCount; i++)
+            {
+                bool isHot = _stretchWork[i] >= hotThreshold;
+                if (isHot ? hotSeen++ % hotStride != 0 : coldSeen++ % coldStride != 0) continue;
+                positions.Add(new Vector3(p[i].X, p[i].Y, p[i].Z));
+                stretches.Add(_stretchWork[i]);
+            }
+        }
+
+        /// <summary>
+        /// 見せる形の割合（0 で編集前の形、1 で編集中の形）。シーンに描く形だけが変わり、編集そのものには影響しない。
+        /// </summary>
+        public float PreviewBlend
+        {
+            get => _previewBlend;
+            set
+            {
+                value = Mathf.Clamp01(value);
+                if (value == _previewBlend) return;
+                _previewBlend = value;
+                _previewDirty = true;
+            }
+        }
+
+        /// <summary>
+        /// シーンに描く頂点（ワールド）。<see cref="PreviewBlend"/> が 1 なら <see cref="CurrentWorldVertices"/> そのもの。
+        /// それ以外は編集前の形との間を補った配列（呼ぶたびに同じ配列を使い回す）。
+        /// </summary>
+        public Vector3[] GetPreviewVertices()
+        {
+            if (_previewBlend >= 1f) return CurrentWorldVertices;
+            if (_blendWork == null) _blendWork = new Vector3[CurrentWorldVertices.Length];
+            for (int v = 0; v < _blendWork.Length; v++) _blendWork[v] = Vector3.Lerp(_baseWorld[v], CurrentWorldVertices[v], _previewBlend);
+            return _blendWork;
         }
 
         /// <summary>ピン留めされた粒子の位置（ワールド）を result に入れる。maxCount を超えるときは間引く。</summary>
@@ -863,7 +1077,7 @@ namespace GP02.EditorTools
         /// </summary>
         public Mesh ApplyToScene(string shapeName, string folder = "Assets/GP02/Meshes")
         {
-            if (!IsTargetAlive) throw new InvalidOperationException("対象のレンダラーがありません。");
+            if (!IsTargetAlive) throw new InvalidOperationException(L10n.Tr("対象のレンダラーがありません。", "The target renderer is missing."));
             folder = folder.TrimEnd('/');
 
             Mesh result;
@@ -945,7 +1159,7 @@ namespace GP02.EditorTools
             if (_disposed || !IsTargetAlive) return;
             if (_previewDirty)
             {
-                _previewMesh.vertices = CurrentWorldVertices;
+                _previewMesh.vertices = GetPreviewVertices();
                 _previewMesh.RecalculateNormals();
                 _previewMesh.RecalculateBounds();
                 _previewDirty = false;

@@ -598,6 +598,93 @@ namespace GP02.Core
             return count;
         }
 
+        /// <summary>
+        /// 中心の粒子にブラシを当てたとき、範囲に入る粒子と重みを調べる。つまんだ状態は変えない。
+        /// 範囲と重みは <see cref="Grab(int, BrushMotion, BrushOptions)"/> と同じ決め方（対称の鏡像側は含めない）。
+        /// ブラシを当てる前の表示用。距離の計算に使う作業場所は使い回し、出力は呼び出し側の配列に入れる。
+        /// 範囲が maxCount より多いときは、一定の間隔で間引いて maxCount 以下にする（中心は必ず含める）。
+        /// </summary>
+        /// <param name="indices">範囲の粒子の番号（出力）</param>
+        /// <param name="weights">範囲の中の重み（出力、indices と同じ順）</param>
+        /// <param name="maxCount">書き込む数の上限</param>
+        /// <param name="offset">配列のどこから書き込むか（鏡像側の範囲を続けて入れるため）</param>
+        /// <returns>書き込んだ数</returns>
+        public int CollectBrushRange(int particle, float radius, FalloffCurve curve, BrushDistanceMode mode, int[] indices, float[] weights, int maxCount, int offset = 0)
+        {
+            if ((uint)particle >= (uint)_positions.Length) throw new ArgumentOutOfRangeException(nameof(particle));
+            if (!(radius >= 0f) || float.IsInfinity(radius)) throw new ArgumentOutOfRangeException(nameof(radius));
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (weights == null) throw new ArgumentNullException(nameof(weights));
+            if (curve == null) curve = FalloffCurve.Constant;
+            if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
+            maxCount = Math.Min(maxCount, Math.Min(indices.Length, weights.Length) - offset);
+            if (maxCount <= 0) return 0;
+
+            int n = _positions.Length;
+            if (_workDistance == null) _workDistance = new float[n];
+            float[] distance = _workDistance;
+            if (mode == BrushDistanceMode.Surface)
+            {
+                _seedWork[0] = particle;
+                _graph.ShortestDistances(_seedWork, 1, distance, null, radius);
+            }
+            else
+            {
+                Vector3 a = _worldPositions[particle];
+                for (int i = 0; i < n; i++) distance[i] = MathF.Sqrt(DistanceSquared(_worldPositions[i].X, _worldPositions[i].Y, _worldPositions[i].Z, a));
+            }
+            distance[particle] = 0f;
+
+            int total = 0;
+            for (int i = 0; i < n; i++)
+            {
+                float d = distance[i];
+                if (!(d <= radius)) continue;
+                if (d <= 0f || curve.Evaluate(d / radius) > 0f) total++;
+            }
+
+            int stride = total <= maxCount ? 1 : (total + maxCount - 1) / maxCount;
+            int written = 0, seen = 0;
+            for (int i = 0; i < n && written < maxCount; i++)
+            {
+                float d = distance[i];
+                if (!(d <= radius)) continue;
+                float w = d <= 0f ? 1f : curve.Evaluate(d / radius);
+                if (!(w > 0f)) continue;
+                if (i != particle && seen++ % stride != 0) continue;
+                indices[offset + written] = i;
+                weights[offset + written] = w;
+                written++;
+            }
+            return written;
+        }
+
+        /// <summary>
+        /// 粒子ごとの伸び（0.1 で 10%）を result に入れる。その粒子につながる伸びの制約のうち、最も伸びているもの。縮んでいる分は 0。
+        /// 伸びの見える化（ヒートマップ）用。制約の数に比例するので、形が変わったときだけ呼ぶこと。
+        /// </summary>
+        /// <param name="result">粒子数以上の長さの配列</param>
+        public void MeasureParticleStretch(float[] result)
+        {
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            int n = _worldPositions.Length;
+            if (result.Length < n) throw new ArgumentException("配列が粒子数より短いです。", nameof(result));
+            Array.Clear(result, 0, n);
+
+            int[] pairs = _model.StretchPairs;
+            float[] rest = _model.StretchRestLengths;
+            for (int k = 0; k < rest.Length; k++)
+            {
+                int i = pairs[2 * k], j = pairs[2 * k + 1];
+                float dx = _worldPositions[i].X - _worldPositions[j].X;
+                float dy = _worldPositions[i].Y - _worldPositions[j].Y;
+                float dz = _worldPositions[i].Z - _worldPositions[j].Z;
+                float stretch = MathF.Sqrt(dx * dx + dy * dy + dz * dz) / rest[k] - 1f;
+                if (stretch > result[i]) result[i] = stretch;
+                if (stretch > result[j]) result[j] = stretch;
+            }
+        }
+
         public void Release()
         {
             _grabbed = -1;

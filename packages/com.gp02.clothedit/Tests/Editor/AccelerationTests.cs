@@ -14,6 +14,20 @@ namespace GP02.Tests
         [Test]
         public void DescribeAcceleration_ExplainsEachState()
         {
+            UiLanguage saved = L10n.Language;
+            L10n.Language = UiLanguage.Japanese;   // 文言を確かめるので、日本語に固定する
+            try
+            {
+                CheckDescribeAcceleration();
+            }
+            finally
+            {
+                L10n.Language = saved;
+            }
+        }
+
+        static void CheckDescribeAcceleration()
+        {
             Assert.That(ClothEditSession.DescribeAcceleration(null), Does.Contain("なし"));
             Assert.That(ClothEditSession.DescribeAcceleration(new FakeKernel("Fast", true)), Is.EqualTo("Fast（有効）"));
             Assert.That(ClothEditSession.DescribeAcceleration(new FakeKernel("Fast", false)), Does.StartWith("Fast（無効"));

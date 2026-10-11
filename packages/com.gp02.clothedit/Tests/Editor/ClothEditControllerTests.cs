@@ -5,6 +5,7 @@ using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
 using NVector3 = System.Numerics.Vector3;
+using L10n = GP02.EditorTools.L10n;
 using Object = UnityEngine.Object;
 
 namespace GP02.Tests
@@ -27,10 +28,20 @@ namespace GP02.Tests
         readonly List<Object> _clearUndoOnly = new List<Object>();
         readonly List<ClothEditController> _controllers = new List<ClothEditController>();
         double _time = 100.0;
+        UiLanguage _savedLanguage;
+
+        // 文言を確かめるテストがあるので、言語は日本語に固定する（利用者が English にしていても通るように）
+        [SetUp]
+        public void FixLanguage()
+        {
+            _savedLanguage = L10n.Language;
+            L10n.Language = UiLanguage.Japanese;
+        }
 
         [TearDown]
         public void TearDown()
         {
+            L10n.Language = _savedLanguage;
             foreach (ClothEditController c in _controllers) c.Dispose();
             _controllers.Clear();
             foreach (Object o in _clearUndoOnly)
