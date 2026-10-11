@@ -90,6 +90,38 @@ namespace GP02.Core
             return new ClothHierarchy(built.ToArray());
         }
 
+        /// <summary>
+        /// 粒子の位置が変わったあとの階層を返す（元は変更しない）。
+        /// 段の構成（メンバー・ペア・結びつけ）はそのまま使い、位置から決まる RestLengths だけを計算し直す。
+        /// </summary>
+        internal ClothHierarchy WithRestPositions(Vector3[] particles)
+        {
+            var levels = new Level[Levels.Length];
+            for (int l = 0; l < levels.Length; l++)
+            {
+                Level source = Levels[l];
+                int[] pairs = source.StretchPairs;
+                var restLengths = new float[source.RestLengths.Length];
+                for (int k = 0; k < restLengths.Length; k++)
+                {
+                    Vector3 a = particles[pairs[2 * k]], b = particles[pairs[2 * k + 1]];
+                    float dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+                    restLengths[k] = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+                }
+                levels[l] = new Level
+                {
+                    Spacing = source.Spacing,
+                    Members = source.Members,
+                    StretchPairs = source.StretchPairs,
+                    RestLengths = restLengths,
+                    BindOffsets = source.BindOffsets,
+                    BindParents = source.BindParents,
+                    BindWeights = source.BindWeights,
+                };
+            }
+            return new ClothHierarchy(levels);
+        }
+
         static int[] AllIndices(int count)
         {
             var all = new int[count];

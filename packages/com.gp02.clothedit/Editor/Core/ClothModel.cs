@@ -92,7 +92,10 @@ namespace GP02.Core
             var lengths = new float[pairs.Length / 2];
             for (int k = 0; k < lengths.Length; k++)
             {
-                lengths[k] = Vector3.Distance(positions[pairs[2 * k]], positions[pairs[2 * k + 1]]);
+                // Rebase でも呼ばれるので、Mono で遅い Vector3 の関数は使わず成分ごとに計算する
+                Vector3 a = positions[pairs[2 * k]], b = positions[pairs[2 * k + 1]];
+                float dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+                lengths[k] = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
             }
             return lengths;
         }

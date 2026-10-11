@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using GP02.Core;
 using UnityEditor;
 using UnityEngine;
 
@@ -101,13 +102,17 @@ namespace GP02.EditorTools
 
         /// <param name="carriedPins">引き継ぐピンのワールド位置（保存後や Undo による作り直しのとき）</param>
         /// <param name="carriedPinIslands">引き継ぐピンごとの部品（島）の番号。重ね着で元の層だけを留めるため</param>
-        void StartEdit(IReadOnlyList<Vector3> carriedPins = null, IReadOnlyList<int> carriedPinIslands = null)
+        /// <param name="reuseCloth">粒子を置き直さずに使う布（保存後の <see cref="ParticleCloth.Rebase"/> の結果）。メッシュに合わなければ使わない</param>
+        /// <param name="carriedPinParticles">reuseCloth を使うときに引き継ぐピンの粒子の番号（番号が同じなので位置で探さない）</param>
+        void StartEdit(IReadOnlyList<Vector3> carriedPins = null, IReadOnlyList<int> carriedPinIslands = null,
+            ParticleCloth reuseCloth = null, IReadOnlyList<int> carriedPinParticles = null)
         {
             EndEdit();
+            if (reuseCloth != null && !ClothEditSession.IsClothCompatible(_target, reuseCloth)) reuseCloth = null;
             try
             {
                 EditorUtility.DisplayProgressBar("GP02", "メッシュを粒子にしています…", 0.5f);
-                _session = new ClothEditSession(_target);
+                _session = new ClothEditSession(_target, reuseCloth);
             }
             catch (Exception ex)
             {
@@ -122,7 +127,15 @@ namespace GP02.EditorTools
             }
 
             _session.Solver.InfluenceRadius = _influenceCentimeters * 0.01f;
-            if (carriedPins != null && carriedPins.Count > 0)
+            if (reuseCloth != null)
+            {
+                if (carriedPinParticles != null && carriedPinParticles.Count > 0)
+                {
+                    int pinned = _session.PinParticles(carriedPinParticles);
+                    Debug.Log($"[GP02] ピン {pinned} 粒子を引き継ぎました。");
+                }
+            }
+            else if (carriedPins != null && carriedPins.Count > 0)
             {
                 int pinned = _session.PinNear(carriedPins, _session.Cloth.Spacing * 0.75f, carriedPinIslands);
                 Debug.Log($"[GP02] ピン {carriedPins.Count} 点から {pinned} 粒子を引き継ぎました。");
@@ -349,11 +362,29 @@ namespace GP02.EditorTools
             EditorGUIUtility.PingObject(saved);
             // 保存の Undo（メッシュの差し替えなど）が、次の編集と同じグループにならないようにする
             Undo.IncrementCurrentGroup();
-            // シェイプキー込みの形が新しい基準になるので、作り直す。ピンは位置で引き継ぐ
-            var pins = new List<Vector3>();
-            var pinIslands = new List<int>();
-            _session.GetPinnedPositions(pins, pinIslands);
-            StartEdit(pins, pinIslands);
+            // シェイプキー込みの形（編集中の形そのもの）が新しい基準になる。
+            // 粒子は置き直さず、今の位置を静止状態にした布で作り直す。ピンは粒子の番号が同じなので番号で引き継ぐ
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            ParticleCloth rebased;
+            var pinParticles = new List<int>();
+            try
+            {
+                rebased = _session.Cloth.Rebase(_session.Solver.Positions);
+                _session.GetPinnedParticles(pinParticles);
+            }
+            catch (Exception ex)
+            {
+                // 想定外の失敗は、普通の作り直し（粒子の置き直し）に戻す
+                Debug.LogException(ex);
+                var pins = new List<Vector3>();
+                var pinIslands = new List<int>();
+                _session.GetPinnedPositions(pins, pinIslands);
+                StartEdit(pins, pinIslands);
+                return;
+            }
+            double rebaseMs = timer.Elapsed.TotalMilliseconds;
+            StartEdit(null, null, rebased, pinParticles);
+            Debug.Log($"[GP02] 保存後の作り直し {timer.Elapsed.TotalMilliseconds:F0}ms（うち静止状態の更新 {rebaseMs:F0}ms）");
         }
 
         void OnUpdate()

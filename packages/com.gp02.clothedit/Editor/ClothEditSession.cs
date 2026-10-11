@@ -71,31 +71,57 @@ namespace GP02.EditorTools
         /// <summary>対象のレンダラーが消されていないか。</summary>
         public bool IsTargetAlive => _renderer != null;
 
-        public ClothEditSession(Renderer renderer)
+        public ClothEditSession(Renderer renderer) : this(renderer, null)
+        {
+        }
+
+        /// <summary>
+        /// 既存の布を使ってセッションを作る。<see cref="ParticleCloth.Build"/>（粒子の置き直し）を呼ばないので速い。
+        /// 保存の直後に、<see cref="ParticleCloth.Rebase"/> で作った布を渡して編集を続けるのに使う。
+        /// 頂点ごとの行列と基準のワールド頂点は、今までどおりレンダラーから計算する。
+        /// </summary>
+        /// <param name="cloth">このメッシュに合う布。null なら <see cref="ParticleCloth.Build"/> で作る</param>
+        /// <exception cref="ArgumentException">布がこのメッシュに合わない（頂点数・三角形数が違う）とき</exception>
+        public ClothEditSession(Renderer renderer, ParticleCloth cloth)
         {
             if (renderer == null) throw new ArgumentNullException(nameof(renderer));
             _renderer = renderer;
             _sourceMesh = GetMesh(renderer);
             if (_sourceMesh == null) throw new ArgumentException("メッシュがありません。MeshFilter か SkinnedMeshRenderer のメッシュを確認してください。", nameof(renderer));
+            if (cloth != null && !IsClothCompatible(_sourceMesh, cloth))
+            {
+                throw new ArgumentException("布がこのメッシュに合いません（頂点数か三角形数が違います）。", nameof(cloth));
+            }
             _createdWeights = ReadBlendShapeWeights(renderer);
 
             var timer = Stopwatch.StartNew();
             Vector3[] baseVertices = _sourceMesh.vertices;
             if (renderer is SkinnedMeshRenderer skinned) ApplyBlendShapeWeights(skinned, _sourceMesh, baseVertices);
-            // 全サブメッシュの三角形を順に並べたもの
-            int[] triangles = _sourceMesh.triangles;
 
             _vertexMatrices = ComputeVertexMatrices(renderer, _sourceMesh);
             _baseWorld = new Vector3[baseVertices.Length];
             _inverseMatrices = new Matrix4x4[baseVertices.Length];
             _inverseScale = new float[baseVertices.Length];
+            // MeshFilter はシェイプキーを描かないので、保存した形がレンダラーからは分からない。
+            // 渡された布の静止状態（保存した形）を基準にして、編集中の形を保存前と同じにする。
+            // まとめた頂点どうしの位置の差は許容距離（1e-6）以下
+            bool baseFromCloth = cloth != null && !(renderer is SkinnedMeshRenderer);
             for (int v = 0; v < baseVertices.Length; v++)
             {
-                _baseWorld[v] = _vertexMatrices[v].MultiplyPoint3x4(baseVertices[v]);
+                if (baseFromCloth)
+                {
+                    NVector3 p = cloth.Topology.Positions[cloth.Topology.VertexToWelded[v]];
+                    _baseWorld[v] = new Vector3(p.X, p.Y, p.Z);
+                }
+                else
+                {
+                    _baseWorld[v] = _vertexMatrices[v].MultiplyPoint3x4(baseVertices[v]);
+                }
                 _inverseScale[v] = Invert3x3(_vertexMatrices[v], out _inverseMatrices[v]);
             }
 
-            _cloth = ParticleCloth.Build(MeshBridge.ToNumerics(_baseWorld, Vector3.one), triangles);
+            // 全サブメッシュの三角形を順に並べたもの。布を渡されたときは使わないので読まない
+            _cloth = cloth ?? ParticleCloth.Build(MeshBridge.ToNumerics(_baseWorld, Vector3.one), _sourceMesh.triangles);
             _solver = _cloth.CreateSolver();
             _toposRest = _cloth.Topology.Positions;
             _welded = (NVector3[])_toposRest.Clone();
@@ -114,6 +140,24 @@ namespace GP02.EditorTools
             _materials = renderer.sharedMaterials;
 
             renderer.forceRenderingOff = true;
+        }
+
+        /// <summary>
+        /// 布がこのメッシュに合うか。まとめる前の頂点数と、三角形の数（全サブメッシュの合計）が一致すること。
+        /// </summary>
+        public static bool IsClothCompatible(Mesh mesh, ParticleCloth cloth)
+        {
+            if (mesh == null || cloth == null) return false;
+            long indexCount = 0;
+            for (int sub = 0; sub < mesh.subMeshCount; sub++) indexCount += mesh.GetIndexCount(sub);
+            return cloth.Topology.VertexToWelded.Length == mesh.vertexCount
+                && cloth.Topology.SourceToTriangle.Length == indexCount / 3;
+        }
+
+        /// <summary>レンダラーのメッシュに、布が合うか（<see cref="IsClothCompatible(Mesh, ParticleCloth)"/>）。</summary>
+        public static bool IsClothCompatible(Renderer renderer, ParticleCloth cloth)
+        {
+            return renderer != null && IsClothCompatible(GetMesh(renderer), cloth);
         }
 
         static float[] ReadBlendShapeWeights(Renderer renderer)
@@ -554,6 +598,37 @@ namespace GP02.EditorTools
                 result.Add(new Vector3(positions[i].X, positions[i].Y, positions[i].Z));
                 islands?.Add(particleIsland[i]);
             }
+        }
+
+        /// <summary>ピン留めされた粒子の番号を result に入れる。</summary>
+        public void GetPinnedParticles(List<int> result)
+        {
+            result.Clear();
+            if (_pinnedCount == 0) return;
+            for (int i = 0; i < ParticleCount; i++)
+            {
+                if (_solver.IsPinned(i)) result.Add(i);
+            }
+        }
+
+        /// <summary>
+        /// 粒子の番号でピン留めする。<see cref="ParticleCloth.Rebase"/> した布のように、粒子の番号が同じセッションへピンを引き継ぐ用。
+        /// 新しくピン留めした粒子の数を返す。範囲外の番号は無視する。
+        /// </summary>
+        public int PinParticles(IReadOnlyList<int> particles)
+        {
+            if (particles == null) return 0;
+            int added = 0;
+            int count = ParticleCount;
+            for (int k = 0; k < particles.Count; k++)
+            {
+                int i = particles[k];
+                if ((uint)i >= (uint)count || _solver.IsPinned(i)) continue;
+                _solver.SetPinned(i, true);
+                _pinnedCount++;
+                added++;
+            }
+            return added;
         }
 
         /// <summary>

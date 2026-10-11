@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using GP02.EditorTools;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 using Debug = UnityEngine.Debug;
 using Object = UnityEngine.Object;
@@ -76,12 +77,11 @@ namespace GP02.Tests
             return bestDistance < float.MaxValue;
         }
 
-        [Test]
-        public void Skirt80k_MeasureSessionAndEditingTimes()
+        // 半径 15〜40cm、長さ 50cm の円錐台を、少しずつ大きくして3枚重ねたもの（約8万頂点）
+        Mesh CreateSkirtMesh()
         {
             var vertices = new List<Vector3>();
             var triangles = new List<int>();
-            // 半径 15〜40cm、長さ 50cm の円錐台を、少しずつ大きくして3枚重ねる
             AddSkirt(vertices, triangles, 0.15f, 0.35f, 0.5f, 1f, 200, 130);
             AddSkirt(vertices, triangles, 0.17f, 0.375f, 0.5f, 1f, 200, 130);
             AddSkirt(vertices, triangles, 0.19f, 0.40f, 0.5f, 1f, 200, 130);
@@ -91,10 +91,22 @@ namespace GP02.Tests
             mesh.SetVertices(vertices);
             mesh.SetTriangles(triangles, 0);
             mesh.RecalculateNormals();
+            return mesh;
+        }
+
+        Renderer CreateRenderer(Mesh mesh)
+        {
             var go = new GameObject("Skirt80k");
             _created.Add(go);
             go.AddComponent<MeshFilter>().sharedMesh = mesh;
-            var renderer = go.AddComponent<MeshRenderer>();
+            return go.AddComponent<MeshRenderer>();
+        }
+
+        [Test]
+        public void Skirt80k_MeasureSessionAndEditingTimes()
+        {
+            Mesh mesh = CreateSkirtMesh();
+            var renderer = CreateRenderer(mesh);
 
             var timer = Stopwatch.StartNew();
             ClothEditSession session;
@@ -202,6 +214,75 @@ namespace GP02.Tests
                 Assert.That(firstAfterChangeMs, Is.LessThan(200.0), "Raycast（形が変わった直後）");
                 Assert.That(updateMs, Is.LessThan(500.0), "UpdateCurrentShape");
                 Assert.That(buildMs, Is.LessThan(2000.0), "BuildMeshSpaceDeltas");
+            }
+        }
+        // 保存したあとの作り直し（Rebase した布を渡す）が、粒子を置き直す普通の作り直しより十分速いこと
+        [Test]
+        public void Skirt80k_MeasureRebuildAfterSave()
+        {
+            const string tempRoot = "Assets/GP02_TestTemp";
+            Mesh mesh = CreateSkirtMesh();
+            Renderer renderer = CreateRenderer(mesh);
+            try
+            {
+                var timer = Stopwatch.StartNew();
+                var session = new ClothEditSession(renderer);
+                double createMs = timer.Elapsed.TotalMilliseconds;
+                ClothEditSession next = null;
+                try
+                {
+                    // 上端をピン留めして、下の方をつまんで引っ張る
+                    session.PaintPins(new Vector3(0.17f, 1f, 0f), 0.05f, true);
+                    session.Solver.InfluenceRadius = 0.2f;
+                    var ray = new Ray(new Vector3(1.5f, 0.6f, 0f), Vector3.left);
+                    Assert.That(session.Raycast(ray, out Vector3 point, out Vector3 normal, out int triangle), Is.True);
+                    Assert.That(session.BeginGrab(point, 0.05f, triangle), Is.True);
+                    session.DragTo(point + normal * 0.05f);
+                    session.Solver.Solve(5);
+                    session.Release();
+                    session.UpdateCurrentShape();
+                    Vector3[] before = (Vector3[])session.CurrentWorldVertices.Clone();
+                    int pinned = session.PinnedCount;
+
+                    session.ApplyToScene("Pulled", tempRoot + "/Meshes");
+
+                    // ここから作り直し（Rebase 込み）。ウィンドウの Save() と同じ順序
+                    timer.Restart();
+                    var rebased = session.Cloth.Rebase(session.Solver.Positions);
+                    double rebaseMs = timer.Elapsed.TotalMilliseconds;
+                    var pins = new List<int>();
+                    session.GetPinnedParticles(pins);
+                    session.Dispose();
+                    next = new ClothEditSession(renderer, rebased);
+                    next.PinParticles(pins);
+                    timer.Stop();
+                    double rebuildMs = timer.Elapsed.TotalMilliseconds;
+
+                    Debug.Log($"[GP02] 大きなスカートの保存後の作り直し: 頂点 {next.VertexCount} / 粒子 {next.ParticleCount}\n" +
+                        $"  普通の作成（粒子の置き直し） {createMs:F0} ms\n" +
+                        $"  保存後の作り直し（Rebase 込み） {rebuildMs:F0} ms（うち Rebase {rebaseMs:F0} ms、セッション内の計測 {next.PrepareMilliseconds:F0} ms）");
+
+                    // 形とピンが引き継がれている
+                    Assert.That(next.PinnedCount, Is.EqualTo(pinned));
+                    Assert.That(next.Solver.MeasureMaxStretch(), Is.InRange(-1e-4f, 1e-4f));
+                    float maxDifference = 0f;
+                    for (int v = 0; v < before.Length; v++)
+                    {
+                        maxDifference = Mathf.Max(maxDifference, Vector3.Distance(next.CurrentWorldVertices[v], before[v]));
+                    }
+                    Assert.That(maxDifference, Is.LessThan(1e-4f));
+
+                    Assert.That(rebuildMs, Is.LessThan(3000.0), "保存後の作り直し");
+                }
+                finally
+                {
+                    session.Dispose();
+                    next?.Dispose();
+                }
+            }
+            finally
+            {
+                AssetDatabase.DeleteAsset(tempRoot);
             }
         }
     }

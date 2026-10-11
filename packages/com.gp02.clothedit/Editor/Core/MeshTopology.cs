@@ -60,17 +60,10 @@ namespace GP02.Core
             AdjacencyOffsets = adjacencyOffsets;
             Adjacency = adjacency;
 
+            ComputeTriangleBounds(positions, triangles, out Vector3[] centers, out float[] radii);
+            TriangleCenters = centers;
+            TriangleRadii = radii;
             int triangleCount = triangles.Length / 3;
-            TriangleCenters = new Vector3[triangleCount];
-            TriangleRadii = new float[triangleCount];
-            for (int t = 0; t < triangleCount; t++)
-            {
-                Vector3 a = positions[triangles[3 * t]], b = positions[triangles[3 * t + 1]], c = positions[triangles[3 * t + 2]];
-                Vector3 center = (a + b + c) / 3f;
-                TriangleCenters[t] = center;
-                TriangleRadii[t] = MathF.Sqrt(MathF.Max(Vector3.DistanceSquared(center, a),
-                    MathF.Max(Vector3.DistanceSquared(center, b), Vector3.DistanceSquared(center, c))));
-            }
 
             VertexTriangle = new int[positions.Length];
             for (int i = 0; i < VertexTriangle.Length; i++) VertexTriangle[i] = -1;
@@ -82,6 +75,56 @@ namespace GP02.Core
             TriangleIsland = FindIslands(triangleCount, adjacencyOffsets, adjacency, out int islandCount);
             IslandCount = islandCount;
         }
+
+        // 構造（つながり）をそのまま使い、位置と位置から決まる値だけを差し替える（WithPositions 用）
+        MeshTopology(MeshTopology source, Vector3[] positions)
+        {
+            Positions = positions;
+            VertexToWelded = source.VertexToWelded;
+            Triangles = source.Triangles;
+            SourceToTriangle = source.SourceToTriangle;
+            TriangleToSource = source.TriangleToSource;
+            AdjacencyOffsets = source.AdjacencyOffsets;
+            Adjacency = source.Adjacency;
+            VertexTriangle = source.VertexTriangle;
+            TriangleIsland = source.TriangleIsland;
+            IslandCount = source.IslandCount;
+            ComputeTriangleBounds(positions, source.Triangles, out Vector3[] centers, out float[] radii);
+            TriangleCenters = centers;
+            TriangleRadii = radii;
+        }
+
+        /// <summary>
+        /// 頂点の位置だけを差し替えた新しい MeshTopology を返す（元は変更しない）。
+        /// つながり・島・隣接などの構造は使い回し、三角形を囲む球など位置から決まる値だけを計算し直す。
+        /// </summary>
+        /// <param name="positions">まとめた後の頂点の位置（<see cref="Positions"/> と同じ長さ）。配列はそのまま保持する</param>
+        internal MeshTopology WithPositions(Vector3[] positions)
+        {
+            if (positions == null) throw new ArgumentNullException(nameof(positions));
+            if (positions.Length != Positions.Length) throw new ArgumentException("頂点数が一致しません。", nameof(positions));
+            return new MeshTopology(this, positions);
+        }
+
+        static void ComputeTriangleBounds(Vector3[] positions, int[] triangles, out Vector3[] centers, out float[] radii)
+        {
+            int triangleCount = triangles.Length / 3;
+            centers = new Vector3[triangleCount];
+            radii = new float[triangleCount];
+            // Rebase でも呼ばれるので、Mono で遅い Vector3 の演算子は使わず成分ごとに計算する
+            for (int t = 0; t < triangleCount; t++)
+            {
+                Vector3 a = positions[triangles[3 * t]], b = positions[triangles[3 * t + 1]], c = positions[triangles[3 * t + 2]];
+                float cx = (a.X + b.X + c.X) / 3f, cy = (a.Y + b.Y + c.Y) / 3f, cz = (a.Z + b.Z + c.Z) / 3f;
+                centers[t] = new Vector3(cx, cy, cz);
+                float da = Sq(a.X - cx) + Sq(a.Y - cy) + Sq(a.Z - cz);
+                float db = Sq(b.X - cx) + Sq(b.Y - cy) + Sq(b.Z - cz);
+                float dc = Sq(c.X - cx) + Sq(c.Y - cy) + Sq(c.Z - cz);
+                radii[t] = MathF.Sqrt(MathF.Max(da, MathF.Max(db, dc)));
+            }
+        }
+
+        static float Sq(float x) => x * x;
 
         public static MeshTopology Build(Vector3[] vertices, int[] triangles, float weldTolerance = DefaultWeldTolerance)
         {

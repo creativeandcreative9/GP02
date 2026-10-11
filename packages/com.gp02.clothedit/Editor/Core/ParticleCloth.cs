@@ -158,6 +158,26 @@ namespace GP02.Core
             }
         }
 
+        /// <summary>
+        /// 今の粒子の位置を新しい静止状態とした、新しい布を返す（元は変更しない）。
+        /// シェイプキーとして保存した後に、粒子を置き直さずに編集を続けるために使う。
+        /// 粒子の数・並び・制約のペア・頂点との結びつけ・粗い段の構成は使い回し、
+        /// 静止状態に関わる値（<see cref="Model"/> の長さ、<see cref="Topology"/> の位置、<see cref="Hierarchy"/> の長さ）だけを作り直す。
+        /// </summary>
+        public ParticleCloth Rebase(ReadOnlySpan<Vector3> particlePositions)
+        {
+            if (particlePositions.Length != Model.ParticleCount) throw new ArgumentException("粒子数が一致しません。", nameof(particlePositions));
+
+            Vector3[] particles = particlePositions.ToArray();
+            var welded = new Vector3[Topology.Positions.Length];
+            DeformWelded(particles, welded);
+
+            MeshTopology topology = Topology.WithPositions(welded);
+            var model = new ClothModel(particles, Model.StretchPairs, Model.BendPairs);
+            ClothHierarchy hierarchy = Hierarchy.WithRestPositions(particles);
+            return new ParticleCloth(topology, model, hierarchy, Spacing, ParticleTriangle, _bindOffsets, _bindParticles, _bindWeights);
+        }
+
         /// <summary>頂点ごとに結びつけた粒子の数（確認用）。</summary>
         public int BoundParticleCount(int weldedVertex) => _bindOffsets[weldedVertex + 1] - _bindOffsets[weldedVertex];
 
