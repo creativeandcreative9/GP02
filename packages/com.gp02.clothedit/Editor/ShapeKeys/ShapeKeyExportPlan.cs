@@ -129,7 +129,7 @@ namespace GP02.EditorTools
                 if (entry.Frames.Count == 0)
                 {
                     item.Action = ExportAction.SkipEmpty;
-                    item.Detail = L10n.Tr("差分がないので書き出しません。", "No deltas, so it is not exported.");
+                    item.Detail = L10n.Tr("差分がないので反映しません。", "No deltas, so it is not applied.");
                     items.Add(item);
                     continue;
                 }
@@ -257,7 +257,7 @@ namespace GP02.EditorTools
             if (bake > 0) parts.Add(L10n.Tr($"焼き込み {bake}", $"Bake {bake}"));
             if (skip > 0) parts.Add(L10n.Tr($"飛ばす {skip}", $"Skip {skip}"));
             if (invalid > 0) parts.Add(L10n.Tr($"エラー {invalid}", $"Error {invalid}"));
-            return parts.Count == 0 ? L10n.Tr("書き出すものはありません", "Nothing to export") : string.Join(L10n.Tr("・", ", "), parts);
+            return parts.Count == 0 ? L10n.Tr("反映するものはありません", "Nothing to apply") : string.Join(L10n.Tr("・", ", "), parts);
         }
     }
 }

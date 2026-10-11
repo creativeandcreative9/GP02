@@ -274,6 +274,55 @@ namespace GP02.Tests
             Assert.That(component, Is.Not.Null);
         }
 
+        // かんたん表示の「メッシュへの反映」: データとメッシュが同じなら「✓ メッシュに反映済み」の1行、違うときだけ「メッシュに反映（変更 N 件）」
+        [UnityTest]
+        public IEnumerator Window_SimpleView_ShowsWhetherTheMeshIsUpToDate()
+        {
+            Mesh mesh = CreateGridMesh("GuiSync");
+            int n = mesh.vertexCount;
+            GP02ShapeKeyData data = NewData(mesh, Entry("GP02_1", Ramp(n, 0.002f)), Entry("GP02_2", Ramp(n, 0.003f)));
+            Renderer renderer = CreateRenderer(mesh, true, "GuiSync");
+            GP02ShapeKeys component = ShapeKeyLibrary.Attach(renderer, data);
+            var window = EditorWindow.GetWindow<ShapeKeyListWindow>();
+            window.position = new Rect(10, 10, 440, 620);
+            try
+            {
+                ClothEditView.Mode = ClothEditViewMode.Simple;
+                Selection.activeGameObject = renderer.gameObject;
+                window.OnSelectionChanged();
+                yield return Pump();
+                Assert.That(window.View.GetMeshStatus().ChangeCount, Is.EqualTo(2), "元のメッシュのままなので、2 件が加わる");
+                Shot(window, "window_simple_apply_needed");
+
+                ShapeKeyExporter.ExportToMesh(component, ShapeKeyBuildOptions.FromComponent(component), MeshFolder);
+                yield return Pump();
+                Assert.That(window.View.GetMeshStatus().InSync, Is.True);
+                Shot(window, "window_simple_applied");
+
+                // データの形を変えると、違う 1 件
+                ShapeKeyListOperations.Scale(data, new[] { data.Entries[0] }, 0.5f);
+                yield return Pump();
+                Assert.That(window.View.GetMeshStatus().ChangeCount, Is.EqualTo(1));
+                Shot(window, "window_simple_changed");
+
+                // くわしく表示でも、違いの1行と「メッシュに反映（変更 1 件）」が出る（ほかの区切りは畳んで、反映の欄を見せる）
+                bool showOperations = window.View.Settings.ShowOperations, showDetails = window.View.Settings.ShowDetails;
+                window.View.Settings.ShowOperations = false;
+                window.View.Settings.ShowDetails = false;
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
+                window.position = new Rect(10, 10, 440, 960);
+                yield return Pump();
+                Shot(window, "window_detailed_changed");
+                window.View.Settings.ShowOperations = showOperations;
+                window.View.Settings.ShowDetails = showDetails;
+            }
+            finally
+            {
+                window.Close();
+                Selection.activeGameObject = null;
+            }
+        }
+
         [UnityTest]
         public IEnumerator DataInspector_ListsTheBackupsOfASavedData()
         {

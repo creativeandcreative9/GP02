@@ -73,6 +73,7 @@ namespace GP02.EditorTools
             _previewError = null;
             _clothSaveName = "";
             _treeState.selectedIDs.Clear();
+            _meshStatus = null;
             ReloadTree();
             Repaint();
         }
@@ -114,6 +115,7 @@ namespace GP02.EditorTools
         void ReloadTree()
         {
             _needsReload = true;
+            _meshStatus = null;   // データが変わったので、メッシュと比べ直す
             Repaint();
         }
 
@@ -185,11 +187,11 @@ namespace GP02.EditorTools
             if (string.IsNullOrWhiteSpace(entry.Name))
             {
                 isError = true;
-                return L10n.Tr("名前が空です。書き出せません。", "The name is empty, so it cannot be exported.");
+                return L10n.Tr("名前が空です。メッシュに反映できません。", "The name is empty, so it cannot be applied to the mesh.");
             }
             if (_duplicateNames.Contains(entry.Name))
             {
-                return L10n.Tr("同じ名前のシェイプキーが他にもあります。書き出すと後のもので上書きされます。", "Another shape key has the same name. The later one overwrites it on export.");
+                return L10n.Tr("同じ名前のシェイプキーが他にもあります。メッシュに反映すると、後のもので上書きされます。", "Another shape key has the same name. The later one overwrites it when applied to the mesh.");
             }
             if (entry.Frames.Count == 0) return L10n.Tr("差分がありません。", "There are no deltas.");
             return null;
@@ -327,6 +329,12 @@ namespace GP02.EditorTools
             DrawToolbar();
             Rect treeRect = GUILayoutUtility.GetRect(0f, Mathf.Max(treeHeight, 80f), GUILayout.ExpandWidth(true));
             _tree.OnGUI(treeRect);
+            if (!ClothEditView.IsDetailed)
+            {
+                // かんたん表示: スライダーの重みと、メッシュ（インスペクター）の重みの違いが分かるように
+                EditorGUILayout.LabelField(L10n.Tr("右のスライダーは、形を確かめるための重みです（シーンで見せるだけで、メッシュの重みは変わりません）。",
+                    "The slider on the right is a weight for checking the shape (it only shows it in the scene; the mesh's weight does not change)."), EditorStyles.wordWrappedMiniLabel);
+            }
             DrawPreviewStatus(data);
             DrawClothEditStatus(data);
             EditorGUILayout.Space(2f);
@@ -369,7 +377,7 @@ namespace GP02.EditorTools
             if ((issues & ShapeKeyProtection.Issue.NoRenderer) != 0)
             {
                 EditorGUILayout.HelpBox(L10n.Tr(
-                    "このオブジェクトに SkinnedMeshRenderer（または MeshFilter 付きの MeshRenderer）がありません。書き出しやプレビューはできません。",
+                    "このオブジェクトに SkinnedMeshRenderer（または MeshFilter 付きの MeshRenderer）がありません。メッシュへの反映やプレビューはできません。",
                     "This object has no SkinnedMeshRenderer (or MeshRenderer with a MeshFilter). Export and preview are unavailable."), MessageType.Warning);
             }
 
@@ -403,7 +411,7 @@ namespace GP02.EditorTools
                 if (_component.ExportedMesh != null || _component.SourceMesh != null)
                 {
                     EditorGUILayout.HelpBox(L10n.Tr(
-                        "書き出したメッシュはアセットとして残っているので、そのまま使えます。",
+                        "反映したメッシュはアセットとして残っているので、そのまま使えます。",
                         "The exported mesh is saved as an asset and can still be used."), MessageType.Info);
                 }
                 if (_renderer != null && ClothEditController.GetMesh(_renderer) != null && GUILayout.Button(L10n.Tr("今のメッシュで新しいデータを作成", "Create new data from the current mesh")))
@@ -422,7 +430,7 @@ namespace GP02.EditorTools
             if ((issues & ShapeKeyProtection.Issue.SourceMeshMissing) != 0)
             {
                 EditorGUILayout.HelpBox(L10n.Tr(
-                    "元のメッシュが見つかりません。左右の操作・取り込み・書き出しには、元のメッシュが必要です。",
+                    "元のメッシュが見つかりません。左右の操作・取り込み・メッシュへの反映には、元のメッシュが必要です。",
                     "The source mesh is missing. It is needed for left/right operations, import and export."), MessageType.Error);
                 if (GUILayout.Button(L10n.Tr("今のメッシュを元のメッシュにする", "Use the current mesh as the source mesh")))
                 {
@@ -446,7 +454,7 @@ namespace GP02.EditorTools
             {
                 Mesh mesh = ClothEditController.GetMesh(_renderer);
                 EditorGUILayout.HelpBox(L10n.Tr(
-                    $"レンダラーのメッシュ（頂点 {(mesh != null ? mesh.vertexCount : 0)} 個）が、データ（頂点 {Data.VertexCount} 個）と合いません。プレビューと書き出しはできません。" +
+                    $"レンダラーのメッシュ（頂点 {(mesh != null ? mesh.vertexCount : 0)} 個）が、データ（頂点 {Data.VertexCount} 個）と合いません。プレビューとメッシュへの反映はできません。" +
                     "元のメッシュに戻すか、このメッシュ用のデータを指定し直してください。",
                     $"The renderer's mesh ({(mesh != null ? mesh.vertexCount : 0)} vertices) does not match the data ({Data.VertexCount} vertices). Preview and export are unavailable. " +
                     "Restore the original mesh, or assign the data made for this mesh."), MessageType.Warning);
@@ -571,7 +579,7 @@ namespace GP02.EditorTools
                     using (new EditorGUI.DisabledScope(!any))
                     {
                         if (ToolbarButton(L10n.Tr("有効", "On"), L10n.Tr("選んだシェイプキーをまとめて有効にします", "Enable the selected shape keys"))) SetEnabled(selected, true);
-                        if (ToolbarButton(L10n.Tr("無効", "Off"), L10n.Tr("選んだシェイプキーをまとめて無効にします（書き出しに含めません）", "Disable the selected shape keys (they are not exported)"))) SetEnabled(selected, false);
+                        if (ToolbarButton(L10n.Tr("無効", "Off"), L10n.Tr("選んだシェイプキーをまとめて無効にします（メッシュへの反映に含めません）", "Disable the selected shape keys (they are not applied to the mesh)"))) SetEnabled(selected, false);
                     }
                 }
                 GUILayout.FlexibleSpace();
@@ -728,7 +736,7 @@ namespace GP02.EditorTools
                     L10n.Tr("UV の継ぎ目などで分かれた頂点の法線をそろえます。オフなら、頂点ごとにそれぞれの面だけで計算します",
                         "Aligns the normals of vertices split at UV seams and the like. If off, each vertex uses only its own faces")), _settings.NormalMergeCoincident);
                 _settings.DisableSources = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("合成・分割・順に並べたあと元を無効にする", "Disable the originals after merge/split/chain"),
-                    L10n.Tr("書き出しで二重に動かないように、元のシェイプキーを無効にします", "Disable the originals so they are not applied twice on export")), _settings.DisableSources);
+                    L10n.Tr("メッシュへの反映で二重に動かないように、元のシェイプキーを無効にします", "Disable the originals so they are not applied twice to the mesh")), _settings.DisableSources);
                 EditorGUI.indentLevel--;
             }
             if (EditorGUI.EndChangeCheck()) _settings.Save();
@@ -745,6 +753,11 @@ namespace GP02.EditorTools
                     if (GUILayout.Button(new GUIContent(L10n.Tr("左右に分割", "Split L/R"), L10n.Tr("選んだシェイプキーを _L と _R の2つに分けます。軸と中心は「くわしく」の操作の設定で変えられます", "Splits the selected shape keys into _L and _R. The axis and center can be changed in the Detailed view's operation settings")))) SplitSelected();
                     if (GUILayout.Button(new GUIContent(L10n.Tr("左右反転", "Flip"), L10n.Tr("選んだシェイプキーを、左右を入れ替えた形にします", "Mirrors the selected shape keys left to right")))) FlipSelected();
                 }
+            }
+            if (!any)
+            {
+                EditorGUILayout.LabelField(L10n.Tr("一覧でシェイプキーを選ぶと、複製・削除・左右に分割・左右反転が使えます。",
+                    "Select a shape key in the list to use Duplicate, Delete, Split L/R and Flip."), EditorStyles.wordWrappedMiniLabel);
             }
         }
 
