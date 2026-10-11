@@ -74,7 +74,7 @@ GP02/
 - 配布は BOOTH の .unitypackage を想定する（依存パッケージは自動では入らないので、増やすときは慎重に）
 - 速さは Unity（Mono）で測る。クラウドの .NET より10倍以上遅いことがある
   - Mono では System.Numerics.Vector3 の演算子が1つずつ関数の呼び出しになるので、毎フレーム回る処理では成分ごとに計算する
-  - Unity での測定は、一時的な EditMode テストを `unity/Assets/` に置き、`GP02_UNITY_ARGS=-debugCodeOptimization tools/unity/run-tests.sh` で行う（エディタの既定はデバッグモード）
+  - Unity での測定は、一時的な EditMode テストを `unity/Assets/` に置き、`GP02_UNITY_ARGS=-debugCodeOptimization tools/unity/run-tests.sh` で行う（利用者のエディタの既定はデバッグモードで、それと同じ遅い条件で測るため。バッチモードの既定のままだと速く出る）
   - Burst は任意の高速化として使う（`Editor/Burst/` の `GP02.Editor.Burst`。com.unity.burst があるときだけ `versionDefines` と `defineConstraints` で有効になり、`ClothSolver.DefaultKernel` を差し替える）。Burst がなくても、すべての機能が C# で動く
   - 開発用の `unity/` には Burst を入れてある。Burst なしの確認は、manifest から一時的に外して `tools/unity/run-tests.sh` を回す
 
