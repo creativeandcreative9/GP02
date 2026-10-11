@@ -48,5 +48,17 @@ namespace GP02
 
         /// <summary><see cref="ShapeKeyApplyMode.NonDestructive"/> のとき、ビルドで入れる BlendShape の最初の重み。</summary>
         public ShapeKeyInitialWeight InitialWeight = ShapeKeyInitialWeight.Zero;
+
+        /// <summary>BlendShape の名前の前に付ける文字（例 "GP02_"）。書き出しとビルド時の適用の両方で使う。空なら付けない。</summary>
+        public string NamePrefix = "";
+
+        /// <summary>BlendShape の名前の後ろに付ける文字。空なら付けない。</summary>
+        public string NameSuffix = "";
+
+        /// <summary>
+        /// true なら、頂点数がメッシュと合わないシェイプキーを飛ばして書き出す（ビルド時の適用でも飛ばして警告する）。
+        /// false なら、合わないものがあると書き出し・ビルドが失敗する（見落とさないための既定）。
+        /// </summary>
+        public bool SkipIncompatible;
     }
 }

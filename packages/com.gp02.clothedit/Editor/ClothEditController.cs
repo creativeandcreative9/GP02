@@ -2328,9 +2328,10 @@ namespace GP02.EditorTools
             ShapeKeyEntry existing = overwrite ? data.FindEntry(name) : null;
             if (existing != null)
             {
+                // 上書きする前の形は、バックアップと、エントリの前の版に残す
+                ShapeKeyBackup.Create(data, "Overwrite");
                 Undo.RecordObject(data, "GP02 シェイプキーを上書き保存");
-                existing.Frames = fresh.Frames;
-                existing.PinnedVertices = fresh.PinnedVertices;
+                ShapeKeyHistory.Overwrite(existing, fresh.Frames, fresh.PinnedVertices, L10n.Tr("布で編集して上書き", "Overwritten by cloth edit"));
                 EditorUtility.SetDirty(data);
                 result = existing;
             }
@@ -2395,6 +2396,43 @@ namespace GP02.EditorTools
                 if ((uint)v < (uint)vertices.Length) positions.Add(vertices[v]);
             }
             _session.PinNear(positions, _session.Cloth.Spacing * 0.75f);
+        }
+
+        /// <summary>
+        /// 選んでいる粒子から、renderer の元メッシュの頂点ごとの 0〜1 の重み（マスク）を作る。
+        /// 頂点は近くの粒子についていく（<see cref="ParticleCloth"/> の頂点と粒子の結び付き）ので、頂点の重みは、結びついた粒子のうち選ばれている粒子の割合になる。
+        /// 選んだ範囲の内側は 1、外側は 0、境目は途中の値。配列の長さは renderer のメッシュの頂点数で、頂点の並びはそのメッシュと同じ。
+        /// シェイプキーを選んだ範囲で分ける・取り出す・消すのに使う。
+        /// 編集中でない、または renderer が編集の対象でないときは null。何も選んでいなければ、すべて 0。
+        /// </summary>
+        public float[] GetSelectionVertexMask(Renderer renderer)
+        {
+            if (_session == null || renderer == null) return null;
+            int rendererIndex = -1;
+            for (int r = 0; r < _session.RendererCount; r++)
+            {
+                if (_session.Renderers[r] == renderer)
+                {
+                    rendererIndex = r;
+                    break;
+                }
+            }
+            if (rendererIndex < 0) return null;
+
+            ParticleCloth cloth = _session.Cloth;
+            var particleValues = new float[cloth.Model.ParticleCount];
+            if (_selected != null)
+            {
+                for (int i = 0; i < particleValues.Length && i < _selected.Length; i++) particleValues[i] = _selected[i] ? 1f : 0f;
+            }
+            var weldedValues = new float[cloth.Topology.Positions.Length];
+            cloth.AverageOverBinding(particleValues, weldedValues);
+
+            _session.GetVertexRange(rendererIndex, out int start, out int count);
+            int[] vertexToWelded = cloth.Topology.VertexToWelded;
+            var mask = new float[count];
+            for (int k = 0; k < count; k++) mask[k] = weldedValues[vertexToWelded[start + k]];
+            return mask;
         }
     }
 }

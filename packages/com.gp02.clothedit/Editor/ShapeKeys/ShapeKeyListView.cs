@@ -12,7 +12,7 @@ namespace GP02.EditorTools
     /// データの書き換えは <see cref="ShapeKeyListOperations"/>、書き出しは <see cref="ShapeKeyExporter"/>、プレビューは <see cref="ShapeKeyPreview"/> に任せ、
     /// ここは呼び出しと表示だけを受け持つ。使い終わったら <see cref="Dispose"/> を呼ぶこと（プレビューを元に戻すため）。
     /// </summary>
-    public sealed class ShapeKeyListView : IDisposable
+    public sealed partial class ShapeKeyListView : IDisposable
     {
         static readonly string[] AxisLabels = { "X", "Y", "Z" };
 
@@ -317,16 +317,19 @@ namespace GP02.EditorTools
             _tree.ReloadIfStale();
 
             DrawMessage();
+            DrawFilterBar();
             DrawToolbar();
             Rect treeRect = GUILayoutUtility.GetRect(0f, Mathf.Max(treeHeight, 80f), GUILayout.ExpandWidth(true));
             _tree.OnGUI(treeRect);
             DrawPreviewStatus(data);
             DrawClothEditStatus(data);
             EditorGUILayout.Space(2f);
+            DrawDetails(data);
             DrawOperations(data);
             DrawImport(data);
             ShapeKeyApplyModeGUI.Draw(_component, _renderer);
             DrawExport(data);
+            DrawBackups(data);
         }
 
         void UpdateDuplicateNames(GP02ShapeKeyData data)
@@ -543,10 +546,16 @@ namespace GP02.EditorTools
                     if (ToolbarButton(L10n.Tr("削除", "Delete"), L10n.Tr("選んだシェイプキーを削除します（Delete）", "Delete the selected shape keys (Delete)"))) DeleteSelected();
                 }
                 GUILayout.Space(8f);
-                using (new EditorGUI.DisabledScope(!any))
+                using (new EditorGUI.DisabledScope(!any || !IsReorderAllowed))
                 {
                     if (ToolbarButton("▲", L10n.Tr("上へ", "Move up"))) MoveSelected(-1);
                     if (ToolbarButton("▼", L10n.Tr("下へ", "Move down"))) MoveSelected(1);
+                }
+                GUILayout.Space(8f);
+                using (new EditorGUI.DisabledScope(!any))
+                {
+                    if (ToolbarButton(L10n.Tr("有効", "On"), L10n.Tr("選んだシェイプキーをまとめて有効にします", "Enable the selected shape keys"))) SetEnabled(selected, true);
+                    if (ToolbarButton(L10n.Tr("無効", "Off"), L10n.Tr("選んだシェイプキーをまとめて無効にします（書き出しに含めません）", "Disable the selected shape keys (they are not exported)"))) SetEnabled(selected, false);
                 }
                 GUILayout.FlexibleSpace();
                 if (ToolbarButton(L10n.Tr("＋グループ", "+ Group"), L10n.Tr("新しいグループを作ります。シェイプキーはドラッグで入れられます", "Create a group. Drag shape keys into it"))) AddGroup();
@@ -664,12 +673,16 @@ namespace GP02.EditorTools
                     if (GUILayout.Button(L10n.Tr("グループから外す", "Remove from group"))) SetGroupOfSelected("");
                 }
             }
+            DrawAdvancedOperations(data, selected);
 
             _settings.ShowOperationSettings = EditorGUILayout.Foldout(_settings.ShowOperationSettings, L10n.Tr("操作の設定（左右など）", "Operation settings (left/right etc.)"), true);
             if (_settings.ShowOperationSettings)
             {
                 EditorGUI.indentLevel++;
                 _settings.Axis = EditorGUILayout.Popup(L10n.Tr("左右を分ける軸", "Mirror axis"), _settings.Axis, AxisLabels);
+                _settings.SplitInAvatarSpace = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("分割の軸をアバターのローカルで見る", "Split axis in avatar-local space"),
+                    L10n.Tr("オンなら、「左右に分割」の軸と中心を、アバターのルート（Animator のある親）の X/Y/Z とメートルで見ます。オフなら、メッシュ自身の座標です。反転・対称は常にメッシュの座標です",
+                        "If on, the axis and center of Split L/R are the X/Y/Z and meters of the avatar root (the parent with the Animator). If off, they are the mesh's own coordinates. Flip and Symmetrize always use the mesh's coordinates")), _settings.SplitInAvatarSpace);
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     _settings.Center = EditorGUILayout.FloatField(L10n.Tr("中心（m）", "Center (m)"), _settings.Center);
@@ -703,6 +716,12 @@ namespace GP02.EditorTools
         {
             if (data.SourceMesh == null) return;
             Vector3 c = data.SourceMesh.bounds.center;
+            if (_settings.SplitInAvatarSpace && _renderer != null)
+            {
+                // メッシュの中心を、アバターのローカルに換算する
+                Transform root = ShapeKeyExporter.FindAvatarRoot(_renderer.transform);
+                c = root.InverseTransformPoint(_renderer.transform.TransformPoint(c));
+            }
             _settings.Center = _settings.Axis == 0 ? c.x : _settings.Axis == 1 ? c.y : c.z;
         }
 
@@ -726,6 +745,9 @@ namespace GP02.EditorTools
                     }
                 }
 
+                _settings.ImportOverwrite = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("同じ名前は上書きする", "Overwrite the same name"),
+                    L10n.Tr("取り込むシェイプキーと同じ名前のものがあれば、新しく作らずそれを上書きします。前の形は「前の版」に残ります",
+                        "If a shape key with the same name exists, it is overwritten instead of adding a new one. The previous shape stays in its history")), _settings.ImportOverwrite);
                 _importMeshAsset = EditorGUILayout.ObjectField(L10n.Tr("別のメッシュから", "From another mesh"), _importMeshAsset, typeof(Mesh), false);
                 using (new EditorGUI.DisabledScope(_importMeshAsset == null))
                 {
@@ -743,6 +765,9 @@ namespace GP02.EditorTools
                         if (GUILayout.Button(L10n.Tr("自動", "Auto"), GUILayout.Width(48f))) _settings.ClipRendererPath = ShapeKeyListOperations.GuessRendererPath(_renderer);
                     }
                     if (GUILayout.Button(L10n.Tr("この時刻の BlendShape を取り込む", "Import the BlendShapes at this time"))) ImportClip();
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("すべてのキーフレームを in-between として取り込む", "Import all keyframes as in-between frames"),
+                        L10n.Tr("クリップの BlendShape のキーフレームの時刻ごとの形を、1つのシェイプキーの in-between のフレームにします（時刻の順に等間隔の重み）",
+                            "Turns the shape at each keyframe time of the clip's BlendShapes into one frame of a single in-between shape key (evenly spaced weights in time order)")))) ImportClipKeyframes();
                 }
             }
             if (EditorGUI.EndChangeCheck()) _settings.Save();
@@ -753,7 +778,7 @@ namespace GP02.EditorTools
             var menu = new GenericMenu();
             menu.AddItem(new GUIContent(L10n.Tr("（まとめて全部）", "(All)")), false, () => Run(() =>
             {
-                List<ShapeKeyEntry> added = ShapeKeyListOperations.ImportAllBlendShapes(Data, source);
+                List<ShapeKeyEntry> added = ShapeKeyListOperations.ImportAllBlendShapes(Data, source, _settings.ImportOverwrite);
                 AfterStructuralChange(added);
                 Show(L10n.Tr($"{added.Count} 個の BlendShape を取り込みました。", $"Imported {added.Count} BlendShapes."), MessageType.Info);
             }));
@@ -764,7 +789,7 @@ namespace GP02.EditorTools
                 string name = source.GetBlendShapeName(i);
                 menu.AddItem(new GUIContent(name.Replace('/', '／')), false, () => Run(() =>
                 {
-                    List<ShapeKeyEntry> added = ShapeKeyListOperations.ImportBlendShapes(Data, source, new[] { index });
+                    List<ShapeKeyEntry> added = ShapeKeyListOperations.ImportBlendShapes(Data, source, new[] { index }, _settings.ImportOverwrite);
                     AfterStructuralChange(added);
                 }));
             }
@@ -775,7 +800,7 @@ namespace GP02.EditorTools
         {
             Run(() =>
             {
-                ShapeKeyEntry entry = ShapeKeyListOperations.ImportFromMeshAsset(Data, mesh);
+                ShapeKeyEntry entry = ShapeKeyListOperations.ImportFromMeshAsset(Data, mesh, _settings.ImportOverwrite);
                 AfterStructuralChange(new[] { entry });
                 Show(L10n.Tr($"「{entry.Name}」として取り込みました。", $"Imported as \"{entry.Name}\"."), MessageType.Info);
             });
@@ -785,128 +810,20 @@ namespace GP02.EditorTools
         {
             Run(() =>
             {
-                ShapeKeyEntry entry = ShapeKeyListOperations.ImportFromClip(Data, _importClip, _settings.ClipRendererPath, _settings.ClipTime);
+                ShapeKeyEntry entry = ShapeKeyListOperations.ImportFromClip(Data, _importClip, _settings.ClipRendererPath, _settings.ClipTime, _settings.ImportOverwrite);
                 AfterStructuralChange(new[] { entry });
                 Show(L10n.Tr($"「{entry.Name}」として取り込みました。", $"Imported as \"{entry.Name}\"."), MessageType.Info);
             });
         }
 
-        // ---- 書き出し ----
-
-        void DrawExport(GP02ShapeKeyData data)
-        {
-            _settings.ShowExport = EditorGUILayout.Foldout(_settings.ShowExport, L10n.Tr("書き出し", "Export"), true);
-            if (!_settings.ShowExport) return;
-
-            string problem = ShapeKeyExporter.GetProblem(_component);
-            if (problem != null) EditorGUILayout.HelpBox(problem, MessageType.Warning);
-
-            EditorGUI.BeginChangeCheck();
-            _settings.ExportFolder = EditorGUILayout.TextField(L10n.Tr("保存先", "Folder"), _settings.ExportFolder);
-            _settings.OverwriteSameName = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("同じ名前を上書きする", "Overwrite same names"),
-                L10n.Tr("オフなら、同じ名前があるとき「名前 (1)」のように別の名前で加えます", "If off, a same name gets a number such as \"name (1)\"")), _settings.OverwriteSameName);
-            if (EditorGUI.EndChangeCheck()) _settings.Save();
-
-            int replaced = CountReplacedShapes(data);
-            if (replaced > 0 && _settings.OverwriteSameName)
-            {
-                EditorGUILayout.LabelField(L10n.Tr($"元のメッシュの BlendShape {replaced} 個を上書きします。", $"{replaced} BlendShapes of the source mesh will be overwritten."), EditorStyles.miniLabel);
-            }
-
-            using (new EditorGUI.DisabledScope(problem != null))
-            {
-                if (GUILayout.Button(new GUIContent(L10n.Tr("メッシュに書き出す", "Export to mesh"),
-                    L10n.Tr("有効なシェイプキーを BlendShape として複製メッシュに入れ、保存してレンダラーに割り当てます。データは残ります", "Add the enabled shape keys as BlendShapes to a copy of the mesh, save it and assign it. The data is kept"))))
-                {
-                    ExportToMesh();
-                }
-            }
-
-            EditorGUI.BeginChangeCheck();
-            _settings.RemapBoneWeights = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("大きく動いた頂点のウェイトを付け替える", "Remap bone weights of far-moved vertices"),
-                L10n.Tr("焼き込みのとき、大きく動いた頂点のボーンウェイトを、動いた先の頂点のものにします", "When baking, vertices that moved far take the bone weights of the vertex they moved to")), _settings.RemapBoneWeights);
-            if (_settings.RemapBoneWeights) _settings.RemapThresholdCm = EditorGUILayout.FloatField(L10n.Tr("付け替える動きの大きさ（cm）", "Move distance to remap (cm)"), _settings.RemapThresholdCm);
-            if (EditorGUI.EndChangeCheck()) _settings.Save();
-
-            using (new EditorGUI.DisabledScope(problem != null || _tree.GetSelectedEntries().Count == 0))
-            {
-                if (GUILayout.Button(new GUIContent(L10n.Tr("選んだものを素体に焼き込む", "Bake the selection into the base"),
-                    L10n.Tr("選んだシェイプキーを、スライダーの重みで素体に焼き込んだメッシュを作って割り当てます。元のメッシュは変わりません", "Bake the selection with the slider weights into a new mesh and assign it. The original mesh is unchanged"))))
-                {
-                    BakeSelected();
-                }
-            }
-
-            MeshState state = _renderer != null ? ShapeKeyExporter.GetMeshState(_component, _renderer) : MeshState.None;
-            EditorGUILayout.LabelField(L10n.Tr("レンダラーのメッシュ: ", "Renderer mesh: ") + DescribeMeshState(state), EditorStyles.miniLabel);
-            using (new EditorGUI.DisabledScope(!ShapeKeyProtection.CanRestoreMesh(_component) || _renderer == null || state == MeshState.Source))
-            {
-                if (GUILayout.Button(L10n.Tr("元のメッシュに戻す", "Restore the original mesh"))) RestoreSourceMesh();
-            }
-
-            EditorGUILayout.HelpBox(L10n.Tr(
-                "データ（アセット）を削除しても、書き出したメッシュはアセットとして残ります。このツールを消しても、メッシュは消えません。",
-                "Even if the data asset is deleted, the exported mesh remains as an asset. Removing this tool does not delete the mesh."), MessageType.None);
-        }
-
-        string DescribeMeshState(MeshState state)
-        {
-            switch (state)
-            {
-                case MeshState.None: return L10n.Tr("なし（None）", "None");
-                case MeshState.Source: return L10n.Tr("元のメッシュ", "Original");
-                case MeshState.Exported: return L10n.Tr("書き出したメッシュ", "Exported");
-                default: return L10n.Tr("その他（焼き込みなど）", "Other (baked etc.)");
-            }
-        }
-
-        int CountReplacedShapes(GP02ShapeKeyData data)
-        {
-            Mesh source = ShapeKeyExporter.GetSourceMesh(_component);
-            if (source == null) return 0;
-            int count = 0;
-            foreach (ShapeKeyEntry e in data.Entries)
-            {
-                if (e != null && e.Enabled && e.Frames.Count > 0 && !string.IsNullOrEmpty(e.Name) && source.GetBlendShapeIndex(e.Name) >= 0) count++;
-            }
-            return count;
-        }
-
-        void ExportToMesh()
+        void ImportClipKeyframes()
         {
             Run(() =>
             {
-                Mesh mesh = ShapeKeyExporter.ExportToMesh(_component, _settings.OverwriteSameName, _settings.ExportFolder);
-                Show(L10n.Tr($"{AssetDatabase.GetAssetPath(mesh)} に書き出して、レンダラーに割り当てました（BlendShape {mesh.blendShapeCount} 個）。",
-                    $"Exported to {AssetDatabase.GetAssetPath(mesh)} and assigned it to the renderer ({mesh.blendShapeCount} BlendShapes)."), MessageType.Info);
+                ShapeKeyEntry entry = ShapeKeyListOperations.ImportFromClipKeyframes(Data, _importClip, _settings.ClipRendererPath, _settings.ImportOverwrite);
+                AfterStructuralChange(new[] { entry });
+                Show(L10n.Tr($"「{entry.Name}」として取り込みました（{entry.Frames.Count} フレームの in-between）。", $"Imported as \"{entry.Name}\" ({entry.Frames.Count}-frame in-between)."), MessageType.Info);
             });
-            ReloadTree();
-        }
-
-        void BakeSelected()
-        {
-            Run(() =>
-            {
-                List<ShapeKeyEntry> selected = _tree.GetSelectedEntries();
-                float[] weights = new float[selected.Count];
-                bool anyWeight = false;
-                for (int i = 0; i < weights.Length; i++)
-                {
-                    weights[i] = selected[i].PreviewWeight;
-                    if (weights[i] != 0f) anyWeight = true;
-                }
-                if (!anyWeight)
-                {
-                    if (!EditorUtility.DisplayDialog("GP02", L10n.Tr(
-                        "選んだシェイプキーの重みがすべて 0 です。重み 100 で焼き込みますか？",
-                        "All selected weights are 0. Bake with weight 100?"), L10n.Tr("100 で焼き込む", "Bake at 100"), L10n.Tr("やめる", "Cancel"))) return;
-                    for (int i = 0; i < weights.Length; i++) weights[i] = 100f;
-                }
-                Mesh mesh = ShapeKeyExporter.BakeIntoBase(_component, selected, weights, _settings.RemapBoneWeights, _settings.RemapThreshold, _settings.ExportFolder);
-                Show(L10n.Tr($"素体に焼き込んで {AssetDatabase.GetAssetPath(mesh)} に保存し、レンダラーに割り当てました。元のメッシュは変わっていません。",
-                    $"Baked into the base, saved to {AssetDatabase.GetAssetPath(mesh)} and assigned it. The original mesh is unchanged."), MessageType.Info);
-            });
-            ReloadTree();
         }
 
         // ------------------------------------------------------------------
@@ -1010,8 +927,21 @@ namespace GP02.EditorTools
                 var added = new List<ShapeKeyEntry>();
                 foreach (ShapeKeyEntry entry in _tree.GetSelectedEntries())
                 {
-                    ShapeKeyListOperations.SplitLeftRight(Data, entry, _settings.Axis, _settings.Center, _settings.BlendWidth,
-                        _settings.LeftIsPositive, _settings.DisableSources, out ShapeKeyEntry left, out ShapeKeyEntry right);
+                    ShapeKeyEntry left, right;
+                    if (_settings.SplitInAvatarSpace)
+                    {
+                        if (_renderer == null) throw new InvalidOperationException(L10n.Tr("アバターのローカル軸で分けるには、レンダラーが要ります。", "A renderer is needed to split along the avatar-local axis."));
+                        if (!TryGetAvatarPlane(out Vector3 normal, out float offset))
+                        {
+                            throw new InvalidOperationException(L10n.Tr("アバターのローカル軸を、メッシュの座標に換算できません（スケールが 0 など）。", "The avatar-local axis cannot be converted to mesh coordinates (zero scale, etc.)."));
+                        }
+                        ShapeKeyListOperations.SplitByPlane(Data, entry, normal, offset, _settings.BlendWidth, _settings.LeftIsPositive, _settings.DisableSources, out left, out right);
+                    }
+                    else
+                    {
+                        ShapeKeyListOperations.SplitLeftRight(Data, entry, _settings.Axis, _settings.Center, _settings.BlendWidth,
+                            _settings.LeftIsPositive, _settings.DisableSources, out left, out right);
+                    }
                     added.Add(left);
                     added.Add(right);
                 }
@@ -1099,6 +1029,8 @@ namespace GP02.EditorTools
             var menu = new GenericMenu();
 
             AddItem(menu, L10n.Tr("布で編集する", "Edit with cloth"), selected.Count == 1, EditWithCloth);
+            AddItem(menu, L10n.Tr("これだけ表示（ソロ）", "Show only this (solo)"), selected.Count == 1, () => SetSolo(IsSolo(selected[0]) ? null : selected[0]));
+            AddVersionMenu(menu, selected);
             menu.AddSeparator("");
             AddItem(menu, L10n.Tr("複製", "Duplicate"), any, DuplicateSelected);
             AddItem(menu, L10n.Tr("コピー", "Copy"), any, CopySelected);
@@ -1112,6 +1044,13 @@ namespace GP02.EditorTools
             AddItem(menu, L10n.Tr("量を拡大縮小", "Scale amount"), any, ScaleSelected);
             AddItem(menu, L10n.Tr("法線を計算し直す", "Recompute normals"), any, RecomputeNormalsSelected);
             AddItem(menu, L10n.Tr("in-between にする（順に並べる）", "Chain into in-between"), any, MakeInBetween);
+            AddItem(menu, L10n.Tr("差し引き（上 − 下）", "Subtract (upper − lower)"), selected.Count == 2, SubtractSelected);
+            AddItem(menu, L10n.Tr("選んだ点で分割", "Split by selected points"), any, SplitBySelection);
+            AddItem(menu, L10n.Tr("選んだ点の範囲だけ取り出す", "Extract the selected range"), any, () => ApplyRange(ShapeKeyMaskOperation.Extract));
+            AddItem(menu, L10n.Tr("選んだ点の範囲を消す", "Remove the selected range"), any, () => ApplyRange(ShapeKeyMaskOperation.Remove));
+            menu.AddSeparator("");
+            AddItem(menu, L10n.Tr("素体に焼き込む印を付ける", "Mark as prebake"), any, () => SetPrebake(selected, true));
+            AddItem(menu, L10n.Tr("素体に焼き込む印を外す", "Unmark prebake"), any, () => SetPrebake(selected, false));
             menu.AddSeparator("");
             AddItem(menu, L10n.Tr("有効にする", "Enable"), any, () => SetEnabled(selected, true));
             AddItem(menu, L10n.Tr("無効にする", "Disable"), any, () => SetEnabled(selected, false));

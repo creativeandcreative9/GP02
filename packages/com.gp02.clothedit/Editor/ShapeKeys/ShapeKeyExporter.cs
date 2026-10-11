@@ -62,13 +62,22 @@ namespace GP02.EditorTools
         /// <exception cref="InvalidOperationException">書き出せないとき（理由は <see cref="GetProblem"/> と同じ）</exception>
         public static Mesh ExportToMesh(GP02ShapeKeys component, bool overwriteSameName, string folder = DefaultFolder)
         {
+            return ExportToMesh(component, ShapeKeyBuildOptions.FromComponent(component, overwriteSameName), folder);
+        }
+
+        /// <summary>
+        /// <see cref="ExportToMesh(GP02ShapeKeys, bool, string)"/> の、名前の前置き・後置き、頂点数違いを飛ばす設定も指定できる版。
+        /// 「素体に焼き込む」の印のエントリは、BlendShape にせず素体に焼き込まれる。
+        /// </summary>
+        public static Mesh ExportToMesh(GP02ShapeKeys component, ShapeKeyBuildOptions options, string folder = DefaultFolder)
+        {
             string problem = GetProblem(component);
             if (problem != null) throw new InvalidOperationException(problem);
             Renderer renderer = ClothEditController.FindRenderer(component.gameObject);
             Mesh source = GetSourceMesh(component);
 
             PrepareRenderer(renderer);
-            Mesh built = ShapeKeyLibrary.BuildMesh(source, component.Data, overwriteSameName);
+            Mesh built = ShapeKeyLibrary.BuildMesh(source, component.Data, options, out _);
             Undo.IncrementCurrentGroup();
 
             // 元のメッシュそのものを上書きしてしまわないよう、元と同じなら前回の書き出しとはみなさない
@@ -81,6 +90,90 @@ namespace GP02.EditorTools
             AssetDatabase.SaveAssets();
             Undo.IncrementCurrentGroup();
             return result;
+        }
+
+        /// <summary>
+        /// 書き出す前に、何が起きるか（追加・上書き・別名・焼き込み・飛ばす）の一覧を作る。メッシュは作らず、何も書き換えない。
+        /// 書き出せない状態（<see cref="GetProblem"/>）のときは null。
+        /// </summary>
+        public static List<ExportPlanItem> GetPlan(GP02ShapeKeys component, ShapeKeyBuildOptions options)
+        {
+            if (GetProblem(component) != null) return null;
+            return ShapeKeyExportPlan.Create(GetSourceMesh(component), component.Data, options);
+        }
+
+        // ------------------------------------------------------------------
+        // 重ね着のまとめて書き出し
+        // ------------------------------------------------------------------
+
+        /// <summary>1つのコンポーネントをまとめて書き出した結果。</summary>
+        public sealed class BatchItem
+        {
+            public GP02ShapeKeys Component;
+
+            /// <summary>書き出したメッシュ。失敗したら null。</summary>
+            public Mesh Mesh;
+
+            /// <summary>失敗した理由（利用者に見せる文章）。成功したら null。</summary>
+            public string Error;
+
+            /// <summary>トグル用に作った AnimationClip（作らなかったら空）。</summary>
+            public List<ShapeKeyAnimationExporter.ToggleClips> Clips = new List<ShapeKeyAnimationExporter.ToggleClips>();
+        }
+
+        /// <summary>
+        /// アバターのルート（Animator のある一番上の親。無ければ階層の一番上）。トグル用の AnimationClip のパスの基準になる。
+        /// </summary>
+        public static Transform FindAvatarRoot(Transform start)
+        {
+            if (start == null) return null;
+            Transform top = null;
+            for (Transform t = start; t != null; t = t.parent)
+            {
+                if (t.GetComponent<Animator>() != null) top = t;
+            }
+            return top != null ? top : start.root;
+        }
+
+        /// <summary>root の下（root 自身を含む、非アクティブも含む）にある <see cref="GP02ShapeKeys"/>。階層の上から順。</summary>
+        public static List<GP02ShapeKeys> FindComponents(Transform root)
+        {
+            var result = new List<GP02ShapeKeys>();
+            if (root != null) result.AddRange(root.GetComponentsInChildren<GP02ShapeKeys>(true));
+            return result;
+        }
+
+        /// <summary>
+        /// 同じアバターの下の複数の <see cref="GP02ShapeKeys"/>（重ね着の服ごと）を、一度に書き出す。
+        /// 1つが失敗しても残りは続け、結果にそれぞれの成否を入れる。名前の前置き・後置きはコンポーネントごとの設定を使う。
+        /// </summary>
+        /// <param name="createClips">true なら、書き出したシェイプキーごとのトグル用 AnimationClip も作る</param>
+        /// <param name="avatarRoot">AnimationClip のパスの基準。null なら <see cref="FindAvatarRoot"/></param>
+        public static List<BatchItem> ExportAll(IReadOnlyList<GP02ShapeKeys> components, bool overwriteSameName, string folder,
+            bool createClips, string clipFolder, Transform avatarRoot = null)
+        {
+            if (components == null) throw new ArgumentNullException(nameof(components));
+            var results = new List<BatchItem>();
+            foreach (GP02ShapeKeys component in components)
+            {
+                if (component == null) continue;
+                var item = new BatchItem { Component = component };
+                results.Add(item);
+                try
+                {
+                    ShapeKeyBuildOptions options = ShapeKeyBuildOptions.FromComponent(component, overwriteSameName);
+                    item.Mesh = ExportToMesh(component, options, folder);
+                    if (createClips)
+                    {
+                        item.Clips = ShapeKeyAnimationExporter.CreateToggleClips(component, options, clipFolder, avatarRoot);
+                    }
+                }
+                catch (Exception ex) when (ex is ArgumentException || ex is InvalidOperationException)
+                {
+                    item.Error = $"{component.gameObject.name}: {ex.Message}";
+                }
+            }
+            return results;
         }
 
         // built を asset として保存する。previous が既存のアセットならその中身を置き換え、built は捨てる
@@ -119,6 +212,16 @@ namespace GP02.EditorTools
         public static Mesh BakeIntoBase(GP02ShapeKeys component, IReadOnlyList<ShapeKeyEntry> entries, IReadOnlyList<float> weights,
             bool remapBoneWeights, float remapThreshold, string folder = DefaultFolder)
         {
+            return BakeIntoBase(component, entries, weights, remapBoneWeights ? new BoneWeightRemapOptions { Threshold = remapThreshold } : null, folder);
+        }
+
+        /// <summary>
+        /// <see cref="BakeIntoBase(GP02ShapeKeys, IReadOnlyList{ShapeKeyEntry}, IReadOnlyList{float}, bool, float, string)"/> の、
+        /// ボーンウェイトの付け替えかた（近くの頂点からもらう／左右を反転する、なめらかにする回数）を指定できる版。remap が null なら付け替えない。
+        /// </summary>
+        public static Mesh BakeIntoBase(GP02ShapeKeys component, IReadOnlyList<ShapeKeyEntry> entries, IReadOnlyList<float> weights,
+            BoneWeightRemapOptions remap, string folder = DefaultFolder)
+        {
             string problem = GetProblem(component);
             if (problem != null) throw new InvalidOperationException(problem);
             if (entries == null || entries.Count == 0) throw new ArgumentException(L10n.Tr("焼き込むシェイプキーを選んでください。", "Select the shape keys to bake."), nameof(entries));
@@ -131,10 +234,14 @@ namespace GP02.EditorTools
             Mesh baked;
             try
             {
-                if (remapBoneWeights)
+                if (remap != null)
                 {
+                    if (remap.Mode == BoneWeightRemapMode.Mirror && remap.BoneNames == null && renderer is SkinnedMeshRenderer skinned)
+                    {
+                        remap.BoneNames = BoneNamesOf(skinned);
+                    }
                     Vector3[] total = TotalDeltas(entries, weights, source.vertexCount);
-                    basis = remapped = ShapeKeyLibrary.RemapBoneWeights(source, total, remapThreshold);
+                    basis = remapped = ShapeKeyLibrary.RemapBoneWeights(source, total, remap);
                 }
                 baked = ShapeKeyLibrary.BakeIntoBase(basis, entries, weights);
             }
@@ -150,6 +257,15 @@ namespace GP02.EditorTools
             AssetDatabase.SaveAssets();
             Undo.IncrementCurrentGroup();
             return result;
+        }
+
+        /// <summary>SkinnedMeshRenderer のボーン（メッシュのボーン番号の順）の名前。ボーンが無い所は空の名前。</summary>
+        public static string[] BoneNamesOf(SkinnedMeshRenderer renderer)
+        {
+            Transform[] bones = renderer.bones;
+            var names = new string[bones.Length];
+            for (int i = 0; i < names.Length; i++) names[i] = bones[i] != null ? bones[i].name : "";
+            return names;
         }
 
         // エントリを重みで評価して足した、位置の差分

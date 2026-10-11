@@ -65,10 +65,16 @@ namespace GP02.EditorTools
                     $"{path}: メッシュ「{source.name}」の頂点数（{source.vertexCount}）が、データの頂点数（{component.Data.VertexCount}）と違うので、シェイプキーを適用できません。");
             }
 
-            Mesh built = ShapeKeyLibrary.BuildMesh(source, component.Data, true);
+            // 名前の前置き・後置きと「焼き込み」の印は、書き出しと同じ計画で扱う
+            ShapeKeyBuildOptions options = ShapeKeyBuildOptions.FromComponent(component, true);
+            Mesh built = ShapeKeyLibrary.BuildMesh(source, component.Data, options, out List<ExportPlanItem> plan);
+            foreach (ExportPlanItem item in plan)
+            {
+                if (item.Action == ExportAction.SkipIncompatible) result.Warnings.Add($"{path}: シェイプキー「{item.Entry.Name}」は頂点数が合わないので飛ばしました。");
+            }
             saveAsset?.Invoke(built);
             AssignMesh(renderer, built);
-            SetWeights(renderer, built, component);
+            SetWeights(renderer, built, component, plan);
             return true;
         }
 
@@ -92,15 +98,15 @@ namespace GP02.EditorTools
             else renderer.GetComponent<MeshFilter>().sharedMesh = mesh;
         }
 
-        static void SetWeights(Renderer renderer, Mesh mesh, GP02ShapeKeys component)
+        static void SetWeights(Renderer renderer, Mesh mesh, GP02ShapeKeys component, List<ExportPlanItem> plan)
         {
             if (!(renderer is SkinnedMeshRenderer skinned)) return;
-            foreach (ShapeKeyEntry entry in component.Data.Entries)
+            foreach (ExportPlanItem item in plan)
             {
-                if (entry == null || !entry.Enabled || entry.Frames.Count == 0) continue;
-                int index = mesh.GetBlendShapeIndex(entry.Name);
+                if (!item.ProducesBlendShape) continue;
+                int index = mesh.GetBlendShapeIndex(item.BlendShapeName);
                 if (index < 0) continue;
-                skinned.SetBlendShapeWeight(index, component.InitialWeight == ShapeKeyInitialWeight.PreviewWeight ? entry.PreviewWeight : 0f);
+                skinned.SetBlendShapeWeight(index, component.InitialWeight == ShapeKeyInitialWeight.PreviewWeight ? item.Entry.PreviewWeight : 0f);
             }
         }
     }

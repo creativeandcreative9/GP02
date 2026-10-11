@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using GP02.Core;
-using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
 using NVector3 = System.Numerics.Vector3;
@@ -15,7 +14,7 @@ namespace GP02.EditorTools
     /// 差分の計算そのものは計算の中核（<see cref="ShapeKeyMath"/>）で行い、ここは Unity の型との受け渡しをする。
     /// メッシュを返す関数は、元のメッシュを変更せず複製を返す（アセットにはしない。保存は呼び出し側）。
     /// </summary>
-    public static class ShapeKeyLibrary
+    public static partial class ShapeKeyLibrary
     {
         public const string DataFolder = "Assets/GP02/Data";
         const string MeshSuffix = "_GP02";
@@ -37,53 +36,60 @@ namespace GP02.EditorTools
         /// <exception cref="ArgumentException">データの頂点数がメッシュと違う、エントリの名前が空、差分の長さが違うとき</exception>
         public static Mesh BuildMesh(Mesh source, GP02ShapeKeyData data, bool overwriteSameName)
         {
+            return BuildMesh(source, data, new ShapeKeyBuildOptions { OverwriteSameName = overwriteSameName }, out _);
+        }
+
+        /// <summary>
+        /// <see cref="BuildMesh(Mesh, GP02ShapeKeyData, bool)"/> の、名前の前置き・後置き、焼き込み、頂点数違いを飛ばす設定を使える版。
+        /// 先に <see cref="ShapeKeyExportPlan"/> で何をするかを決め、そのとおりに作る。
+        /// 「素体に焼き込む」の印（<see cref="ShapeKeyEntry.Prebake"/>）のエントリは、BlendShape にせず、先にその重みで素体の頂点に焼き込む。
+        /// 元のメッシュは変えず、毎回元のメッシュから作るので、印を外して書き出し直せば素体は元に戻る。
+        /// </summary>
+        /// <param name="plan">実際に行ったこと（エントリごと）</param>
+        public static Mesh BuildMesh(Mesh source, GP02ShapeKeyData data, ShapeKeyBuildOptions options, out List<ExportPlanItem> plan)
+        {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (data == null) throw new ArgumentNullException(nameof(data));
+            options = options ?? new ShapeKeyBuildOptions();
             int vertexCount = source.vertexCount;
             if (data.VertexCount != vertexCount)
             {
                 throw new ArgumentException($"シェイプキーのデータ（頂点 {data.VertexCount} 個）と、メッシュ「{source.name}」（頂点 {vertexCount} 個）の頂点数が違います。", nameof(data));
             }
 
-            // 追加する分と、置き換える分を先に決める
-            var usedNames = new HashSet<string>();
-            for (int i = 0; i < source.blendShapeCount; i++) usedNames.Add(source.GetBlendShapeName(i));
+            plan = ShapeKeyExportPlan.Create(source, data, options);
+            string problem = ShapeKeyExportPlan.FirstProblem(plan);
+            if (problem != null) throw new ArgumentException(problem, nameof(data));
+
+            // 焼き込む分を先に素体へ。焼き込みが無ければ、元のメッシュの複製
+            var bakeEntries = new List<ShapeKeyEntry>();
+            var bakeWeights = new List<float>();
+            foreach (ExportPlanItem item in plan)
+            {
+                if (item.Action != ExportAction.Prebake) continue;
+                bakeEntries.Add(item.Entry);
+                bakeWeights.Add(Mathf.Clamp(item.Entry.PrebakeWeight, 0f, ShapeKeyMath.FullWeight));
+            }
+            Mesh mesh;
+            if (bakeEntries.Count > 0) mesh = BakeIntoBase(source, bakeEntries, bakeWeights);
+            else mesh = Object.Instantiate(source);
+            mesh.name = NameWithSuffix(source.name);
+
             var replaceAt = new Dictionary<int, ShapeKeyEntry>();
             var appended = new List<KeyValuePair<string, ShapeKeyEntry>>();
-            for (int e = 0; e < data.Entries.Count; e++)
+            foreach (ExportPlanItem item in plan)
             {
-                ShapeKeyEntry entry = data.Entries[e];
-                if (entry == null || !entry.Enabled || entry.Frames.Count == 0) continue;
-                if (string.IsNullOrEmpty(entry.Name)) throw new ArgumentException($"{e} 番目のシェイプキーの名前が空です。", nameof(data));
-                ValidateEntry(entry, vertexCount);
-
-                if (overwriteSameName)
+                if (!item.ProducesBlendShape) continue;
+                if (item.SourceIndex >= 0)
                 {
-                    int sourceIndex = source.GetBlendShapeIndex(entry.Name);
-                    if (sourceIndex >= 0)
-                    {
-                        replaceAt[sourceIndex] = entry;
-                        continue;
-                    }
-                    int appendedIndex = appended.FindIndex(pair => pair.Key == entry.Name);
-                    if (appendedIndex >= 0)
-                    {
-                        appended[appendedIndex] = new KeyValuePair<string, ShapeKeyEntry>(entry.Name, entry);
-                        continue;
-                    }
-                    appended.Add(new KeyValuePair<string, ShapeKeyEntry>(entry.Name, entry));
+                    replaceAt[item.SourceIndex] = item.Entry;
+                    continue;
                 }
-                else
-                {
-                    string name = entry.Name;
-                    for (int n = 1; usedNames.Contains(name); n++) name = $"{entry.Name} ({n})";
-                    usedNames.Add(name);
-                    appended.Add(new KeyValuePair<string, ShapeKeyEntry>(name, entry));
-                }
+                int appendedIndex = appended.FindIndex(pair => pair.Key == item.BlendShapeName);
+                if (appendedIndex >= 0) appended[appendedIndex] = new KeyValuePair<string, ShapeKeyEntry>(item.BlendShapeName, item.Entry);
+                else appended.Add(new KeyValuePair<string, ShapeKeyEntry>(item.BlendShapeName, item.Entry));
             }
 
-            Mesh mesh = Object.Instantiate(source);
-            mesh.name = NameWithSuffix(source.name);
             if (replaceAt.Count > 0)
             {
                 // BlendShape を1つだけ差し替える API は無いので、全部消して順に入れ直す。
@@ -321,51 +327,16 @@ namespace GP02.EditorTools
             if (clip == null) throw new ArgumentNullException(nameof(clip));
             rendererPath = rendererPath ?? "";
 
-            int count = mesh.vertexCount;
-            var vertices = new Vector3[count];
-            var normals = new Vector3[count];
-            var tangents = new Vector3[count];
-            bool anyNormals = false, anyTangents = false;
-            int used = 0;
-            foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
-            {
-                if (binding.type != typeof(SkinnedMeshRenderer) || binding.path != rendererPath) continue;
-                if (!binding.propertyName.StartsWith(BlendShapeCurvePrefix)) continue;
-                int shape = mesh.GetBlendShapeIndex(binding.propertyName.Substring(BlendShapeCurvePrefix.Length));
-                if (shape < 0) continue;
-                AnimationCurve curve = AnimationUtility.GetEditorCurve(clip, binding);
-                if (curve == null) continue;
-                float weight = curve.Evaluate(time);
-                if (weight == 0f) continue;
-
-                ShapeKeyEntry shapeEntry = ImportFromBlendShape(mesh, shape);
-                Accumulate(vertices, EvaluateChannel(shapeEntry, weight, count, frame => frame.DeltaVertices));
-                if (AnyFrame(shapeEntry, frame => frame.HasNormals))
-                {
-                    anyNormals = true;
-                    Accumulate(normals, EvaluateChannel(shapeEntry, weight, count, frame => frame.DeltaNormals));
-                }
-                if (AnyFrame(shapeEntry, frame => frame.HasTangents))
-                {
-                    anyTangents = true;
-                    Accumulate(tangents, EvaluateChannel(shapeEntry, weight, count, frame => frame.DeltaTangents));
-                }
-                used++;
-            }
-            if (used == 0)
+            var curves = CollectBlendShapeCurves(mesh, clip, rendererPath);
+            ShapeKeyFrame frame = ComposeFromCurves(mesh, curves, time, new Dictionary<int, ShapeKeyEntry>());
+            if (frame == null)
             {
                 throw new InvalidOperationException(
                     $"アニメーションクリップ「{clip.name}」の {time} 秒に、パス「{rendererPath}」の SkinnedMeshRenderer が持つ、メッシュ「{mesh.name}」の BlendShape の値（0 以外）がありません。");
             }
 
             var entry = new ShapeKeyEntry { Name = clip.name };
-            entry.Frames.Add(new ShapeKeyFrame
-            {
-                Weight = ShapeKeyMath.FullWeight,
-                DeltaVertices = vertices,
-                DeltaNormals = anyNormals ? normals : new Vector3[0],
-                DeltaTangents = anyTangents ? tangents : new Vector3[0],
-            });
+            entry.Frames.Add(frame);
             return entry;
         }
 
@@ -452,8 +423,10 @@ namespace GP02.EditorTools
         static NVector3[] ToNumericsArray(Vector3[] source) => MeshBridge.ToNumerics(source, Vector3.one);
         static Vector3[] ToUnityArray(NVector3[] source) => MeshBridge.ToUnity(source, Vector3.one);
 
-        // 全フレーム・全チャンネルに同じ操作をかけた、新しいエントリを作る（空のチャンネルは空のまま）
-        static ShapeKeyEntry MapEntry(ShapeKeyEntry entry, string name, Func<Vector3[], Vector3[]> operation)
+        // 全フレーム・全チャンネルに同じ操作をかけた、新しいエントリを作る（空のチャンネルは空のまま）。
+        // keepHistory が true（複製）なら、素体への焼き込みの印・作った日時・前の版も引き継ぐ。
+        // 左右反転・分割などの別のエントリになるものは、印も履歴も引き継がない
+        static ShapeKeyEntry MapEntry(ShapeKeyEntry entry, string name, Func<Vector3[], Vector3[]> operation, bool keepHistory = false)
         {
             var result = new ShapeKeyEntry
             {
@@ -473,6 +446,13 @@ namespace GP02.EditorTools
                     DeltaNormals = frame.HasNormals ? operation(frame.DeltaNormals) : new Vector3[0],
                     DeltaTangents = frame.HasTangents ? operation(frame.DeltaTangents) : new Vector3[0],
                 });
+            }
+            if (keepHistory)
+            {
+                result.Prebake = entry.Prebake;
+                result.PrebakeWeight = entry.PrebakeWeight;
+                result.CreatedTicks = entry.CreatedTicks;
+                foreach (ShapeKeyVersion version in entry.History) result.History.Add(ShapeKeyHistory.CloneVersion(version));
             }
             return result;
         }
@@ -535,7 +515,7 @@ namespace GP02.EditorTools
         public static ShapeKeyEntry CloneEntry(ShapeKeyEntry entry, string newName = null)
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
-            return MapEntry(entry, newName ?? entry.Name, deltas => (Vector3[])deltas.Clone());
+            return MapEntry(entry, newName ?? entry.Name, deltas => (Vector3[])deltas.Clone(), true);
         }
 
         /// <summary>
@@ -577,86 +557,7 @@ namespace GP02.EditorTools
         /// <exception cref="InvalidOperationException">メッシュにボーンウェイトが無いとき</exception>
         public static Mesh RemapBoneWeights(Mesh mesh, Vector3[] deltas, float threshold)
         {
-            if (mesh == null) throw new ArgumentNullException(nameof(mesh));
-            if (deltas == null) throw new ArgumentNullException(nameof(deltas));
-            int count = mesh.vertexCount;
-            if (deltas.Length != count) throw new ArgumentException($"差分の数（{deltas.Length}）がメッシュの頂点数（{count}）と違います。", nameof(deltas));
-            NativeArray<byte> bonesPerVertex = mesh.GetBonesPerVertex();
-            if (bonesPerVertex.Length != count) throw new InvalidOperationException($"メッシュ「{mesh.name}」にボーンウェイトがありません。");
-            NativeArray<BoneWeight1> allWeights = mesh.GetAllBoneWeights();
-
-            var offsets = new int[count + 1];
-            for (int v = 0; v < count; v++) offsets[v + 1] = offsets[v] + bonesPerVertex[v];
-
-            Vector3[] positions = mesh.vertices;
-            var grid = new PointGrid(0.02f);
-            for (int v = 0; v < count; v++) grid.Add(v, new NVector3(positions[v].x, positions[v].y, positions[v].z));
-
-            // 付け替える頂点ごとの、ウェイトをもらう頂点
-            var donor = new int[count];
-            var searchResult = new List<int>();
-            float thresholdSq = threshold * threshold;
-            for (int v = 0; v < count; v++)
-            {
-                donor[v] = v;
-                if (deltas[v].sqrMagnitude < thresholdSq) continue;
-                Vector3 moved = positions[v] + deltas[v];
-                var target = new NVector3(moved.x, moved.y, moved.z);
-                int best = -1;
-                float bestDistance = float.MaxValue;
-                // 近い頂点が見つかるまで、探す半径を広げる。見つかった最も近い点が半径の内側なら、それが全体で一番近い
-                for (float radius = 0.02f; radius <= MaxGridSearchRadius && best < 0; radius *= 2f)
-                {
-                    grid.Query(target, radius, searchResult);
-                    foreach (int u in searchResult)
-                    {
-                        float d = (positions[u] - moved).sqrMagnitude;
-                        if (d < bestDistance && d <= radius * radius)
-                        {
-                            bestDistance = d;
-                            best = u;
-                        }
-                    }
-                }
-                if (best < 0)
-                {
-                    // 遠くに動いた頂点は、格子で探すとセルを調べすぎるので、全部の頂点から探す
-                    for (int u = 0; u < count; u++)
-                    {
-                        float d = (positions[u] - moved).sqrMagnitude;
-                        if (d < bestDistance)
-                        {
-                            bestDistance = d;
-                            best = u;
-                        }
-                    }
-                }
-                donor[v] = best;
-            }
-
-            int total = 0;
-            for (int v = 0; v < count; v++) total += offsets[donor[v] + 1] - offsets[donor[v]];
-            var newBones = new NativeArray<byte>(count, Allocator.Temp);
-            var newWeights = new NativeArray<BoneWeight1>(total, Allocator.Temp);
-            try
-            {
-                int write = 0;
-                for (int v = 0; v < count; v++)
-                {
-                    int d = donor[v];
-                    newBones[v] = bonesPerVertex[d];
-                    for (int k = offsets[d]; k < offsets[d + 1]; k++) newWeights[write++] = allWeights[k];
-                }
-                Mesh result = Object.Instantiate(mesh);
-                result.name = NameWithSuffix(mesh.name);
-                result.SetBoneWeights(newBones, newWeights);
-                return result;
-            }
-            finally
-            {
-                newBones.Dispose();
-                newWeights.Dispose();
-            }
+            return RemapBoneWeights(mesh, deltas, new BoneWeightRemapOptions { Threshold = threshold });
         }
 
         // ------------------------------------------------------------------
@@ -687,12 +588,25 @@ namespace GP02.EditorTools
             AssetDatabase.SaveAssets();
         }
 
+        static long _lastStamp;
+
+        /// <summary>エントリの作った日時を今にする。同じ瞬間に何個作っても、必ず作った順に大きくなる。</summary>
+        public static void StampCreated(ShapeKeyEntry entry)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            long now = DateTime.UtcNow.Ticks;
+            if (now <= _lastStamp) now = _lastStamp + 1;
+            _lastStamp = now;
+            entry.CreatedTicks = now;
+        }
+
         /// <summary>エントリをデータに加える（Undo できる）。グループ名がデータの一覧に無ければ、一覧にも加える。</summary>
         public static void AddEntry(GP02ShapeKeyData data, ShapeKeyEntry entry)
         {
             if (data == null) throw new ArgumentNullException(nameof(data));
             if (entry == null) throw new ArgumentNullException(nameof(entry));
             Undo.RecordObject(data, "GP02 シェイプキーを追加");
+            if (entry.CreatedTicks == 0) StampCreated(entry);
             data.Entries.Add(entry);
             if (!string.IsNullOrEmpty(entry.Group) && !data.Groups.Contains(entry.Group)) data.Groups.Add(entry.Group);
             EditorUtility.SetDirty(data);
