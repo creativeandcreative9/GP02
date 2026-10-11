@@ -138,6 +138,7 @@ namespace GP02.EditorTools
             DrawTopBar();
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             DrawGuide();
+            if (!_controller.IsEditing && ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
             DrawTargetSection();
             DrawToolSection();
             DrawBrushSection();
@@ -324,7 +325,8 @@ namespace GP02.EditorTools
                 }
                 if (EditorGUI.EndChangeCheck()) _warningsDirty = true;
 
-                if (GUILayout.Button(L10n.Tr("選択中のオブジェクトから設定", "Set from Selection")))
+                if (GUILayout.Button(new GUIContent(L10n.Tr("選択中のオブジェクトから設定", "Set from Selection"),
+                    L10n.Tr("ヒエラルキーで選んでいる衣装（SkinnedMeshRenderer か MeshRenderer）を対象にします", "Use the clothing selected in the Hierarchy (SkinnedMeshRenderer or MeshRenderer) as the target"))))
                 {
                     PickFromSelection();
                     _warningsDirty = true;
@@ -412,6 +414,7 @@ namespace GP02.EditorTools
                 EditorGUILayout.LabelField(L10n.Tr("最大の伸び", "Max Stretch"), $"{_controller.LastStretch * 100f:F1} %");
                 EditorGUILayout.LabelField(L10n.Tr("高速化", "Acceleration"), ClothEditSession.DescribeAcceleration(session.Solver.Kernel));
                 EditorGUILayout.LabelField(L10n.Tr("状態", "State"), _controller.StateLabel);
+                if (ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
             }
             EditorGUILayout.Space();
         }
@@ -842,6 +845,12 @@ namespace GP02.EditorTools
                     "Loose clothing can then give more slack and keeps less stretch (it still does not enter the body or inner cloth). " +
                     "When off, the gap is 0 and the cloth never goes inside its original surface. Irrelevant if \"Stay Outside Original Surface\" is off. Default on")),
                 _settings.UseRestSurfaceAllowance);
+            _settings.KeepLayersApart = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("重ね着の層を押し分ける", "Keep Layers Apart"),
+                L10n.Tr("オンにすると、重ね着の外の布を内へ押したときに内の布も一緒に押され、外の布が内の布を突き抜けません（重ね着をまとめて編集するときや、1つのメッシュに層があるとき）。" +
+                        "外へ引くと、周りの外の布が締まって内の布を少し押すことがあります。気になるときはオフにします。既定はオン",
+                    "When on, pushing the outer layer of layered clothing also pushes the inner layer, and the outer layer never passes through it (when editing layers together, or when one mesh has several layers). " +
+                    "Pulling outward may tighten the surrounding outer cloth and push the inner layer slightly; turn this off if that bothers you. Default on")),
+                _settings.KeepLayersApart);
 
             IClothSolverKernel kernel = ClothSolver.DefaultKernel;
             if (kernel != null)

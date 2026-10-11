@@ -505,3 +505,6 @@ unity/Assets/GP02/
 unity/Assets/GP02.meta
 unity/Assets/Local/
 unity/Assets/Local.meta
+
+# パッケージの説明書（Unity に読み込ませないためのチルダ付きフォルダ）
+!packages/com.gp02.clothedit/Documentation~/

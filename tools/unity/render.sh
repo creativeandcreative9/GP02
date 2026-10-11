@@ -7,6 +7,7 @@
 #
 # 開発用の unity/ とは別の作業用プロジェクト（tools/unity/out/render_project）を使うので、
 # run-tests.sh と同時に動かしてもぶつからない。Burst は入れない（描画の確認には不要）。
+# GP02_RENDER_BURST=1 なら Burst を入れる（Burst のある環境での仕上がりを見るとき）。
 # ライセンスは run-tests.sh と同じ（UNITY_EMAIL と UNITY_PASSWORD、または UNITY_LICENSE_B64）。
 #
 # 出力（Gitには含めない）:
@@ -38,12 +39,13 @@ rm -f "$OUT"/*.png "$OUT/unity.log"
 rm -rf "$PROJECT/ProjectSettings"
 cp -r "$REPO/unity/ProjectSettings" "$PROJECT/"
 cp "$REPO/tools/unity/render/RenderScenes.cs" "$REPO/tools/unity/render/RenderScenes.asmdef" "$PROJECT/Assets/RenderScenes/"
-python3 -I - "$REPO/unity/Packages/manifest.json" "$PROJECT/Packages/manifest.json" <<'PY'
+python3 -I - "$REPO/unity/Packages/manifest.json" "$PROJECT/Packages/manifest.json" "${GP02_RENDER_BURST:-0}" <<'PY'
 import json, sys
 manifest = json.load(open(sys.argv[1]))
 deps = manifest["dependencies"]
 deps["com.gp02.clothedit"] = "file:/repo/packages/com.gp02.clothedit"
-deps.pop("com.unity.burst", None)
+if sys.argv[3] != "1":
+    deps.pop("com.unity.burst", None)
 json.dump(manifest, open(sys.argv[2], "w"), indent=2)
 PY
 
