@@ -31,9 +31,9 @@ namespace GP02.EditorTools
                 stretchRest = d.StretchRestLengths, stretchLambda = d.StretchLambda, grabDistance = d.GrabDistance, pinDistance = d.PinDistance)
             fixed (int* graphOffsets = d.GraphOffsets, graphNeighbors = d.GraphNeighbors,
                 bendPairs = d.BendPairs, activeBend = d.ActiveBend, stretchPairs = d.StretchPairs, activeStretch = d.ActiveStretch,
-                activeParticles = d.ActiveParticles, nearestPin = d.NearestPin)
+                activeParticles = d.ActiveParticles, nearestPin = d.NearestPin, grabSource = d.GrabSource)
             fixed (bool* inBrush = d.InBrush)
-            fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals, brushStart = d.BrushStart, brushLambda = d.BrushLambda)
+            fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals, brushGoal = d.BrushGoal, brushLambda = d.BrushLambda)
             fixed (int* restAnchor = d.RestAnchor)
             fixed (float* restAllowance = d.RestAllowance)
             {
@@ -64,6 +64,7 @@ namespace GP02.EditorTools
                     Grabbed = d.Grabbed,
                     InBrush = (byte*)inBrush,
                     GrabDistance = grabDistance,
+                    GrabSource = grabSource,
                     NearestPin = nearestPin,
                     PinDistance = pinDistance,
                     // 配列が null のときは使わない（KeepOutsideRestSurface を 0 にする）
@@ -74,12 +75,9 @@ namespace GP02.EditorTools
                     // null のとき fixed は null ポインタを返す。Burst 側は null なら 0 として扱う
                     RestAllowance = restAllowance,
                     // 配列が無いときは引き寄せない
-                    BrushCompliance = brushStart != null && brushLambda != null ? d.BrushCompliance : 0f,
-                    BrushStart = (float*)brushStart,
+                    BrushCompliance = brushGoal != null && brushLambda != null ? d.BrushCompliance : 0f,
+                    BrushGoal = (float*)brushGoal,
                     BrushLambda = (float*)brushLambda,
-                    BrushMoveX = d.BrushMove.X,
-                    BrushMoveY = d.BrushMove.Y,
-                    BrushMoveZ = d.BrushMove.Z,
                 };
                 BurstClothKernels.Iterate(&args, iterations);
             }

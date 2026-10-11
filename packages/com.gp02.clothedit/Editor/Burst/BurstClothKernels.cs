@@ -38,7 +38,8 @@ namespace GP02.EditorTools
             public int ActiveParticleCount;
             public int Grabbed;
             public byte* InBrush;
-            public float* GrabDistance;
+            public float* GrabDistance;          // つまんだ範囲（いずれかの粒子）からの距離
+            public int* GrabSource;              // 一番近い、つまんだ範囲の粒子（テザーの起点）
             public int* NearestPin;
             public float* PinDistance;
             public int KeepOutsideRestSurface;   // 0 / 1
@@ -47,11 +48,8 @@ namespace GP02.EditorTools
             public int* RestAnchor;
             public float* RestAllowance;         // null なら 0
             public float BrushCompliance;        // 0 以下なら、つまんだ範囲を引き寄せない
-            public float* BrushStart;
+            public float* BrushGoal;             // 粒子ごとの目標（内部の座標）
             public float* BrushLambda;
-            public float BrushMoveX;
-            public float BrushMoveY;
-            public float BrushMoveZ;
         }
 
         public struct CoarseLevelArgs
@@ -278,7 +276,8 @@ namespace GP02.EditorTools
             for (int n = 0; n < a->ActiveParticleCount; n++)
             {
                 int i = a->ActiveParticles[n];
-                if (a->Grabbed >= 0 && a->InBrush[i] == 0) SolveTether(a->Positions, i, a->Grabbed, a->GrabDistance[i]);
+                // つまんだ範囲の外側は、一番近い範囲の粒子から、メッシュに沿った距離より遠くへは離れない
+                if (a->Grabbed >= 0 && a->InBrush[i] == 0) SolveTether(a->Positions, i, a->GrabSource[i], a->GrabDistance[i]);
 
                 // つまんだ範囲も、ピンから布の長さ以上は離れない
                 int pin = a->NearestPin[i];
@@ -286,23 +285,22 @@ namespace GP02.EditorTools
             }
         }
 
-        // つまんだ範囲の各粒子を、つまみ始めの位置＋つまんだ点の移動量へ引き寄せる（XPBD の柔らかい制約）
+        // つまんだ範囲の各粒子を、粒子ごとの目標へ引き寄せる（XPBD の柔らかい制約）
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void SolveBrushTargets(IterationArgs* a)
         {
             float* p = a->Positions;
-            float* start = a->BrushStart;
+            float* goal = a->BrushGoal;
             float* lambda = a->BrushLambda;
             float alpha = a->BrushCompliance;
-            float mx = a->BrushMoveX, my = a->BrushMoveY, mz = a->BrushMoveZ;
             float scale = 1f / (1f + alpha);
             for (int n = 0; n < a->ActiveParticleCount; n++)
             {
                 int i = a->ActiveParticles[n];
                 if (a->InBrush[i] == 0) continue;
-                float dx = (-(p[3 * i] - start[3 * i] - mx) - alpha * lambda[3 * i]) * scale;
-                float dy = (-(p[3 * i + 1] - start[3 * i + 1] - my) - alpha * lambda[3 * i + 1]) * scale;
-                float dz = (-(p[3 * i + 2] - start[3 * i + 2] - mz) - alpha * lambda[3 * i + 2]) * scale;
+                float dx = (-(p[3 * i] - goal[3 * i]) - alpha * lambda[3 * i]) * scale;
+                float dy = (-(p[3 * i + 1] - goal[3 * i + 1]) - alpha * lambda[3 * i + 1]) * scale;
+                float dz = (-(p[3 * i + 2] - goal[3 * i + 2]) - alpha * lambda[3 * i + 2]) * scale;
                 lambda[3 * i] += dx;
                 lambda[3 * i + 1] += dy;
                 lambda[3 * i + 2] += dz;
@@ -339,7 +337,7 @@ namespace GP02.EditorTools
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void SolveTether(float* p, int i, int origin, float maxLength)
         {
-            if (math.isinf(maxLength)) return;
+            if (origin < 0 || math.isinf(maxLength)) return;
             float ox = p[3 * origin], oy = p[3 * origin + 1], oz = p[3 * origin + 2];
             float dx = p[3 * i] - ox, dy = p[3 * i + 1] - oy, dz = p[3 * i + 2] - oz;
             float lengthSquared = dx * dx + dy * dy + dz * dz;

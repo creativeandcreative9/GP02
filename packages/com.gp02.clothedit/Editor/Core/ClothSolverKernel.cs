@@ -20,6 +20,7 @@ namespace GP02.Core
         /// 1. 計算範囲の伸び・曲げの制約の λ を 0 に戻す（<see cref="ClothSolverIterationData.ActiveStretch"/>、<see cref="ClothSolverIterationData.ActiveBend"/>）
         /// 2. <see cref="ClothSolverIterationData.KeepOutsideRestSurface"/> が true なら、元の形の近い粒子（<see cref="ClothSolverIterationData.RestAnchor"/>）を探し直す
         /// 3. 反復を iterations 回行う（つまんだ範囲の引き寄せ → 曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約）。
+        ///    テザーは、粒子ごとに「範囲の外側なら GrabSource から GrabDistance 以内」→「NearestPin から PinDistance 以内」の順。
         ///    最初の引き寄せは <see cref="ClothSolverIterationData.BrushCompliance"/> が正のときだけ、
         ///    最後の制約は KeepOutsideRestSurface が true のときだけ
         /// 4. 計算範囲の粒子の位置を、ワールド座標（内部の座標 + <see cref="ClothSolverIterationData.Origin"/>）として
@@ -78,14 +79,20 @@ namespace GP02.Core
         public readonly int[] ActiveParticles;
         public readonly int ActiveParticleCount;
 
-        /// <summary>つまんでいる範囲の中心の粒子。つまんでいなければ -1。</summary>
+        /// <summary>つまんでいる範囲の中心の粒子。つまんでいなければ -1（つまんでいるかどうかの判断にだけ使う）。</summary>
         public readonly int Grabbed;
 
         /// <summary>つまんでいる範囲に含まれるか（粒子ごと、1バイトの bool）。</summary>
         public readonly bool[] InBrush;
 
-        /// <summary>つまんだ中心から、メッシュに沿った距離（つながっていなければ無限大）。</summary>
+        /// <summary>つまんだ範囲（いずれかの粒子）から、メッシュに沿った距離（つながっていなければ無限大）。</summary>
         public readonly float[] GrabDistance;
+
+        /// <summary>
+        /// 一番近い、つまんだ範囲の粒子（つながっていなければ -1）。テザーで、範囲の外側の粒子 i は
+        /// GrabSource[i] から GrabDistance[i] より遠くへは離れない。
+        /// </summary>
+        public readonly int[] GrabSource;
 
         /// <summary>一番近いピンの粒子（なければ -1）と、そこまでのメッシュに沿った距離。</summary>
         public readonly int[] NearestPin;
@@ -110,21 +117,20 @@ namespace GP02.Core
         public readonly float[] RestAllowance;
 
         /// <summary>
-        /// つまんだ範囲の引き寄せのコンプライアンス。0 以下なら引き寄せない（つまんだ範囲は逆質量 0 で固定されている）。
-        /// 正なら、つまんだ範囲（InBrush）の粒子 i を、BrushStart[i] + BrushMove へ引き寄せる XPBD の制約を、x, y, z 別々に解く:
+        /// つまんだ範囲の引き寄せのコンプライアンス。0 以下なら引き寄せない（つまんだ範囲は逆質量 0 で、目標の位置に置いてある）。
+        /// 正なら、つまんだ範囲（InBrush）の粒子 i を、BrushGoal[i]（内部の座標）へ引き寄せる XPBD の制約を、x, y, z 別々に解く:
         /// Δ = (-(p - 目標) - α λ) / (1 + α)、λ += Δ、p += Δ。BrushLambda は書き換えてよい（Solve をまたいで引き継がれる）。
         /// </summary>
         public readonly float BrushCompliance;
-        public readonly Vector3[] BrushStart;
+        public readonly Vector3[] BrushGoal;
         public readonly Vector3[] BrushLambda;
-        public readonly Vector3 BrushMove;
 
         internal ClothSolverIterationData(Vector3[] positions, Vector3[] worldPositions, Vector3 origin, int[] graphOffsets, int[] graphNeighbors, float[] inverseMass,
             int[] bendPairs, float[] bendRestLengths, float[] bendLambda, int[] activeBend, int activeBendCount, float bendCompliance,
             int[] stretchPairs, float[] stretchRestLengths, float[] stretchLambda, int[] activeStretch, int activeStretchCount, float stretchCompliance,
-            int[] activeParticles, int activeParticleCount, int grabbed, bool[] inBrush, float[] grabDistance, int[] nearestPin, float[] pinDistance,
+            int[] activeParticles, int activeParticleCount, int grabbed, bool[] inBrush, float[] grabDistance, int[] grabSource, int[] nearestPin, float[] pinDistance,
             bool keepOutsideRestSurface, Vector3[] restPositions, Vector3[] restNormals, int[] restAnchor, float[] restAllowance,
-            float brushCompliance, Vector3[] brushStart, Vector3[] brushLambda, Vector3 brushMove)
+            float brushCompliance, Vector3[] brushGoal, Vector3[] brushLambda)
         {
             WorldPositions = worldPositions;
             Origin = origin;
@@ -132,9 +138,8 @@ namespace GP02.Core
             GraphNeighbors = graphNeighbors;
             RestAllowance = restAllowance;
             BrushCompliance = brushCompliance;
-            BrushStart = brushStart;
+            BrushGoal = brushGoal;
             BrushLambda = brushLambda;
-            BrushMove = brushMove;
             KeepOutsideRestSurface = keepOutsideRestSurface;
             RestPositions = restPositions;
             RestNormals = restNormals;
@@ -158,6 +163,7 @@ namespace GP02.Core
             Grabbed = grabbed;
             InBrush = inBrush;
             GrabDistance = grabDistance;
+            GrabSource = grabSource;
             NearestPin = nearestPin;
             PinDistance = pinDistance;
         }

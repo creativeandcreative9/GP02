@@ -44,6 +44,15 @@ namespace GP02.Core
         /// <param name="nearestSource">各ノードに一番近い起点（不要なら null）</param>
         public void ShortestDistances(int[] sources, float[] distances, int[] nearestSource)
         {
+            ShortestDistances(sources, sources.Length, distances, nearestSource, float.PositiveInfinity);
+        }
+
+        /// <summary>
+        /// sources の先頭 sourceCount 個を起点に、maxDistance 以内のノードまでの最短距離を求める。
+        /// maxDistance より遠いノードは無限大のまま（maxDistance 以内のノードの距離は正確）。
+        /// </summary>
+        public void ShortestDistances(int[] sources, int sourceCount, float[] distances, int[] nearestSource, float maxDistance)
+        {
             for (int i = 0; i < distances.Length; i++) distances[i] = float.PositiveInfinity;
             if (nearestSource != null)
             {
@@ -51,8 +60,9 @@ namespace GP02.Core
             }
 
             var heap = new MinHeap();
-            foreach (int s in sources)
+            for (int k = 0; k < sourceCount; k++)
             {
+                int s = sources[k];
                 distances[s] = 0f;
                 if (nearestSource != null) nearestSource[s] = s;
                 heap.Push(0f, s);
@@ -65,12 +75,39 @@ namespace GP02.Core
                 {
                     int next = _neighbors[e];
                     float candidate = distance + _lengths[e];
-                    if (candidate >= distances[next]) continue;
+                    if (candidate >= distances[next] || candidate > maxDistance) continue;
                     distances[next] = candidate;
                     if (nearestSource != null) nearestSource[next] = nearestSource[node];
                     heap.Push(candidate, next);
                 }
             }
+        }
+
+        /// <summary>つながった部品（島）ごとの番号を components に入れ、部品の数を返す。</summary>
+        public int Components(int[] components)
+        {
+            for (int i = 0; i < components.Length; i++) components[i] = -1;
+            var stack = new Stack<int>();
+            int count = 0;
+            for (int start = 0; start < components.Length; start++)
+            {
+                if (components[start] >= 0) continue;
+                components[start] = count;
+                stack.Push(start);
+                while (stack.Count > 0)
+                {
+                    int node = stack.Pop();
+                    for (int e = _offsets[node]; e < _offsets[node + 1]; e++)
+                    {
+                        int next = _neighbors[e];
+                        if (components[next] >= 0) continue;
+                        components[next] = count;
+                        stack.Push(next);
+                    }
+                }
+                count++;
+            }
+            return count;
         }
 
         sealed class MinHeap

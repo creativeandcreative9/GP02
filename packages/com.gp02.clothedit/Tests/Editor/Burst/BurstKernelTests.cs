@@ -116,6 +116,61 @@ namespace GP02.Tests
             }
         }
 
+        // 一般化したブラシ（回転・拡大縮小、なめらかな重み、対称、距離の測り方）でも C# と一致すること。
+        // テスト用のスカート（左右対称、ペチコートの層つき）の左前をつまみ、x = 0 の面で対称にする
+        [TestCase(BrushDistanceMode.Surface, ClothSolver.DefaultBrushCompliance)]
+        [TestCase(BrushDistanceMode.Linear, ClothSolver.DefaultBrushCompliance)]
+        [TestCase(BrushDistanceMode.Linear, 0f)]
+        public void BurstKernel_MatchesCSharpResult_WithGeneralBrush(BrushDistanceMode mode, float brushCompliance)
+        {
+            UnityEngine.Mesh mesh = TestClothMenu.CreateSkirtMesh();
+            var cloth = ParticleCloth.Build(MeshBridge.ToNumerics(mesh.vertices, UnityEngine.Vector3.one), mesh.triangles);
+            UnityEngine.Object.DestroyImmediate(mesh);
+
+            Vector3[] Run(IClothSolverKernel kernel, out int mirror, out int grabbedCount)
+            {
+                var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { Kernel = kernel, BrushCompliance = brushCompliance };
+                float top = float.MinValue;
+                foreach (Vector3 p in cloth.Model.RestPositions) top = System.Math.Max(top, p.Y);
+                for (int i = 0; i < cloth.Model.ParticleCount; i++)
+                {
+                    if (cloth.Model.RestPositions[i].Y > top - cloth.Spacing) solver.SetPinned(i, true);
+                }
+                int grabbed = solver.FindNearestParticle(new Vector3(-0.2f, top - 0.25f, -0.2f));
+                Vector3 pivot = solver.Positions[grabbed];
+                var options = new BrushOptions
+                {
+                    Radius = 0.04f,
+                    Falloff = FalloffCurve.Smooth,
+                    DistanceMode = mode,
+                    Mirror = new MirrorPlane(Vector3.Zero, Vector3.UnitX),
+                };
+                for (int f = 1; f <= 5; f++)
+                {
+                    var motion = new BrushMotion(new Vector3(0.01f, 0.02f, -0.05f) * f / 5f,
+                        Quaternion.CreateFromAxisAngle(Vector3.UnitY, 0.3f * f / 5f), 1f - 0.1f * f / 5f, pivot);
+                    solver.Grab(grabbed, motion, options);
+                    solver.Solve(10);
+                }
+                mirror = solver.MirrorParticle;
+                grabbedCount = solver.BrushParticleCount;
+                return solver.Positions.ToArray();
+            }
+
+            Vector3[] expected = Run(null, out int mirrorParticle, out int count);
+            Vector3[] actual = Run(new BurstClothSolverKernel(), out _, out _);
+            float moved = 0f, maxDifference = 0f;
+            for (int i = 0; i < expected.Length; i++)
+            {
+                moved = System.Math.Max(moved, Vector3.Distance(expected[i], cloth.Model.RestPositions[i]));
+                maxDifference = System.Math.Max(maxDifference, Vector3.Distance(expected[i], actual[i]));
+            }
+            Debug.Log($"[GP02] Burst と C# の差（一般化したブラシ、{mode}、つまむ柔らかさ {brushCompliance}）: 最大 {maxDifference:E2} m（つまんだ粒子 {count}、最大の移動 {moved:F3} m）");
+            Assert.That(mirrorParticle, Is.GreaterThanOrEqualTo(0), "鏡像の粒子が見つかりません");
+            Assert.That(moved, Is.GreaterThan(0.01f), "操作で動いていません");
+            Assert.That(maxDifference, Is.LessThan(1e-4f));
+        }
+
         // ピン留め → つまんで数コマ引っ張る → 仕上げ → 離す
         static Vector3[] Operate(ParticleCloth cloth, float size, IClothSolverKernel kernel, float brushCompliance = ClothSolver.DefaultBrushCompliance)
         {

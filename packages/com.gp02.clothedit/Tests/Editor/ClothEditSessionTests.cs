@@ -302,6 +302,55 @@ namespace GP02.Tests
             session.UpdateCurrentShape();
         }
 
+        // BeginGrab に範囲の決め方を渡し、UpdateGrab で平行移動・回転・拡大縮小すると、範囲が（鏡像側も）その動きで動く
+        [Test]
+        public void UpdateGrab_MovesRegionWithRotationAndMirror()
+        {
+            using (var session = NewQuadSession("GeneralBrushTarget", out _))
+            {
+                GP02.Core.ClothSolver solver = session.Solver;
+                solver.BrushCompliance = 0f;   // 目標に固定して、動きを正確に確かめる
+                var options = new GP02.Core.BrushOptions
+                {
+                    Falloff = GP02.Core.FalloffCurve.Constant,
+                    DistanceMode = GP02.Core.BrushDistanceMode.Linear,
+                    Mirror = new GP02.Core.MirrorPlane(NVector3.Zero, NVector3.UnitX),
+                };
+                var point = new Vector3(-0.25f, 0.1f, 0f);
+                Assert.That(session.BeginGrab(point, 0.05f, -1, options), Is.True);
+                Assert.That(solver.MirrorParticle, Is.GreaterThanOrEqualTo(0));
+
+                var translation = new Vector3(0f, 0.02f, -0.05f);
+                Quaternion rotation = Quaternion.AngleAxis(30f, Vector3.forward);
+                session.UpdateGrab(point + translation, rotation, 1.1f);
+                solver.Solve(0);   // 反復なし：範囲が目標に置かれるだけ
+
+                NVector3[] rest = solver.Model.RestPositions;
+                var mirror = new GP02.Core.MirrorPlane(NVector3.Zero, NVector3.UnitX);
+                var motion = new GP02.Core.BrushMotion(new NVector3(translation.x, translation.y, translation.z),
+                    new System.Numerics.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w), 1.1f, new NVector3(point.x, point.y, point.z));
+                int left = 0, right = 0;
+                for (int i = 0; i < rest.Length; i++)
+                {
+                    if (!solver.IsGrabbed(i)) continue;
+                    bool mirrored = rest[i].X > 0f;
+                    NVector3 expected = mirrored ? mirror.Reflect(motion.Apply(mirror.Reflect(rest[i]))) : motion.Apply(rest[i]);
+                    Assert.That(NVector3.Distance(expected, solver.Positions[i]), Is.LessThan(Tolerance), $"粒子 {i}");
+                    if (mirrored) right++;
+                    else left++;
+                }
+                Assert.That(left, Is.GreaterThan(5));
+                Assert.That(right, Is.EqualTo(left).Within(left / 5 + 1));
+
+                // DragTo は平行移動だけの UpdateGrab と同じ
+                session.DragTo(point + translation);
+                solver.Solve(0);
+                int seed = solver.GrabbedParticle;
+                Assert.That(NVector3.Distance(rest[seed] + new NVector3(translation.x, translation.y, translation.z), solver.Positions[seed]), Is.LessThan(Tolerance));
+                session.Release();
+            }
+        }
+
         ClothEditState NewState()
         {
             return Track(ClothEditState.Create());

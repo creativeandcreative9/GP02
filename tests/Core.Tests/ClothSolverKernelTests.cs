@@ -35,7 +35,7 @@ public class ClothSolverKernelTests
                     {
                         int i = d.ActiveParticles[a];
                         if (!d.InBrush[i]) continue;
-                        Vector3 delta = (-(d.Positions[i] - d.BrushStart[i] - d.BrushMove) - d.BrushCompliance * d.BrushLambda[i]) / (1f + d.BrushCompliance);
+                        Vector3 delta = (-(d.Positions[i] - d.BrushGoal[i]) - d.BrushCompliance * d.BrushLambda[i]) / (1f + d.BrushCompliance);
                         d.BrushLambda[i] += delta;
                         d.Positions[i] += delta;
                     }
@@ -45,7 +45,7 @@ public class ClothSolverKernelTests
                 for (int a = 0; a < d.ActiveParticleCount; a++)
                 {
                     int i = d.ActiveParticles[a];
-                    if (d.Grabbed >= 0 && !d.InBrush[i]) Tether(d.Positions, i, d.Grabbed, d.GrabDistance[i]);
+                    if (d.Grabbed >= 0 && !d.InBrush[i]) Tether(d.Positions, i, d.GrabSource[i], d.GrabDistance[i]);
                     int pin = d.NearestPin[i];
                     if (pin >= 0) Tether(d.Positions, i, pin, d.PinDistance[i]);
                 }
@@ -152,7 +152,7 @@ public class ClothSolverKernelTests
 
         static void Tether(Vector3[] p, int i, int origin, float maxLength)
         {
-            if (float.IsInfinity(maxLength)) return;
+            if (origin < 0 || float.IsInfinity(maxLength)) return;
             Vector3 diff = p[i] - p[origin];
             float lengthSquared = diff.LengthSquared();
             if (lengthSquared <= maxLength * maxLength) return;
@@ -211,6 +211,56 @@ public class ClothSolverKernelTests
         Assert.True(reference.IterateCalls > 0);
         Assert.Equal(coarseLevels > 0, reference.CoarseCalls > 0);
         // 動いていること（比較が空振りでない）
+        float moved = 0f;
+        for (int i = 0; i < expected.Length; i++) moved = MathF.Max(moved, Vector3.Distance(expected[i], cloth.Model.RestPositions[i]));
+        Assert.True(moved > 0.01f);
+        for (int i = 0; i < expected.Length; i++) Assert.True(Vector3.Distance(expected[i], actual[i]) < 1e-5f, $"粒子 {i}");
+    }
+
+    // 一般化したブラシ（回転・拡大縮小、なめらかな重み、直線距離、対称）でつまんで数コマ動かす → 仕上げ → 離す
+    static Vector3[] OperateGeneralBrush(ParticleCloth cloth, IClothSolverKernel? kernel, float brushCompliance)
+    {
+        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { InfluenceRadius = 0.1f, Kernel = kernel, BrushCompliance = brushCompliance };
+        for (int p = 0; p < cloth.Model.ParticleCount; p++)
+        {
+            if (cloth.Model.RestPositions[p].Y > 0.3f - cloth.Spacing) solver.SetPinned(p, true);
+        }
+        int center = solver.FindNearestParticle(new Vector3(0.08f, 0.1f, 0f));
+        Vector3 pivot = solver.Positions[center];
+        var options = new BrushOptions
+        {
+            Radius = 0.03f,
+            Falloff = FalloffCurve.Smooth,
+            DistanceMode = BrushDistanceMode.Linear,
+            Mirror = new MirrorPlane(new Vector3(0.15f, 0f, 0f), Vector3.UnitX),
+        };
+        for (int f = 1; f <= 5; f++)
+        {
+            var motion = new BrushMotion(new Vector3(0.01f, 0.01f, 0.06f) * f / 5f,
+                Quaternion.CreateFromAxisAngle(Vector3.UnitY, 0.3f * f / 5f), 1f + 0.1f * f / 5f, pivot);
+            solver.Grab(center, motion, options);
+            solver.Solve(5);
+        }
+        Assert.True(solver.MirrorParticle >= 0);
+        solver.Settle(0.02f, 40, out _);
+        solver.Release();
+        solver.Solve(10);
+        return solver.Positions.ToArray();
+    }
+
+    [Theory]
+    [InlineData(0, ClothSolver.DefaultBrushCompliance)]
+    [InlineData(2, ClothSolver.DefaultBrushCompliance)]
+    [InlineData(2, 0f)]
+    public void Kernel_ReceivingAllData_MatchesBuiltInPath_WithGeneralBrush(int coarseLevels, float brushCompliance)
+    {
+        var cloth = BuildCloth(coarseLevels);
+        var reference = new ReferenceKernel();
+
+        Vector3[] expected = OperateGeneralBrush(cloth, null, brushCompliance);
+        Vector3[] actual = OperateGeneralBrush(cloth, reference, brushCompliance);
+
+        Assert.True(reference.IterateCalls > 0);
         float moved = 0f;
         for (int i = 0; i < expected.Length; i++) moved = MathF.Max(moved, Vector3.Distance(expected[i], cloth.Model.RestPositions[i]));
         Assert.True(moved > 0.01f);

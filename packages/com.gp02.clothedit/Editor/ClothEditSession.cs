@@ -47,9 +47,8 @@ namespace GP02.EditorTools
 
         // つまんでいる間の状態
         int _grabParticle = -1;
-        float _grabRadius;
+        BrushOptions _grabOptions;                // つまむ範囲の決め方（BeginGrab で写し取ったもの）
         NVector3 _grabPointStart;
-        NVector3 _grabParticleStart;
 
         int _pinnedCount;
 
@@ -482,6 +481,16 @@ namespace GP02.EditorTools
         /// <param name="hitTriangle">Raycast が返した三角形の番号。負の値や範囲外なら、すべての粒子から選ぶ</param>
         public bool BeginGrab(Vector3 worldPoint, float brushRadius, int hitTriangle)
         {
+            return BeginGrab(worldPoint, brushRadius, hitTriangle, null);
+        }
+
+        /// <summary>
+        /// BeginGrab の、範囲の決め方（重みのカーブ、距離の測り方、対称）を指定する版。
+        /// options の半径は使わず、brushRadius を使う。options は写し取るので、あとで書き換えても影響しない。
+        /// </summary>
+        /// <param name="options">null なら、重み一定・メッシュに沿った距離・対称なし</param>
+        public bool BeginGrab(Vector3 worldPoint, float brushRadius, int hitTriangle, BrushOptions options)
+        {
             if (_solver.GrabbedParticle >= 0) Release();
 
             var point = new NVector3(worldPoint.x, worldPoint.y, worldPoint.z);
@@ -489,20 +498,33 @@ namespace GP02.EditorTools
             if (particle < 0) return false;
 
             _grabParticle = particle;
-            _grabRadius = brushRadius;
+            _grabOptions = options != null ? options.Clone() : new BrushOptions();
+            _grabOptions.Radius = brushRadius;
             _grabPointStart = point;
-            _grabParticleStart = _solver.Positions[particle];
-            // ここで範囲を決めておく（動かすのは次の DragTo から）
-            _solver.Grab(particle, _grabParticleStart, brushRadius);
+            // ここで範囲を決めておく（動かすのは次の DragTo / UpdateGrab から）
+            _solver.Grab(particle, new BrushMotion { Pivot = point }, _grabOptions);
             return true;
         }
 
         /// <summary>つまんだ点を、カーソルの動いた分だけ動かす（つまみ始めからの差で決める）。</summary>
         public void DragTo(Vector3 worldPointOfCursor)
         {
+            UpdateGrab(worldPointOfCursor, Quaternion.identity, 1f);
+        }
+
+        /// <summary>
+        /// つまんだ範囲を、カーソルの動いた分（つまみ始めからの差）だけ平行移動し、つまんだ点を中心に回転・拡大縮小する。
+        /// 回転と拡大率も、つまみ始めの形に対する値。
+        /// </summary>
+        public void UpdateGrab(Vector3 cursor, Quaternion rotation, float scale)
+        {
             if (_grabParticle < 0) return;
-            var cursor = new NVector3(worldPointOfCursor.x, worldPointOfCursor.y, worldPointOfCursor.z);
-            _solver.Grab(_grabParticle, _grabParticleStart + (cursor - _grabPointStart), _grabRadius);
+            var motion = new BrushMotion(
+                new NVector3(cursor.x, cursor.y, cursor.z) - _grabPointStart,
+                new System.Numerics.Quaternion(rotation.x, rotation.y, rotation.z, rotation.w),
+                scale,
+                _grabPointStart);
+            _solver.Grab(_grabParticle, motion, _grabOptions);
         }
 
         /// <summary>つまみを外す。</summary>
