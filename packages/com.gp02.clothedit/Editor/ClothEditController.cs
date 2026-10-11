@@ -17,7 +17,17 @@ namespace GP02.EditorTools
     {
         /// <summary>つまんで動かす。</summary>
         Grab,
+
+        /// <summary>
+        /// ピン留め。ドラッグで塗って留め、Ctrl＋ドラッグで外す（「塗ると外す」がオンなら逆）。Shift＋ドラッグで矩形、ダブルクリックで部品ごと。
+        /// 「選んで動かす」と同じ修飾キーの決まり（<see cref="ClothEditPinInput"/>）。
+        /// </summary>
         Pin,
+
+        /// <summary>
+        /// 昔の「ピン解除」の道具。保存値の互換のために残してあり、選ばれたら「ピン留め＋外す」（ピン留めの道具で「塗ると外す」がオン）として扱う。
+        /// 画面には出さない。
+        /// </summary>
         Unpin,
 
         /// <summary>クリックした点を中心に、横ドラッグで回す。</summary>
@@ -63,6 +73,7 @@ namespace GP02.EditorTools
         ClothEditMode _strokeMode;      // 押したときのモード
         bool _dragging;                 // つまんで動かしている
         bool _moved;                    // つまんだ点が実際に動いた
+        bool _pinErasing;               // 押したピン留めの操作が、外す操作か（Ctrl と「塗ると外す」で決まる）
         bool _settling;
         bool _settleClockPending;       // 離したあとの最初の Tick で、仕上げの開始時刻を決める
         double _settleStart;
@@ -203,6 +214,12 @@ namespace GP02.EditorTools
             get => _settings.Tool;
             set => _settings.Tool = value;
         }
+
+        /// <summary>
+        /// ピン留めの道具の「塗ると外す」がオンか。昔の「ピン解除」の道具（<see cref="ClothEditMode.Unpin"/>）もオン扱い。
+        /// 実際の操作は、Ctrl を押していればこの反対になる。
+        /// </summary>
+        public bool PinEraseMode => _settings.PinEraseMode || _settings.Tool == ClothEditMode.Unpin;
 
         /// <summary>
         /// アバターの基準の Transform（対称編集の鏡と、軸に固定するときの「アバターのローカル」の基準）。
@@ -665,6 +682,7 @@ namespace GP02.EditorTools
             LastError = "";
             LastStretch = 0f;
             HasHover = false;
+            MarkClean();
             Debug.Log($"[GP02] {_session.DescribeTargets()}: 頂点 {_session.VertexCount} / 粒子 {_session.ParticleCount} / 層どうしの接触 {_session.LayerContacts.Count} 組 / 準備 {_session.PrepareMilliseconds:F0}ms / 初回の計算 {warmUp:F0}ms");
             Notify();
             return true;
@@ -693,6 +711,7 @@ namespace GP02.EditorTools
             _selectPainting = false;
             _xformActive = false;
             _setGrab = false;
+            ClearReach();
             ResetSelectionState();
             if (_state != null)
             {
@@ -901,7 +920,8 @@ namespace GP02.EditorTools
         /// <see cref="PointerDown(Ray, Vector3, float)"/> の、カメラの上の向きも渡す版。「動かす向き」が視線（<see cref="MoveDirection.View"/>）のとき、
         /// 画面の上下のドラッグを奥行きの動きにするのに使う。
         /// </summary>
-        public bool PointerDown(Ray ray, Vector3 cameraForward, Vector3 cameraUp, float screenX)
+        /// <param name="control">Ctrl を押しているか。ピン留めの道具では、ピンを外す操作になる（「塗ると外す」がオンなら、留める操作）。ほかの道具では使わない</param>
+        public bool PointerDown(Ray ray, Vector3 cameraForward, Vector3 cameraUp, float screenX, bool control = false)
         {
             if (!EnsureAlive()) return false;
             _dragCameraForward = cameraForward.normalized;
@@ -921,6 +941,7 @@ namespace GP02.EditorTools
             _grabAngle = 0f;
             _grabScale = 1f;
             _previewShown = false;
+            _pinErasing = ClothEditPinInput.IsErase(_strokeMode, _settings.PinEraseMode, control);
             switch (_strokeMode)
             {
                 case ClothEditMode.Grab:
@@ -936,14 +957,21 @@ namespace GP02.EditorTools
                         _dragTarget = HoverPoint;
                         _dragging = true;
                         CaptureGrabRange();
-                        if (_strokeMode == ClothEditMode.Grab) ChooseDragLine();
-                        else _rotateAxis = _settings.RotateAxis == RotateAxisMode.SurfaceNormal ? HoverNormal : -cameraForward;
+                        if (_strokeMode == ClothEditMode.Grab)
+                        {
+                            ChooseDragLine();
+                            BeginReachGrab(_session.Solver.GrabbedParticle, HoverPoint);
+                        }
+                        else
+                        {
+                            _rotateAxis = _settings.RotateAxis == RotateAxisMode.SurfaceNormal ? HoverNormal : -cameraForward;
+                        }
                     }
                     break;
                 case ClothEditMode.Pin:
                 case ClothEditMode.Unpin:
                     // 押してから離すまでのドラッグを、1回の操作にまとめる
-                    BeginOperation(_strokeMode == ClothEditMode.Pin ? L10n.Tr("GP02 ピン留め", "GP02 Pin") : L10n.Tr("GP02 ピン解除", "GP02 Unpin"));
+                    BeginOperation(_pinErasing ? L10n.Tr("GP02 ピン解除", "GP02 Unpin") : L10n.Tr("GP02 ピン留め", "GP02 Pin"));
                     PaintPins();
                     break;
                 case ClothEditMode.Relax:
@@ -1156,10 +1184,10 @@ namespace GP02.EditorTools
         {
             if (!HasHover) return;
             MirrorPlane? mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null;
-            _session.PaintPins(HoverPoint, _brushRadius, _strokeMode == ClothEditMode.Pin, _hoverTriangle, mirror);
+            _session.PaintPins(HoverPoint, _brushRadius, !_pinErasing, _hoverTriangle, mirror);
         }
 
-        // ---- 範囲を指定したピン留め（Shift＋ドラッグの矩形、Ctrl＋クリックで部品全体、すべて外す、反転） ----
+        // ---- 範囲を指定したピン留め（Shift＋ドラッグの矩形、ダブルクリックで部品全体、すべて外す、反転） ----
         // どれも Unity の Undo の1段になる。変えた粒子の数を返す
 
         /// <summary>
@@ -1722,6 +1750,7 @@ namespace GP02.EditorTools
             _xformRawLogScale = _xformLogScale = Vector3.zero;
             _xformPreciseUsed = false;
             _xformShapeOnly = !_settings.SelectionMovesAsCloth;
+            BeginReachSet();
             _xformActive = true;
             _setGrab = true;
             _strokeMode = ClothEditMode.Select;
@@ -1789,6 +1818,7 @@ namespace GP02.EditorTools
                 ScaleFrame = new NQuaternion(_xformFrame.x, _xformFrame.y, _xformFrame.z, _xformFrame.w),
             };
             _session.UpdateGrabSet(motion);
+            _reachMotion = motion;
             if (_xformShapeOnly)
             {
                 // 形だけ動かす: 布の計算をせず、範囲を目標の位置へ置く（Tick では計算しない）
@@ -1853,6 +1883,7 @@ namespace GP02.EditorTools
         // 選んだ点の変形を終えた状態にする（確定・取り消し・Undo のとき）
         void EndTransformState()
         {
+            ClearReach();
             if (!_setGrab && !_xformActive) return;
             _setGrab = false;
             _xformActive = false;
@@ -2305,6 +2336,7 @@ namespace GP02.EditorTools
             // 何も変わらなかったとき（差分が 0 など）は、Undo の記録も残さない
             CommitOperation();
             AfterShapeChanged();
+            if (loaded) MarkClean();   // 保存してあるシェイプキーを読み込んだ形は、保存済みの形
             return loaded;
         }
 
@@ -2341,6 +2373,7 @@ namespace GP02.EditorTools
             ShapeKeyEntry result = RecordEntry(data, name, overwrite);
             Undo.IncrementCurrentGroup();
             LastError = "";
+            MarkClean();   // データに保存したので、今の形は保存済み
             return result;
         }
 

@@ -273,8 +273,15 @@ namespace GP02.EditorTools
         /// <summary>伸びのヒートマップを表示するか。</summary>
         public bool ShowStretchHeatmap;
 
-        /// <summary>ピン留め・ピン解除の範囲指定（Shift＋ドラッグの矩形）で、カメラ側を向いた粒子だけを対象にするか（裏側を除く）。</summary>
+        /// <summary>ピン留めの範囲指定（Shift＋ドラッグの矩形）で、カメラ側を向いた粒子だけを対象にするか（裏側を除く）。</summary>
         public bool PinRectFrontOnly = true;
+
+        /// <summary>
+        /// ピン留めの道具の「塗ると外す」。オンなら、何も押さないドラッグがピンを外す操作になり、Ctrl を押すと留める操作になる
+        /// （<see cref="ClothEditPinInput"/>）。マウスだけで操作する人のための切り替え。
+        /// 昔の「ピン解除」の道具（<see cref="ClothEditMode.Unpin"/>）は、これをオンにしたピン留めとして扱う。
+        /// </summary>
+        public bool PinEraseMode;
 
         // ---- 選んで動かす ----
 
@@ -491,6 +498,7 @@ namespace GP02.EditorTools
             ShowBrushPreview = true;
             ShowStretchHeatmap = false;
             PinRectFrontOnly = true;
+            PinEraseMode = false;
             HandleType = SelectionHandle.Move;
             PivotMode = SelectionPivot.Center;
             HandleSpace = HandleOrientation.Global;
@@ -528,6 +536,12 @@ namespace GP02.EditorTools
             else if (BrushCompliance > MaxBrushCompliance) BrushCompliance = MaxBrushCompliance;
 
             if (!Enum.IsDefined(typeof(ClothEditMode), Tool)) Tool = ClothEditMode.Grab;
+            // 「ピン解除」の道具は、保存値の互換のために残してある。選ばれていたら「ピン留め＋外す」にする
+            if (Tool == ClothEditMode.Unpin)
+            {
+                Tool = ClothEditMode.Pin;
+                PinEraseMode = true;
+            }
             if (!Enum.IsDefined(typeof(FalloffPreset), Falloff)) Falloff = FalloffPreset.Constant;
             if (!Enum.IsDefined(typeof(FalloffPreset), SelectionFalloff)) SelectionFalloff = FalloffPreset.Smooth;
             if (CustomFalloff == null || CustomFalloff.length == 0) CustomFalloff = DefaultCustomFalloff();
@@ -611,6 +625,7 @@ namespace GP02.EditorTools
                 ShowBrushPreview = EditorPrefs.GetBool(keyPrefix + "ShowBrushPreview", true),
                 ShowStretchHeatmap = EditorPrefs.GetBool(keyPrefix + "ShowStretchHeatmap", false),
                 PinRectFrontOnly = EditorPrefs.GetBool(keyPrefix + "PinRectFrontOnly", true),
+                PinEraseMode = EditorPrefs.GetBool(keyPrefix + "PinEraseMode", false),
                 HandleType = (SelectionHandle)EditorPrefs.GetInt(keyPrefix + "HandleType", (int)SelectionHandle.Move),
                 PivotMode = (SelectionPivot)EditorPrefs.GetInt(keyPrefix + "PivotMode", (int)SelectionPivot.Center),
                 HandleSpace = (HandleOrientation)EditorPrefs.GetInt(keyPrefix + "HandleSpace", (int)HandleOrientation.Global),
@@ -659,6 +674,7 @@ namespace GP02.EditorTools
             EditorPrefs.SetBool(keyPrefix + "ShowBrushPreview", ShowBrushPreview);
             EditorPrefs.SetBool(keyPrefix + "ShowStretchHeatmap", ShowStretchHeatmap);
             EditorPrefs.SetBool(keyPrefix + "PinRectFrontOnly", PinRectFrontOnly);
+            EditorPrefs.SetBool(keyPrefix + "PinEraseMode", PinEraseMode);
             EditorPrefs.SetInt(keyPrefix + "HandleType", (int)HandleType);
             EditorPrefs.SetInt(keyPrefix + "PivotMode", (int)PivotMode);
             EditorPrefs.SetInt(keyPrefix + "HandleSpace", (int)HandleSpace);
@@ -678,7 +694,7 @@ namespace GP02.EditorTools
                 "SolveMilliseconds", "CoarseIterations", "UseAcceleration", "KeepOutsideRestSurface",
                 "BrushCompliance", "UseRestSurfaceAllowance", "KeepLayersApart",
                 "Tool", "Falloff", "CustomFalloff", "DistanceMode", "SymmetryEnabled", "SymmetryAxis", "SymmetryOffset",
-                "MoveDirection", "DirectionSpace", "RotateAxis", "RelaxStrength", "ShowBrushPreview", "ShowStretchHeatmap", "PinRectFrontOnly",
+                "MoveDirection", "DirectionSpace", "RotateAxis", "RelaxStrength", "ShowBrushPreview", "ShowStretchHeatmap", "PinRectFrontOnly", "PinEraseMode",
                 "HandleType", "PivotMode", "HandleSpace", "SelectionFalloffRadius", "SelectThroughOcclusion", "ShowSelectionWeights",
                 "SelectionFalloff", "SelectionMovesAsCloth",
                 "MirrorTolerance", "ShowUnmatchedMirror", "ShowMirrorDifference", "SymmetrizeSource", "ConnectDistance",

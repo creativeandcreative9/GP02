@@ -8,8 +8,11 @@ using UnityEngine.UIElements;
 namespace GP02.EditorTools
 {
     /// <summary>
-    /// シーンビューの道具バー（Overlay）。布を編集している間だけ出て、道具の切り替えと、対称・伸びの表示・元の形の表示・ショートカット一覧の
-    /// オン／オフができる。「選んで動かす」の間は、ハンドルの種類（移動・回転・拡大縮小）の切り替えも出る。編集ウィンドウと同じ設定を触るので、どちらで変えても同じになる。
+    /// シーンビューの道具バー（Overlay）。布を編集している間だけ出て、道具の切り替えと、対称・ショートカット一覧のオン／オフができる。
+    /// 「選んで動かす」の間は、ハンドルの種類（移動・回転・拡大縮小）の切り替えも、ピン留めの間は「塗ると外す」も出る。
+    /// かんたん表示では、つまむ・選んで動かす・ピン留め・元に戻すブラシだけを出す。くわしく表示では、回す・拡大縮小のブラシと、
+    /// 伸びの表示・元の形の切り替えも出す（ウィンドウと同じ切り替え。<see cref="ClothEditView"/>）。
+    /// 編集ウィンドウと同じ設定を触るので、どちらで変えても同じになる。
     /// 状態の反映は、画面に出ている間だけ短い間隔で読み直す（ショートカットキーやウィンドウでの変更に追従するため）。
     /// </summary>
     [Overlay(typeof(SceneView), OverlayId, "GP02", defaultDisplay = true, defaultDockZone = DockZone.RightColumn, defaultLayout = Layout.Panel)]
@@ -17,19 +20,24 @@ namespace GP02.EditorTools
     {
         public const string OverlayId = "gp02-cloth-edit-tools";
 
-        // ツールバーに並べる順（ウィンドウの道具の並びと同じ）
-        static readonly ClothEditMode[] ToolOrder =
+        // 道具の並び（2つずつ2行）。ピン解除は「ピン留め」の「塗ると外す」に統合した
+        static readonly ClothEditMode[] PrimaryTools =
         {
-            ClothEditMode.Grab, ClothEditMode.Rotate, ClothEditMode.Scale,
-            ClothEditMode.Pin, ClothEditMode.Unpin, ClothEditMode.Relax,
+            ClothEditMode.Grab, ClothEditMode.Select,
+            ClothEditMode.Pin, ClothEditMode.Relax,
         };
+
+        // くわしく表示だけの道具（キーは E と R のまま）
+        static readonly ClothEditMode[] DetailTools = { ClothEditMode.Rotate, ClothEditMode.Scale };
 
         const long RefreshMilliseconds = 100;
 
         readonly Dictionary<ClothEditMode, ToolbarToggle> _toolToggles = new Dictionary<ClothEditMode, ToolbarToggle>();
         readonly Dictionary<SelectionHandle, ToolbarToggle> _handleToggles = new Dictionary<SelectionHandle, ToolbarToggle>();
-        ToolbarToggle _select;
+        VisualElement _detailToolRow;
         VisualElement _handleRow;
+        VisualElement _pinRow;
+        ToolbarToggle _pinErase;
         ToolbarToggle _symmetry;
         ToolbarToggle _stretch;
         ToolbarToggle _original;
@@ -42,49 +50,24 @@ namespace GP02.EditorTools
         public override VisualElement CreatePanelContent()
         {
             var root = new VisualElement { name = "gp02-tools" };
-            root.style.minWidth = 270f;
+            root.style.minWidth = 220f;
             root.style.paddingLeft = root.style.paddingRight = 2f;
             root.style.paddingTop = root.style.paddingBottom = 2f;
 
             _toolToggles.Clear();
-            for (int row = 0; row < 2; row++)
+            for (int row = 0; row < PrimaryTools.Length / 2; row++)
             {
                 VisualElement line = Row();
-                for (int k = 0; k < 3; k++)
-                {
-                    ClothEditMode mode = ToolOrder[row * 3 + k];
-                    var toggle = new ToolbarToggle();
-                    StyleCell(toggle);
-                    ClothEditMode captured = mode;
-                    toggle.RegisterValueChangedCallback(evt =>
-                    {
-                        // 選んでいる道具をもう一度押しても、外れないようにする
-                        ClothEditWindow owner = ClothEditWindow.OverlayOwner;
-                        if (owner != null) owner.OverlaySetTool(captured);
-                        Refresh();
-                    });
-                    _toolToggles[mode] = toggle;
-                    line.Add(toggle);
-                }
+                for (int k = 0; k < 2; k++) line.Add(CreateToolToggle(PrimaryTools[row * 2 + k]));
                 root.Add(line);
             }
+            _detailToolRow = Row();
+            foreach (ClothEditMode mode in DetailTools) _detailToolRow.Add(CreateToolToggle(mode));
+            root.Add(_detailToolRow);
 
-            // 「選んで動かす」と、その間だけ出るハンドルの種類
-            VisualElement selectLine = Row();
-            selectLine.style.marginTop = 4f;
-            _select = new ToolbarToggle();
-            StyleCell(_select);
-            _select.RegisterValueChangedCallback(evt =>
-            {
-                // 選んでいるときにもう一度押すと、直前の道具に戻る（Q と同じ）
-                ClothEditWindow owner = ClothEditWindow.OverlayOwner;
-                if (owner != null) owner.OverlaySetSelectTool(evt.newValue);
-                Refresh();
-            });
-            selectLine.Add(_select);
-            root.Add(selectLine);
-
+            // 「選んで動かす」の間だけ出るハンドルの種類
             _handleRow = Row();
+            _handleRow.style.marginTop = 4f;
             _handleToggles.Clear();
             foreach (SelectionHandle handle in new[] { SelectionHandle.Move, SelectionHandle.Rotate, SelectionHandle.Scale })
             {
@@ -101,6 +84,12 @@ namespace GP02.EditorTools
                 _handleRow.Add(toggle);
             }
             root.Add(_handleRow);
+
+            // ピン留めの間だけ出る「塗ると外す」
+            _pinRow = Row();
+            _pinRow.style.marginTop = 4f;
+            _pinErase = AddToggle(_pinRow, on => ClothEditWindow.OverlayOwner?.OverlaySetPinErase(on));
+            root.Add(_pinRow);
 
             VisualElement options = Row();
             options.style.marginTop = 4f;
@@ -120,6 +109,26 @@ namespace GP02.EditorTools
             // 画面に出ている間だけ、状態を読み直す（ウィンドウやショートカットでの変更に追従）
             root.schedule.Execute(Refresh).Every(RefreshMilliseconds);
             return root;
+        }
+
+        ToolbarToggle CreateToolToggle(ClothEditMode mode)
+        {
+            var toggle = new ToolbarToggle();
+            StyleCell(toggle);
+            ClothEditMode captured = mode;
+            toggle.RegisterValueChangedCallback(evt =>
+            {
+                ClothEditWindow owner = ClothEditWindow.OverlayOwner;
+                if (owner != null)
+                {
+                    // 「選んで動かす」は、選んでいるときにもう一度押すと直前の道具に戻る（Q と同じ）。ほかの道具は、もう一度押しても外れない
+                    if (captured == ClothEditMode.Select) owner.OverlaySetSelectTool(evt.newValue);
+                    else owner.OverlaySetTool(captured);
+                }
+                Refresh();
+            });
+            _toolToggles[mode] = toggle;
+            return toggle;
         }
 
         static VisualElement Row()
@@ -153,26 +162,39 @@ namespace GP02.EditorTools
             ClothEditSettings settings = owner.OverlaySettings;
 
             displayName = L10n.Tr("GP02 道具", "GP02 Tools");
+            ClothEditMode tool = settings.Tool == ClothEditMode.Unpin ? ClothEditMode.Pin : settings.Tool;
             foreach (KeyValuePair<ClothEditMode, ToolbarToggle> pair in _toolToggles)
             {
                 ToolbarToggle toggle = pair.Value;
                 toggle.text = ClothEditHelp.ToolName(pair.Key);
                 toggle.tooltip = ClothEditHelp.ToolTip(pair.Key);
-                toggle.SetValueWithoutNotify(settings.Tool == pair.Key);
+                toggle.SetValueWithoutNotify(tool == pair.Key);
             }
 
-            bool selecting = settings.Tool == ClothEditMode.Select;
-            Set(_select, ClothEditHelp.ToolName(ClothEditMode.Select), ClothEditHelp.ToolTip(ClothEditMode.Select), selecting);
+            // 回す・拡大縮小は、くわしく表示のときだけ。今の道具がそれなら、選ばれている印が見えるよう出しておく
+            bool detailTool = ClothEditView.Shows(ClothEditUiItem.ToolRotate) || tool == ClothEditMode.Rotate || tool == ClothEditMode.Scale;
+            _detailToolRow.style.display = detailTool ? DisplayStyle.Flex : DisplayStyle.None;
+
+            bool selecting = tool == ClothEditMode.Select;
             _handleRow.style.display = selecting ? DisplayStyle.Flex : DisplayStyle.None;
             foreach (KeyValuePair<SelectionHandle, ToolbarToggle> pair in _handleToggles)
             {
                 Set(pair.Value, ClothEditHelp.HandleName(pair.Key), ClothEditHelp.HandleTip(pair.Key), settings.HandleType == pair.Key);
             }
 
+            _pinRow.style.display = tool == ClothEditMode.Pin ? DisplayStyle.Flex : DisplayStyle.None;
+            Set(_pinErase, L10n.Tr("塗ると外す", "Paint to erase"),
+                L10n.Tr("オンにすると、ドラッグでピンを外し、Ctrl+ドラッグで留めます（マウスだけで操作したいときに）",
+                    "When on, dragging removes pins and Ctrl+Drag adds them (for using only the mouse)"),
+                owner.OverlayPinErase);
+
             Set(_symmetry, L10n.Tr("対称", "Symmetry"),
                 L10n.Tr("対称編集のオン／オフ。オンにすると、反対側にも鏡に映したように働きます（軸などは編集ウィンドウの「対称」で決めます）",
                     "Symmetric editing on / off. When on, tools also act mirrored on the opposite side (set the axis in the Symmetry section of the window)"),
                 settings.SymmetryEnabled);
+            bool displayToggles = ClothEditView.Shows(ClothEditUiItem.OverlayDisplayToggles);
+            _stretch.style.display = displayToggles ? DisplayStyle.Flex : DisplayStyle.None;
+            _original.style.display = displayToggles ? DisplayStyle.Flex : DisplayStyle.None;
             Set(_stretch, L10n.Tr("伸びの表示", "Stretch"),
                 L10n.Tr("布の伸びを、緑→黄→赤の点で表示します（0% → 5% → 15%）", "Shows the stretch of the cloth as green / yellow / red dots (0% / 5% / 15%)"),
                 settings.ShowStretchHeatmap);

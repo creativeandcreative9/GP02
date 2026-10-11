@@ -10,11 +10,15 @@ namespace GP02.EditorTools
     /// Burst（任意の高速化）が無いときの案内と、パッケージの追加。
     /// BOOTH の .unitypackage では依存パッケージが自動で入らないので、画面から1回で入れられるようにする。
     /// Burst が無くても全機能は動くが、重ね着や大きな衣装では仕上げが時間切れになり、伸びが残りやすい。
+    /// 初めてウィンドウを開いたときは、ウィンドウの上の帯で1回だけ案内する（<see cref="ClothEditWindow"/>）。「くわしく」表示の詳細設定からは、いつでも入れられる。
     /// </summary>
     public static class BurstInstaller
     {
         /// <summary>開発用のプロジェクト（unity/Packages/manifest.json）と同じ版。</summary>
         public const string PackageId = "com.unity.burst@1.8.18";
+
+        /// <summary>EditorPrefs のキー。初めてウィンドウを開いたときの案内（ウィンドウの上の帯）を、出したことがあるか。1回だけ出す。</summary>
+        public const string GuideShownPrefKey = "GP02.BurstGuideShown";
 
         static AddRequest _request;
 

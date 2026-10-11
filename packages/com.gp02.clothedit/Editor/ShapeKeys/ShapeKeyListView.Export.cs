@@ -27,6 +27,13 @@ namespace GP02.EditorTools
             string problem = ShapeKeyExporter.GetProblem(_component);
             if (problem != null) EditorGUILayout.HelpBox(problem, MessageType.Warning);
 
+            // かんたん表示: 書き出しの内容の1行と「メッシュに書き出す」だけ
+            if (!ClothEditView.Shows(ClothEditUiItem.ShapeKeyExportDetails))
+            {
+                DrawMainExport(problem);
+                return;
+            }
+
             EditorGUI.BeginChangeCheck();
             _settings.ExportFolder = EditorGUILayout.TextField(L10n.Tr("保存先", "Folder"), _settings.ExportFolder);
             _settings.OverwriteSameName = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("同じ名前を上書きする", "Overwrite same names"),
@@ -63,6 +70,26 @@ namespace GP02.EditorTools
             EditorGUILayout.HelpBox(L10n.Tr(
                 "データ（アセット）を削除しても、書き出したメッシュはアセットとして残ります。このツールを消しても、メッシュは消えません。",
                 "Even if the data asset is deleted, the exported mesh remains as an asset. Removing this tool does not delete the mesh."), MessageType.None);
+        }
+
+        // かんたん表示の書き出し。保存先・名前の前置き・書き出しの内容の一覧などは「くわしく」で出す
+        void DrawMainExport(string problem)
+        {
+            ShapeKeyBuildOptions options = ShapeKeyBuildOptions.FromComponent(_component, _settings.OverwriteSameName);
+            List<ExportPlanItem> plan = problem == null ? ShapeKeyExporter.GetPlan(_component, options) : null;
+            string planProblem = plan != null ? ShapeKeyExportPlan.FirstProblem(plan) : null;
+            if (plan != null) EditorGUILayout.LabelField(L10n.Tr("書き出しの内容: ", "What will be exported: ") + ShapeKeyExportPlan.Summarize(plan), EditorStyles.miniLabel);
+            if (planProblem != null) EditorGUILayout.HelpBox(planProblem, MessageType.Warning);
+
+            using (new EditorGUI.DisabledScope(problem != null || planProblem != null))
+            {
+                if (GUILayout.Button(new GUIContent(L10n.Tr("メッシュに書き出す", "Export to mesh"),
+                    L10n.Tr("有効なシェイプキーを BlendShape として複製メッシュに入れ、保存してレンダラーに割り当てます。データは残ります。保存先などの設定は「くわしく」で変えられます",
+                        "Adds the enabled shape keys as BlendShapes to a copy of the mesh, saves it and assigns it. The data is kept. Folder and other settings are in the Detailed view"))))
+                {
+                    ExportToMesh(options);
+                }
+            }
         }
 
         // 名前の前置き・後置きと、頂点数違いを飛ばす設定（コンポーネントに持つので、ビルド時の適用でも同じになる）

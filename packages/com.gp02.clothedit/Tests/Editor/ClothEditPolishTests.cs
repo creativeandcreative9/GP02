@@ -753,11 +753,11 @@ namespace GP02.Tests
                 var overlay = new ClothEditOverlay();
                 UnityEngine.UIElements.VisualElement root = overlay.CreatePanelContent();
                 var toggles = root.Query<UnityEditor.UIElements.ToolbarToggle>().ToList();
-                Assert.That(toggles.Count, Is.EqualTo(14), "道具 6 + 選んで動かす + ハンドル 3 + 対称・伸び・元の形・ショートカット");
+                Assert.That(toggles.Count, Is.EqualTo(14), "道具 6（つまむ・選んで動かす・ピン留め・元に戻すブラシ・回す・拡大縮小）+ ハンドル 3 + 塗ると外す + 対称・伸び・元の形・ショートカット");
                 Assert.That(root.Query<UnityEditor.UIElements.ToolbarButton>().ToList().Count, Is.EqualTo(1), "説明書");
 
                 // 道具: 今の道具だけが選ばれ、名前とツールチップが付く
-                var tools = new[] { ClothEditMode.Grab, ClothEditMode.Rotate, ClothEditMode.Scale, ClothEditMode.Pin, ClothEditMode.Unpin, ClothEditMode.Relax };
+                var tools = new[] { ClothEditMode.Grab, ClothEditMode.Select, ClothEditMode.Pin, ClothEditMode.Relax, ClothEditMode.Rotate, ClothEditMode.Scale };
                 for (int i = 0; i < tools.Length; i++)
                 {
                     Assert.That(toggles[i].text, Is.EqualTo(ClothEditHelp.ToolName(tools[i])));
@@ -770,8 +770,8 @@ namespace GP02.Tests
                 settings.Tool = ClothEditMode.Pin;
                 settings.SymmetryEnabled = true;
                 overlay.Refresh();
-                Assert.That(toggles[3].value, Is.True);
-                Assert.That(toggles[1].value, Is.False);
+                Assert.That(toggles[2].value, Is.True);
+                Assert.That(toggles[4].value, Is.False);
                 Assert.That(toggles[10].value, Is.True, "対称");
 
                 // 道具バー側の変更が、ウィンドウの設定になる

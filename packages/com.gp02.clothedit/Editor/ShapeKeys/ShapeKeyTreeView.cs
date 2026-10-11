@@ -208,8 +208,11 @@ namespace GP02.EditorTools
             var iconRect = new Rect(row.xMax - IconWidth - 2f, row.y + 2f, IconWidth, EditorGUIUtility.singleLineHeight);
             var sliderRect = new Rect(iconRect.x - sliderWidth - 2f, row.y + 2f, sliderWidth, EditorGUIUtility.singleLineHeight);
             var soloRect = new Rect(sliderRect.x - SoloWidth - 2f, row.y + 2f, SoloWidth, EditorGUIUtility.singleLineHeight);
+            // かんたん表示では「これだけ表示（S）」を出さない
+            bool showSolo = ClothEditView.Shows(ClothEditUiItem.ShapeKeySolo);
             float nameX = toggleRect.xMax + 2f;
-            var nameRect = new Rect(nameX, row.y + 2f, Mathf.Max(30f, soloRect.x - nameX - 4f), EditorGUIUtility.singleLineHeight);
+            float nameRight = showSolo ? soloRect.x : sliderRect.x;
+            var nameRect = new Rect(nameX, row.y + 2f, Mathf.Max(30f, nameRight - nameX - 4f), EditorGUIUtility.singleLineHeight);
 
             EditorGUI.BeginChangeCheck();
             bool enabled = EditorGUI.Toggle(toggleRect, entry.Enabled);
@@ -219,12 +222,15 @@ namespace GP02.EditorTools
             string newName = EditorGUI.DelayedTextField(nameRect, entry.Name);
             if (EditorGUI.EndChangeCheck()) _owner.Rename(entry, newName);
 
-            bool isSolo = _owner.IsSolo(entry);
-            EditorGUI.BeginChangeCheck();
-            bool solo = GUI.Toggle(soloRect, isSolo, new GUIContent("S", L10n.Tr(
-                "これだけ表示（ソロ）。このシェイプキーだけをシーンに見せます（他の重みは変えません）。スライダーが 0 のときは 100 で見せます",
-                "Show only this one (solo). Only this shape key is shown in the scene (other weights are unchanged). Shown at 100 when the slider is 0")), EditorStyles.miniButton);
-            if (EditorGUI.EndChangeCheck()) _owner.SetSolo(solo ? entry : null);
+            if (showSolo)
+            {
+                bool isSolo = _owner.IsSolo(entry);
+                EditorGUI.BeginChangeCheck();
+                bool solo = GUI.Toggle(soloRect, isSolo, new GUIContent("S", L10n.Tr(
+                    "これだけ表示（ソロ）。このシェイプキーだけをシーンに見せます（他の重みは変えません）。スライダーが 0 のときは 100 で見せます",
+                    "Show only this one (solo). Only this shape key is shown in the scene (other weights are unchanged). Shown at 100 when the slider is 0")), EditorStyles.miniButton);
+                if (EditorGUI.EndChangeCheck()) _owner.SetSolo(solo ? entry : null);
+            }
 
             using (new EditorGUI.DisabledScope(!entry.Enabled))
             {

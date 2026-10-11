@@ -479,8 +479,9 @@ namespace GP02.Tests
                 var overlay = new ClothEditOverlay();
                 UnityEngine.UIElements.VisualElement root = overlay.CreatePanelContent();
                 var toggles = root.Query<UnityEditor.UIElements.ToolbarToggle>().ToList();
-                UnityEditor.UIElements.ToolbarToggle select = toggles[6];
-                UnityEngine.UIElements.VisualElement handleRow = toggles[7].parent;
+                // 並び: つまむ・選んで動かす・ピン留め・元に戻すブラシ・回す・拡大縮小、ハンドル3つ、塗ると外す、対称・伸び・元の形、ショートカット
+                UnityEditor.UIElements.ToolbarToggle select = toggles[1];
+                UnityEngine.UIElements.VisualElement handleRow = toggles[6].parent;
 
                 Assert.That(select.text, Is.EqualTo(ClothEditHelp.ToolName(ClothEditMode.Select)));
                 Assert.That(select.tooltip, Is.EqualTo(ClothEditHelp.ToolTip(ClothEditMode.Select)));
@@ -497,9 +498,9 @@ namespace GP02.Tests
                 var handles = new[] { SelectionHandle.Move, SelectionHandle.Rotate, SelectionHandle.Scale };
                 for (int i = 0; i < handles.Length; i++)
                 {
-                    Assert.That(toggles[7 + i].text, Is.EqualTo(ClothEditHelp.HandleName(handles[i])));
-                    Assert.That(toggles[7 + i].tooltip, Is.EqualTo(ClothEditHelp.HandleTip(handles[i])));
-                    Assert.That(toggles[7 + i].value, Is.EqualTo(handles[i] == SelectionHandle.Move));
+                    Assert.That(toggles[6 + i].text, Is.EqualTo(ClothEditHelp.HandleName(handles[i])));
+                    Assert.That(toggles[6 + i].tooltip, Is.EqualTo(ClothEditHelp.HandleTip(handles[i])));
+                    Assert.That(toggles[6 + i].value, Is.EqualTo(handles[i] == SelectionHandle.Move));
                 }
 
                 // ハンドルの種類は、設定を変え、キー（W/E/R）で変えたときも追従する
@@ -508,8 +509,8 @@ namespace GP02.Tests
                 Assert.That(settings.Tool, Is.EqualTo(ClothEditMode.Select), "道具は変わらない");
                 settings.HandleType = SelectionHandle.Scale;
                 overlay.Refresh();
-                Assert.That(toggles[9].value, Is.True);
-                Assert.That(toggles[8].value, Is.False);
+                Assert.That(toggles[8].value, Is.True);
+                Assert.That(toggles[7].value, Is.False);
 
                 // もう一度押すと、直前の道具へ戻る
                 window.OverlaySetSelectTool(false);
@@ -527,7 +528,7 @@ namespace GP02.Tests
                 L10n.Language = UiLanguage.English;
                 overlay.Refresh();
                 Assert.That(select.text, Is.EqualTo("Select & Move"));
-                Assert.That(toggles[7].text, Is.EqualTo("Move"));
+                Assert.That(toggles[6].text, Is.EqualTo("Move"));
             }
             finally
             {

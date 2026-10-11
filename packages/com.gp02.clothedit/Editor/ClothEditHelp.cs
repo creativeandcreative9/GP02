@@ -147,7 +147,7 @@ namespace GP02.EditorTools
                 case ClothEditMode.Rotate: return L10n.Tr("回す", "Rotate");
                 case ClothEditMode.Scale: return L10n.Tr("拡大縮小", "Scale");
                 case ClothEditMode.Pin: return L10n.Tr("ピン留め", "Pin");
-                case ClothEditMode.Unpin: return L10n.Tr("ピン解除", "Unpin");
+                case ClothEditMode.Unpin: return L10n.Tr("ピン留め＋外す", "Pin + Erase");
                 case ClothEditMode.Relax: return L10n.Tr("元に戻すブラシ", "Restore Brush");
                 case ClothEditMode.Select: return L10n.Tr("選んで動かす", "Select & Move");
                 default: return L10n.Tr("つまむ", "Grab");
@@ -167,11 +167,11 @@ namespace GP02.EditorTools
                     return L10n.Tr($"拡大縮小（{key}）: 布をクリックして横にドラッグすると、クリックした点を中心に大きく・小さくなります（0.2〜3倍）",
                         $"Scale ({key}): click the cloth and drag sideways to scale around the clicked point (0.2x to 3x)");
                 case ClothEditMode.Pin:
-                    return L10n.Tr($"ピン留め（{key}）: 塗った所を固定します。動かしたくない所（ウエストなど）に使います。Shift+ドラッグで矩形、Ctrl+クリックで部品ごと",
-                        $"Pin ({key}): paint to fix an area so it never moves, such as the waist. Shift+Drag for a rectangle, Ctrl+Click for a whole part");
+                    return L10n.Tr($"ピン留め（{key}）: 塗った所を固定します。動かしたくない所（ウエストなど）に使います。Ctrl+ドラッグで外す、Shift+ドラッグで矩形、ダブルクリックで部品ごと（Ctrl で外す）。「塗ると外す」をオンにすると、ドラッグで外します",
+                        $"Pin ({key}): paint to fix an area so it never moves, such as the waist. Ctrl+Drag removes, Shift+Drag selects a rectangle, double-click a whole part (Ctrl removes). Turn on \"Paint to erase\" to remove by dragging");
                 case ClothEditMode.Unpin:
-                    return L10n.Tr($"ピン解除（{key}）: 塗った所のピンを外します。Shift+ドラッグで矩形、Ctrl+クリックで部品ごと",
-                        $"Unpin ({key}): paint to remove pins. Shift+Drag for a rectangle, Ctrl+Click for a whole part");
+                    return L10n.Tr($"ピン留め＋外す（{key}）: ピン留めの道具で「塗ると外す」をオンにしたものです。ドラッグで塗った所のピンを外し、Ctrl+ドラッグで留めます。Shift+ドラッグで矩形、ダブルクリックで部品ごと",
+                        $"Pin + Erase ({key}): the Pin tool with \"Paint to erase\" on. Drag to remove the pins you paint over, Ctrl+Drag to add them. Shift+Drag for a rectangle, double-click for a whole part");
                 case ClothEditMode.Relax:
                     return L10n.Tr($"元に戻すブラシ（{key}）: 塗った所を元の形へ近づけます。強さは「ブラシ」の区切りで決めます",
                         $"Restore Brush ({key}): paint to bring an area back toward its original shape. Set the strength in the Brush section");
@@ -194,7 +194,7 @@ namespace GP02.EditorTools
                 case ClothEditMode.Rotate: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdRotate, "E");
                 case ClothEditMode.Scale: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdScale, "R");
                 case ClothEditMode.Pin: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdPin, "P");
-                case ClothEditMode.Unpin: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdUnpin, "Shift+P");
+                case ClothEditMode.Unpin: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdPinErase, "Shift+P");
                 case ClothEditMode.Relax: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdRelax, "T");
                 case ClothEditMode.Select: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdSelectTool, "Q");
                 default: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdGrab, "W");
@@ -203,7 +203,8 @@ namespace GP02.EditorTools
 
         /// <summary>シーンビューの左上に出す案内（改行つき）。1行目が状態と今の道具の操作、2行目が共通の操作。「選んで動かす」は操作が多いので、2行に分ける。</summary>
         /// <param name="selectionCount">選んでいる点の数（「選んで動かす」の案内を、選ぶ前と選んだあとで変える）</param>
-        public static string GetHint(ClothEditMode mode, bool dragging, bool settling, int selectionCount = 0)
+        /// <param name="pinErase">ピン留めの道具で「塗ると外す」がオンか（案内の、ドラッグと Ctrl+ドラッグの意味が逆になる）</param>
+        public static string GetHint(ClothEditMode mode, bool dragging, bool settling, int selectionCount = 0, bool pinErase = false)
         {
             string common = L10n.Tr("Ctrl+ホイール / [ ]: ブラシ半径　C(押す): 元の形　Alt+ドラッグ: 視点移動　F1: ショートカット一覧",
                 "Ctrl+Wheel / [ ]: brush radius   C (hold): original shape   Alt+Drag: orbit   F1: shortcuts");
@@ -241,12 +242,13 @@ namespace GP02.EditorTools
                             $"GP02 {name}: click the cloth and drag sideways to scale (around the clicked point)");
                         break;
                     case ClothEditMode.Pin:
-                        first = L10n.Tr($"GP02 {name}: ドラッグで塗る（動かさない所を決める）/ Shift+ドラッグ: 矩形で一度に / Ctrl+クリック: 部品ごと",
-                            $"GP02 {name}: drag to paint what should not move / Shift+Drag: rectangle / Ctrl+Click: whole part");
-                        break;
                     case ClothEditMode.Unpin:
-                        first = L10n.Tr($"GP02 {name}: ドラッグで塗ってピンを外す / Shift+ドラッグ: 矩形で一度に / Ctrl+クリック: 部品ごと",
-                            $"GP02 {name}: drag to paint and remove pins / Shift+Drag: rectangle / Ctrl+Click: whole part");
+                        // シーンビューの幅に収まるよう短くする（詳しい説明は、道具のツールチップ）
+                        first = pinErase || mode == ClothEditMode.Unpin
+                            ? L10n.Tr($"GP02 {name}: ドラッグで外す / Ctrl+ドラッグ: 留める / Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと",
+                                $"GP02 {name}: drag to remove / Ctrl+Drag: pin / Shift+Drag: rectangle / Double-click: whole part")
+                            : L10n.Tr($"GP02 {name}: ドラッグで留める / Ctrl+ドラッグ: 外す / Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと",
+                                $"GP02 {name}: drag to pin / Ctrl+Drag: remove / Shift+Drag: rectangle / Double-click: whole part");
                         break;
                     case ClothEditMode.Relax:
                         first = L10n.Tr($"GP02 {name}: 左ドラッグで塗った所を元の形へ近づける（離すと仕上げ）",
@@ -280,12 +282,13 @@ namespace GP02.EditorTools
             Add("E", "回す（横ドラッグ。Ctrl で15°刻み）（選んで動かす中は、回転ハンドル）", "Rotate (drag sideways; Ctrl for 15-degree steps) (the rotate handle while in Select & Move)");
             Add("R", "拡大縮小（横ドラッグ。0.2〜3倍）（選んで動かす中は、拡大縮小ハンドル）", "Scale (drag sideways; 0.2x to 3x) (the scale handle while in Select & Move)");
             Add("Q", "選んで動かす（もう一度押すと前の道具）", "Select & Move (press again to return to the previous tool)");
-            Add("P", "ピン留め", "Pin");
-            Add("Shift+P", "ピン解除", "Unpin");
+            Add("P", "ピン留め（ドラッグで留める）", "Pin (drag to pin)");
+            Add("Shift+P", "ピン留め＋外す（「塗ると外す」がオンのピン留め。ドラッグで外す）", "Pin + Erase (Pin with Paint to erase on; drag to remove)");
             Add("T", "元に戻すブラシ", "Restore Brush");
             Add(L10n.Tr("Shift+ドラッグ", "Shift+Drag"), "動きを 1/5 にする（精密操作）", "Move at 1/5 speed (fine control)");
-            Add(L10n.Tr("Shift+ドラッグ（ピン）", "Shift+Drag (Pin)"), "矩形の中をまとめてピン留め・解除", "Pin / unpin everything inside a rectangle");
-            Add(L10n.Tr("Ctrl+クリック（ピン）", "Ctrl+Click (Pin)"), "その部品（島）全体をピン留め・解除", "Pin / unpin the whole part (island)");
+            Add(L10n.Tr("Ctrl+ドラッグ（ピン）", "Ctrl+Drag (Pin)"), "塗った所のピンを外す（「塗ると外す」がオンなら、留める）", "Remove the pins you paint over (adds them when Paint to erase is on)");
+            Add(L10n.Tr("Shift+ドラッグ（ピン）", "Shift+Drag (Pin)"), "矩形の中をまとめてピン留め（Ctrl+Shift で外す）", "Pin everything inside a rectangle (Ctrl+Shift to remove)");
+            Add(L10n.Tr("ダブルクリック（ピン）", "Double-click (Pin)"), "その部品（島）全体をピン留め（Ctrl で外す）", "Pin the whole part (island) (Ctrl to remove)");
             Add(L10n.Tr("ドラッグ（選ぶ）", "Drag (Select)"), "ブラシ半径で塗って選ぶ（Ctrl で外す）", "Paint-select with the brush radius (Ctrl to deselect)");
             Add(L10n.Tr("Shift+ドラッグ（選ぶ）", "Shift+Drag (Select)"), "矩形で選ぶ（Ctrl+Shift で外す）", "Select inside a rectangle (Ctrl+Shift to deselect)");
             Add(L10n.Tr("ダブルクリック（選ぶ）", "Double-click (Select)"), "その部品（島）ごと選ぶ（Ctrl で外す）", "Select the whole part (island) (Ctrl to deselect)");

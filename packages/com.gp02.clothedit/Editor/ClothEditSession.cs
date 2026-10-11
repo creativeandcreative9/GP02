@@ -120,6 +120,13 @@ namespace GP02.EditorTools
                 : L10n.Tr($"{kernel.Name}（無効。Jobs > Burst > Enable Compilation を確認してください）", $"{kernel.Name} (disabled. Check Jobs > Burst > Enable Compilation)");
         }
 
+        /// <summary>高速化の状態の短い表示（ウィンドウの一番下の1行に出す）。</summary>
+        public static string DescribeAccelerationShort(IClothSolverKernel kernel)
+        {
+            if (kernel == null) return L10n.Tr("なし", "None");
+            return kernel.IsAccelerated ? kernel.Name : L10n.Tr($"{kernel.Name}（無効）", $"{kernel.Name} (off)");
+        }
+
         /// <summary>準備（粒子化）にかかった時間（ミリ秒）。隙間を測る時間は含まない（<see cref="RestGap"/> の Milliseconds）。</summary>
         public double PrepareMilliseconds { get; }
 
@@ -2030,6 +2037,7 @@ namespace GP02.EditorTools
                 }
             }
             if (ShowGhost) DrawGhost(camera);
+            if (_keyGhostMesh != null) DrawKeyGhost(camera);
         }
 
         public void Dispose()
@@ -2042,6 +2050,7 @@ namespace GP02.EditorTools
                 if (part.PreviewMesh != null) Object.DestroyImmediate(part.PreviewMesh);
             }
             DisposeGhost();
+            DisposeKeyGhost();
         }
     }
 }

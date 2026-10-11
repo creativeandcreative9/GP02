@@ -37,6 +37,7 @@ namespace GP02.Tests
 
         UiLanguage _savedLanguage;
         bool _languageChanged;
+        ClothEditViewMode _savedViewMode;
 
         [SetUp]
         public void RequireAScreen()
@@ -49,12 +50,19 @@ namespace GP02.Tests
             _savedLanguage = L10n.Language;
             _languageChanged = true;
             L10n.Language = UiLanguage.English;
+            // 表示のしかたは、既定（かんたん）から始める。くわしく表示を見るテストは、自分で切り替える
+            _savedViewMode = ClothEditView.Mode;
+            ClothEditView.Mode = ClothEditViewMode.Simple;
         }
 
         [TearDown]
         public void RestoreLanguage()
         {
-            if (_languageChanged) L10n.Language = _savedLanguage;
+            if (_languageChanged)
+            {
+                L10n.Language = _savedLanguage;
+                ClothEditView.Mode = _savedViewMode;
+            }
             _languageChanged = false;
         }
 
@@ -93,8 +101,10 @@ namespace GP02.Tests
             if (!Directory.Exists("/repo/tools/unity/out")) return;
             Directory.CreateDirectory(ShotFolder);
             Rect rect = window.position;
-            Color[] pixels = InternalEditorUtility.ReadScreenPixel(rect.position, (int)rect.width, (int)rect.height);
-            var texture = new Texture2D((int)rect.width, (int)rect.height, TextureFormat.RGB24, false);
+            // 内容は、ウィンドウの上のタブの分だけ下にずれる。その分も写す（画面の外には出ない）
+            int height = Mathf.Min((int)rect.height + 24, Screen.currentResolution.height - (int)rect.y);
+            Color[] pixels = InternalEditorUtility.ReadScreenPixel(rect.position, (int)rect.width, height);
+            var texture = new Texture2D((int)rect.width, height, TextureFormat.RGB24, false);
             texture.SetPixels(pixels);
             texture.Apply();
             File.WriteAllBytes(Path.Combine(ShotFolder, name + ".png"), texture.EncodeToPNG());
@@ -110,6 +120,7 @@ namespace GP02.Tests
             window.position = new Rect(10, 10, 440, 900);
             try
             {
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
                 Selection.activeGameObject = plain;
                 window.OnSelectionChanged();
                 yield return Pump();
@@ -226,6 +237,41 @@ namespace GP02.Tests
             }
             Assert.That(ShapeKeyPreview.IsActive(renderer), Is.False, "ウィンドウを閉じるとプレビューは戻る");
             Assert.That(ClothEditController.GetMesh(renderer), Is.SameAs(data.SourceMesh));
+        }
+
+        [UnityTest]
+        public IEnumerator Window_SimpleView_ShowsOnlyTheMainOperations()
+        {
+            GP02ShapeKeys component = MakeTarget(out Renderer renderer, out GP02ShapeKeyData data);
+            var window = EditorWindow.GetWindow<ShapeKeyListWindow>();
+            window.position = new Rect(10, 10, 440, 720);
+            try
+            {
+                ClothEditView.Mode = ClothEditViewMode.Simple;
+                Selection.activeGameObject = renderer.gameObject;
+                window.OnSelectionChanged();
+                window.View.SetPreviewWeight(data.Entries[0], 60f);
+                yield return Pump();
+                Assert.That(window.GuiCalls, Is.GreaterThan(0), "描画が走っていない");
+                Shot(window, "window_simple");
+
+                // 選ぶと、複製・削除・左右に分割・左右反転が使える
+                window.View.Tree.ExpandAll();
+                window.View.Tree.SelectEntries(new[] { data.Entries[1], data.Entries[2] });
+                yield return Pump();
+                Shot(window, "window_simple_selected");
+
+                // 同じ状態をくわしく表示にすると、検索・並べ替え・コピー・グループ・詳細などが増える
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
+                yield return Pump();
+                Shot(window, "window_simple_vs_detailed");
+            }
+            finally
+            {
+                window.Close();
+                Selection.activeGameObject = null;
+            }
+            Assert.That(component, Is.Not.Null);
         }
 
         [UnityTest]

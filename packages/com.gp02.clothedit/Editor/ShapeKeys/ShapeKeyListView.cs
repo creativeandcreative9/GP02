@@ -301,6 +301,12 @@ namespace GP02.EditorTools
         /// <summary>画面全体を描く。treeHeight は一覧の高さ（ピクセル）。</summary>
         public void OnGUI(float treeHeight = 240f)
         {
+            // 「かんたん」「くわしく」の切り替え（布の編集ウィンドウと共通）。かんたん表示では、主な操作だけを出す
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                ClothEditView.DrawToggle(EditorStyles.miniButton);
+            }
             if (_component == null && _renderer == null)
             {
                 EditorGUILayout.HelpBox(L10n.Tr(
@@ -317,19 +323,19 @@ namespace GP02.EditorTools
             _tree.ReloadIfStale();
 
             DrawMessage();
-            DrawFilterBar();
+            if (ClothEditView.Shows(ClothEditUiItem.ShapeKeySearchSort)) DrawFilterBar();
             DrawToolbar();
             Rect treeRect = GUILayoutUtility.GetRect(0f, Mathf.Max(treeHeight, 80f), GUILayout.ExpandWidth(true));
             _tree.OnGUI(treeRect);
             DrawPreviewStatus(data);
             DrawClothEditStatus(data);
             EditorGUILayout.Space(2f);
-            DrawDetails(data);
+            if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyDetails)) DrawDetails(data);
             DrawOperations(data);
-            DrawImport(data);
-            ShapeKeyApplyModeGUI.Draw(_component, _renderer);
+            if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyImport)) DrawImport(data);
+            if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyApplyMode)) ShapeKeyApplyModeGUI.Draw(_component, _renderer);
             DrawExport(data);
-            DrawBackups(data);
+            if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyBackups)) DrawBackups(data);
         }
 
         void UpdateDuplicateNames(GP02ShapeKeyData data)
@@ -386,7 +392,8 @@ namespace GP02.EditorTools
                 return false;
             }
 
-            DrawDataField();
+            // データの欄は、くわしく表示のときだけ（問題があるときは、下のメッセージと直すボタンを出す）
+            if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyDataField)) DrawDataField();
 
             if ((issues & ShapeKeyProtection.Issue.DataMissing) != 0)
             {
@@ -529,36 +536,46 @@ namespace GP02.EditorTools
         {
             List<ShapeKeyEntry> selected = _tree.GetSelectedEntries();
             bool any = selected.Count > 0;
+            bool copyPaste = ClothEditView.Shows(ClothEditUiItem.ShapeKeyCopyPaste);
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
                 using (new EditorGUI.DisabledScope(!any))
                 {
                     if (ToolbarButton(L10n.Tr("複製", "Duplicate"), L10n.Tr("選んだシェイプキーを複製します（Ctrl+D）", "Duplicate the selected shape keys (Ctrl+D)"))) DuplicateSelected();
-                    if (ToolbarButton(L10n.Tr("コピー", "Copy"), L10n.Tr("選んだシェイプキーをコピーします（Ctrl+C）。別のデータにも貼れます", "Copy the selected shape keys (Ctrl+C). They can be pasted into another data"))) CopySelected();
+                    if (copyPaste && ToolbarButton(L10n.Tr("コピー", "Copy"), L10n.Tr("選んだシェイプキーをコピーします（Ctrl+C）。別のデータにも貼れます", "Copy the selected shape keys (Ctrl+C). They can be pasted into another data"))) CopySelected();
                 }
-                using (new EditorGUI.DisabledScope(ShapeKeyListOperations.GetPasteProblem(Data) != null))
+                if (copyPaste)
                 {
-                    string tip = ShapeKeyListOperations.GetPasteProblem(Data) ?? L10n.Tr("コピーしたシェイプキーを貼り付けます（Ctrl+V）", "Paste the copied shape keys (Ctrl+V)");
-                    if (ToolbarButton(L10n.Tr("貼り付け", "Paste"), tip)) Paste();
+                    using (new EditorGUI.DisabledScope(ShapeKeyListOperations.GetPasteProblem(Data) != null))
+                    {
+                        string tip = ShapeKeyListOperations.GetPasteProblem(Data) ?? L10n.Tr("コピーしたシェイプキーを貼り付けます（Ctrl+V）", "Paste the copied shape keys (Ctrl+V)");
+                        if (ToolbarButton(L10n.Tr("貼り付け", "Paste"), tip)) Paste();
+                    }
                 }
                 using (new EditorGUI.DisabledScope(!any))
                 {
                     if (ToolbarButton(L10n.Tr("削除", "Delete"), L10n.Tr("選んだシェイプキーを削除します（Delete）", "Delete the selected shape keys (Delete)"))) DeleteSelected();
                 }
-                GUILayout.Space(8f);
-                using (new EditorGUI.DisabledScope(!any || !IsReorderAllowed))
+                if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyReorder))
                 {
-                    if (ToolbarButton("▲", L10n.Tr("上へ", "Move up"))) MoveSelected(-1);
-                    if (ToolbarButton("▼", L10n.Tr("下へ", "Move down"))) MoveSelected(1);
+                    GUILayout.Space(8f);
+                    using (new EditorGUI.DisabledScope(!any || !IsReorderAllowed))
+                    {
+                        if (ToolbarButton("▲", L10n.Tr("上へ", "Move up"))) MoveSelected(-1);
+                        if (ToolbarButton("▼", L10n.Tr("下へ", "Move down"))) MoveSelected(1);
+                    }
                 }
-                GUILayout.Space(8f);
-                using (new EditorGUI.DisabledScope(!any))
+                if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyBulkEnable))
                 {
-                    if (ToolbarButton(L10n.Tr("有効", "On"), L10n.Tr("選んだシェイプキーをまとめて有効にします", "Enable the selected shape keys"))) SetEnabled(selected, true);
-                    if (ToolbarButton(L10n.Tr("無効", "Off"), L10n.Tr("選んだシェイプキーをまとめて無効にします（書き出しに含めません）", "Disable the selected shape keys (they are not exported)"))) SetEnabled(selected, false);
+                    GUILayout.Space(8f);
+                    using (new EditorGUI.DisabledScope(!any))
+                    {
+                        if (ToolbarButton(L10n.Tr("有効", "On"), L10n.Tr("選んだシェイプキーをまとめて有効にします", "Enable the selected shape keys"))) SetEnabled(selected, true);
+                        if (ToolbarButton(L10n.Tr("無効", "Off"), L10n.Tr("選んだシェイプキーをまとめて無効にします（書き出しに含めません）", "Disable the selected shape keys (they are not exported)"))) SetEnabled(selected, false);
+                    }
                 }
                 GUILayout.FlexibleSpace();
-                if (ToolbarButton(L10n.Tr("＋グループ", "+ Group"), L10n.Tr("新しいグループを作ります。シェイプキーはドラッグで入れられます", "Create a group. Drag shape keys into it"))) AddGroup();
+                if (ClothEditView.Shows(ClothEditUiItem.ShapeKeyGroups) && ToolbarButton(L10n.Tr("＋グループ", "+ Group"), L10n.Tr("新しいグループを作ります。シェイプキーはドラッグで入れられます", "Create a group. Drag shape keys into it"))) AddGroup();
             }
         }
 
@@ -635,6 +652,11 @@ namespace GP02.EditorTools
 
         void DrawOperations(GP02ShapeKeyData data)
         {
+            if (!ClothEditView.Shows(ClothEditUiItem.ShapeKeyMoreOperations))
+            {
+                DrawMainOperations();
+                return;
+            }
             _settings.ShowOperations = EditorGUILayout.Foldout(_settings.ShowOperations, L10n.Tr("選んだシェイプキーへの操作", "Operations on the selection"), true);
             if (!_settings.ShowOperations) return;
 
@@ -710,6 +732,20 @@ namespace GP02.EditorTools
                 EditorGUI.indentLevel--;
             }
             if (EditorGUI.EndChangeCheck()) _settings.Save();
+        }
+
+        // かんたん表示: 左右に分割と左右反転だけ。軸と中心は「くわしく」の操作の設定で決める（既定はメッシュの X 軸・中心 0）
+        void DrawMainOperations()
+        {
+            bool any = _tree.GetSelectedEntries().Count > 0;
+            using (new EditorGUI.DisabledScope(!any))
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("左右に分割", "Split L/R"), L10n.Tr("選んだシェイプキーを _L と _R の2つに分けます。軸と中心は「くわしく」の操作の設定で変えられます", "Splits the selected shape keys into _L and _R. The axis and center can be changed in the Detailed view's operation settings")))) SplitSelected();
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("左右反転", "Flip"), L10n.Tr("選んだシェイプキーを、左右を入れ替えた形にします", "Mirrors the selected shape keys left to right")))) FlipSelected();
+                }
+            }
         }
 
         void UseMeshCenter(GP02ShapeKeyData data)
@@ -1029,6 +1065,18 @@ namespace GP02.EditorTools
             var menu = new GenericMenu();
 
             AddItem(menu, L10n.Tr("布で編集する", "Edit with cloth"), selected.Count == 1, EditWithCloth);
+            if (!ClothEditView.Shows(ClothEditUiItem.ShapeKeyMoreOperations))
+            {
+                // かんたん表示: 主な操作だけ
+                menu.AddSeparator("");
+                AddItem(menu, L10n.Tr("複製", "Duplicate"), any, DuplicateSelected);
+                AddItem(menu, L10n.Tr("削除", "Delete"), any, DeleteSelected);
+                menu.AddSeparator("");
+                AddItem(menu, L10n.Tr("左右に分割", "Split L/R"), any, SplitSelected);
+                AddItem(menu, L10n.Tr("左右反転", "Flip"), any, FlipSelected);
+                menu.ShowAsContext();
+                return;
+            }
             AddItem(menu, L10n.Tr("これだけ表示（ソロ）", "Show only this (solo)"), selected.Count == 1, () => SetSolo(IsSolo(selected[0]) ? null : selected[0]));
             AddVersionMenu(menu, selected);
             menu.AddSeparator("");
