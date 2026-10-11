@@ -234,7 +234,8 @@ public static class RenderScenes
     }
 
     // ---- 点を選んで動かす（スカートとペチコートをまとめて編集し、前の裾の点を矩形で選ぶ） ----
-    // ① 外下へ 4cm（移動） ② アバターの向きで X だけ 1.3 倍 ③ 面の法線の向きで 20 度回す ④ 内へ 3cm（ペチコートを押す）⑤ 外上へ 3.6cm。
+    // ① 外下へ 4cm（移動） ② アバターの向きで X だけ 1.3 倍 ③ 面の法線の向きで 20 度回す ④ 内へ 3cm（ペチコートを押す）⑤ 外上へ 3.6cm
+    // ⑥ ①と同じ動きを「形だけ動かす」（布の計算なし）で。
     // ①②③は、ウエストをピン留めした伸びない布の裾には届かない動き（裾を下へ引く・裾の幅や高さを変える）なので、選んだ点は目標の手前で止まる。④⑤は届く
     // select.png は形だけ、select_marked.png は選んだ点（赤）となめらかに減る範囲（黄〜橙。重みが大きいほど橙）の印を重ねたもの。
     // ログに、選んだ点が目標のどこまで動いたか、最大の伸び、スカートがペチコートに入った最大の深さを出す
@@ -253,21 +254,24 @@ public static class RenderScenes
 
         var cases = new[]
         {
-            ("select_1_move", HandleOrientation.Global, new Vector3(0f, -0.028f, -0.028f), Quaternion.identity, Vector3.one),
-            ("select_2_scale_x_avatar", HandleOrientation.Avatar, Vector3.zero, Quaternion.identity, new Vector3(1.3f, 1f, 1f)),
-            ("select_3_rotate_normal", HandleOrientation.Normal, Vector3.zero, Quaternion.identity, Vector3.one),
-            ("select_4_push_inward", HandleOrientation.Global, new Vector3(0f, 0f, 0.03f), Quaternion.identity, Vector3.one),
+            ("select_1_move", HandleOrientation.Global, new Vector3(0f, -0.028f, -0.028f), Quaternion.identity, Vector3.one, true),
+            ("select_2_scale_x_avatar", HandleOrientation.Avatar, Vector3.zero, Quaternion.identity, new Vector3(1.3f, 1f, 1f), true),
+            ("select_3_rotate_normal", HandleOrientation.Normal, Vector3.zero, Quaternion.identity, Vector3.one, true),
+            ("select_4_push_inward", HandleOrientation.Global, new Vector3(0f, 0f, 0.03f), Quaternion.identity, Vector3.one, true),
             // 布の長さで届く動き（伸びない布は、①のように裾を下へ引いたり、②③のように裾の幅や高さを変えたりはできない）
-            ("select_5_move_out_up", HandleOrientation.Global, new Vector3(0f, 0.02f, -0.03f), Quaternion.identity, Vector3.one),
+            ("select_5_move_out_up", HandleOrientation.Global, new Vector3(0f, 0.02f, -0.03f), Quaternion.identity, Vector3.one, true),
+            // ①と同じ動きを「形だけ動かす」で（布の計算をしないので、目標どおりに動いて、周りは伸びる）
+            ("select_6_shape_only_move", HandleOrientation.Global, new Vector3(0f, -0.028f, -0.028f), Quaternion.identity, Vector3.one, false),
         };
         bool first = true;
-        foreach (var (name, space, translation, baseRotation, scale) in cases)
+        foreach (var (name, space, translation, baseRotation, scale, asCloth) in cases)
         {
             var settings = new ClothEditSettings
             {
-                Falloff = FalloffPreset.Smooth,
+                SelectionFalloff = FalloffPreset.Smooth,
                 SelectionFalloffRadius = 0.05f,
                 HandleSpace = space,
+                SelectionMovesAsCloth = asCloth,
                 SettleTimeoutSeconds = LayerSettleSeconds,
             };
             var controller = new ClothEditController(settings) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
@@ -351,8 +355,8 @@ public static class RenderScenes
                 controller.Dispose();
             }
         }
-        SaveGrid(plain, 3, "select");
-        SaveGrid(marked, 3, "select_marked");
+        SaveGrid(plain, 4, "select");
+        SaveGrid(marked, 4, "select_marked");
     }
 
     // 選んだ点（赤）と、なめらかに減る範囲（黄〜橙）を、小さな四角で重ねる（シーンビューの重ね描きの代わり）

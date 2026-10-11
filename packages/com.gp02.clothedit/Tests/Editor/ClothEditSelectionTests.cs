@@ -735,7 +735,7 @@ namespace GP02.Tests
         public void MoveSelection_SelectedPointsReachTheTarget_FarPointsStay_NearbyOnesFollowPartway()
         {
             Renderer renderer = CreateFlat("Move");
-            var settings = new ClothEditSettings { Falloff = FalloffPreset.Smooth, SelectionFalloffRadius = 0.05f, SolveMilliseconds = 6f };
+            var settings = new ClothEditSettings { SelectionFalloff = FalloffPreset.Smooth, SelectionFalloffRadius = 0.05f, SolveMilliseconds = 6f };
             ClothEditController c = StartController(renderer, settings);
             PinTop(c);
             Vector3[] before = Snapshot(c);
@@ -789,10 +789,113 @@ namespace GP02.Tests
         }
 
         [Test]
+        public void ShapeOnly_PlacesTheSelectionExactly_WithoutSolving_AndIsOneUndoStep()
+        {
+            Renderer renderer = CreateFlat("ShapeOnly");
+            var settings = new ClothEditSettings { SelectionMovesAsCloth = false, SelectionFalloffRadius = 0.05f, SolveMilliseconds = 6f };
+            ClothEditController c = StartController(renderer, settings);
+            PinTop(c);
+            Vector3[] before = Snapshot(c);
+            SelectPatch(c, 0f, -0.15f, 0.03f);
+            var selected = c.SelectedParticles.ToList();
+
+            // 面の中で下へ 4cm。布として動かすと、ピン留めした伸びない布では届かない動き
+            var target = new Vector3(0f, -0.04f, 0f);
+            Assert.That(c.BeginSelectionTransform(), Is.True);
+            for (int k = 1; k <= 5; k++)
+            {
+                c.UpdateSelectionTransform(target * (k / 5f), Quaternion.identity, Vector3.one, false);
+                c.Tick(NextTime());
+            }
+            c.EndSelectionTransform();
+            Assert.That(c.IsBusy, Is.False, "形だけ動かすときは仕上げをしない");
+
+            foreach (int i in selected) Assert.That(Vector3.Distance(Pos(c, i), before[i] + target), Is.LessThan(1e-4f), "選んだ点は目標どおり");
+            // なめらかに減る範囲は途中まで動き、その外と、ピンは動かない
+            Vector3 center = Mean(c, selected) - target;
+            int ring = NearestRest(c, center + new Vector3(0.055f, 0f, 0f));
+            Assert.That(c.IsSelected(ring), Is.False);
+            float ringMove = Vector3.Distance(Pos(c, ring), before[ring]);
+            Assert.That(ringMove, Is.GreaterThan(0.002f).And.LessThan(0.038f), $"なめらかに減る範囲 {ringMove}");
+            int far = NearestRest(c, new Vector3(0.28f, 0.1f, 0f));
+            Assert.That(Pos(c, far), Is.EqualTo(before[far]), "範囲の外は布の計算をしないので動かない");
+            for (int i = 0; i < before.Length; i++)
+            {
+                if (c.Session.Solver.IsPinned(i)) Assert.That(Pos(c, i), Is.EqualTo(before[i]));
+            }
+            Assert.That(c.LastStretch, Is.GreaterThan(0.02f), "布の計算をしないので、周りは伸びる");
+
+            // 1回の Undo で戻り、選択は残る
+            c.UndoLast();
+            Assert.That(MaxDistance(Snapshot(c), before), Is.LessThan(1e-5f));
+            Assert.That(c.SelectionCount, Is.EqualTo(selected.Count));
+        }
+
+        [Test]
+        public void ShapeOnly_CanBeCancelled_AndClothModeStillSettles()
+        {
+            Renderer renderer = CreateFlat("ShapeOnlyCancel");
+            var settings = new ClothEditSettings { SelectionMovesAsCloth = false, SolveMilliseconds = 6f };
+            ClothEditController c = StartController(renderer, settings);
+            PinTop(c);
+            Vector3[] before = Snapshot(c);
+            SelectPatch(c, 0f, -0.1f, 0.03f);
+            Assert.That(c.BeginSelectionTransform(), Is.True);
+            c.UpdateSelectionTransform(new Vector3(0f, 0f, -0.03f), Quaternion.identity, Vector3.one, false);
+            Assert.That(MaxDistance(Snapshot(c), before), Is.GreaterThan(0.02f), "動かしている途中も形が見える");
+            Assert.That(c.Cancel(), Is.True);
+            Assert.That(MaxDistance(Snapshot(c), before), Is.LessThan(1e-5f));
+
+            // 布として動かす設定に戻すと、離したあとに仕上げが入る
+            c.Settings.SelectionMovesAsCloth = true;
+            Assert.That(c.BeginSelectionTransform(), Is.True);
+            c.UpdateSelectionTransform(new Vector3(0f, 0f, -0.02f), Quaternion.identity, Vector3.one, false);
+            c.Tick(NextTime());
+            c.EndSelectionTransform();
+            Assert.That(c.IsSettling, Is.True);
+            Settle(c);
+        }
+
+        [Test]
+        public void SelectionFalloff_IsSeparateFromTheBrush_AndSmoothByDefault()
+        {
+            var settings = new ClothEditSettings { SelectionFalloffRadius = 0.05f };
+            Assert.That(settings.Falloff, Is.EqualTo(FalloffPreset.Constant), "ブラシの既定は一定");
+            Assert.That(settings.SelectionFalloff, Is.EqualTo(FalloffPreset.Smooth), "選んだ点の周りの既定はなめらか");
+            ClothEditController c = StartController(CreateFlat("SelectionFalloff"), settings);
+            SelectPatch(c, 0f, 0f, 0.02f);
+
+            float min = 1f, max = 0f;
+            for (int k = 0; k < c.SelectionWeightCount; k++)
+            {
+                min = Mathf.Min(min, c.SelectionWeightValue(k));
+                max = Mathf.Max(max, c.SelectionWeightValue(k));
+            }
+            Assert.That(c.SelectionWeightCount, Is.GreaterThan(20));
+            Assert.That(min, Is.LessThan(0.3f), "端の方は小さい");
+            Assert.That(max, Is.LessThan(1f));
+
+            // 選んだ点の周りを一定にすると、範囲の中は全部 1。ブラシの減り方を変えても影響しない
+            c.Settings.SelectionFalloff = FalloffPreset.Constant;
+            c.Settings.Falloff = FalloffPreset.Linear;
+            for (int k = 0; k < c.SelectionWeightCount; k++) Assert.That(c.SelectionWeightValue(k), Is.EqualTo(1f).Within(1e-5f));
+
+            // 保存と読み込み、既定に戻す
+            c.Settings.SelectionMovesAsCloth = false;
+            c.Settings.Save(KeyPrefix);
+            ClothEditSettings loaded = ClothEditSettings.Load(KeyPrefix);
+            Assert.That(loaded.SelectionFalloff, Is.EqualTo(FalloffPreset.Constant));
+            Assert.That(loaded.SelectionMovesAsCloth, Is.False);
+            loaded.ResetToDefaults();
+            Assert.That(loaded.SelectionFalloff, Is.EqualTo(FalloffPreset.Smooth));
+            Assert.That(loaded.SelectionMovesAsCloth, Is.True);
+        }
+
+        [Test]
         public void SelectionWeights_AreRecomputedOnlyWhenTheInputsChange_AndSwitchOff()
         {
             Renderer renderer = CreateFlat("Weights");
-            ClothEditController c = StartController(renderer, new ClothEditSettings { Falloff = FalloffPreset.Linear, SelectionFalloffRadius = 0.04f });
+            ClothEditController c = StartController(renderer, new ClothEditSettings { SelectionFalloff = FalloffPreset.Linear, SelectionFalloffRadius = 0.04f });
             Assert.That(c.SelectionWeightCount, Is.EqualTo(0), "選択が空なら無い");
             SelectPatch(c, 0f, 0f, 0.02f);
             int count = c.SelectionWeightCount;

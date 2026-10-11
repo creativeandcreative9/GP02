@@ -1210,6 +1210,29 @@ namespace GP02.Core
             _activeDirty = true;
         }
 
+        /// <summary>
+        /// つまんだ範囲の粒子（なめらかに減る範囲と鏡像の側を含む）を、布の計算をせずに目標の位置へ置く（「形だけ動かす」用）。
+        /// ピン留めの粒子は動かさない。範囲の外の粒子もそのまま。置いた数を返す。つまんでいなければ 0。
+        /// 目標は <see cref="Grab(int[], BrushMotion, BrushOptions)"/> などで決まったもの（<see cref="KeepOutsideRestSurface"/> なら元の形の外に押し出した位置）。
+        /// </summary>
+        public int PlaceBrushAtGoals()
+        {
+            if (_grabbed < 0) return 0;
+            int placed = 0;
+            for (int k = 0; k < _brushCount; k++)
+            {
+                int i = _brushList[k];
+                if (_pinned[i]) continue;
+                Vector3 g = _brushGoal[i];
+                _positions[i] = g;
+                _worldPositions[i].X = g.X + _origin.X;
+                _worldPositions[i].Y = g.Y + _origin.Y;
+                _worldPositions[i].Z = g.Z + _origin.Z;
+                placed++;
+            }
+            return placed;
+        }
+
         /// <summary>元の形に戻す。ピン留めは保持する。</summary>
         public void ResetToRest()
         {

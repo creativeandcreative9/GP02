@@ -239,6 +239,19 @@ namespace GP02.EditorTools
         /// <summary>なめらかに減る範囲を、重みで色分けして見せるか。</summary>
         public bool ShowSelectionWeights = true;
 
+        /// <summary>
+        /// 選んだ点の周りの減り方。ブラシの減り方（<see cref="Falloff"/>）とは別に持つ。
+        /// ブラシの既定（一定）のままだと、なめらかに減る範囲が減らずに全体で動いてしまうため、既定はなめらか。
+        /// 「自由に描く」は、ブラシと同じカーブ（<see cref="CustomFalloff"/>）を使う。
+        /// </summary>
+        public FalloffPreset SelectionFalloff = FalloffPreset.Smooth;
+
+        /// <summary>
+        /// 選んだ点を、布として動かすか。オン（既定）なら周りの布が布の計算で付いてきて、布の長さで届かない所では手前で止まる。
+        /// オフなら、選んだ点となめらかに減る範囲だけを、指定どおりの位置へ動かす（形だけ動かす。布の計算はしないので、伸びることがある）。
+        /// </summary>
+        public bool SelectionMovesAsCloth = true;
+
         // 保存しない（編集を始めるたびに 100% の見た目から始めたいため）
 
         /// <summary>編集中の形と元の形の間の見せ方（0 で元の形、1 で編集中の形）。保存しない。</summary>
@@ -312,9 +325,14 @@ namespace GP02.EditorTools
         /// 今の選び方の <see cref="FalloffCurve"/>。毎回呼んでよい（プリセットは共有のもの、自由に描いたカーブは変わらない間は同じものを返す）。
         /// Custom は 64 点でサンプルする。
         /// </summary>
-        public FalloffCurve GetFalloffCurve()
+        public FalloffCurve GetFalloffCurve() => CurveFor(Falloff);
+
+        /// <summary>選んだ点の周りの減り方（<see cref="SelectionFalloff"/>）の曲線。</summary>
+        public FalloffCurve GetSelectionFalloffCurve() => CurveFor(SelectionFalloff);
+
+        FalloffCurve CurveFor(FalloffPreset presetKind)
         {
-            FalloffCurve preset = PresetCurve(Falloff);
+            FalloffCurve preset = PresetCurve(presetKind);
             if (preset != null) return preset;
 
             AnimationCurve custom = CustomFalloff ?? DefaultCustomFalloff();
@@ -411,6 +429,8 @@ namespace GP02.EditorTools
             SelectionFalloffRadius = DefaultSelectionFalloffRadius;
             SelectThroughOcclusion = false;
             ShowSelectionWeights = true;
+            SelectionFalloff = FalloffPreset.Smooth;
+            SelectionMovesAsCloth = true;
             CompareBlend = 1f;
             ShowOriginal = false;
 
@@ -441,6 +461,7 @@ namespace GP02.EditorTools
 
             if (!Enum.IsDefined(typeof(ClothEditMode), Tool)) Tool = ClothEditMode.Grab;
             if (!Enum.IsDefined(typeof(FalloffPreset), Falloff)) Falloff = FalloffPreset.Constant;
+            if (!Enum.IsDefined(typeof(FalloffPreset), SelectionFalloff)) SelectionFalloff = FalloffPreset.Smooth;
             if (CustomFalloff == null || CustomFalloff.length == 0) CustomFalloff = DefaultCustomFalloff();
             if (!Enum.IsDefined(typeof(BrushDistanceMode), DistanceMode)) DistanceMode = BrushDistanceMode.Surface;
             if (!Enum.IsDefined(typeof(SymmetryAxis), SymmetryAxis)) SymmetryAxis = SymmetryAxis.X;
@@ -515,6 +536,8 @@ namespace GP02.EditorTools
                 SelectionFalloffRadius = EditorPrefs.GetFloat(keyPrefix + "SelectionFalloffRadius", DefaultSelectionFalloffRadius),
                 SelectThroughOcclusion = EditorPrefs.GetBool(keyPrefix + "SelectThroughOcclusion", false),
                 ShowSelectionWeights = EditorPrefs.GetBool(keyPrefix + "ShowSelectionWeights", true),
+                SelectionFalloff = (FalloffPreset)EditorPrefs.GetInt(keyPrefix + "SelectionFalloff", (int)FalloffPreset.Smooth),
+                SelectionMovesAsCloth = EditorPrefs.GetBool(keyPrefix + "SelectionMovesAsCloth", true),
             };
             settings.Sanitize();
             return settings;
@@ -553,6 +576,8 @@ namespace GP02.EditorTools
             EditorPrefs.SetFloat(keyPrefix + "SelectionFalloffRadius", SelectionFalloffRadius);
             EditorPrefs.SetBool(keyPrefix + "SelectThroughOcclusion", SelectThroughOcclusion);
             EditorPrefs.SetBool(keyPrefix + "ShowSelectionWeights", ShowSelectionWeights);
+            EditorPrefs.SetInt(keyPrefix + "SelectionFalloff", (int)SelectionFalloff);
+            EditorPrefs.SetBool(keyPrefix + "SelectionMovesAsCloth", SelectionMovesAsCloth);
         }
 
         /// <summary>保存した値を消す（次の Load で既定値に戻る）。</summary>
@@ -566,6 +591,7 @@ namespace GP02.EditorTools
                 "Tool", "Falloff", "CustomFalloff", "DistanceMode", "SymmetryEnabled", "SymmetryAxis", "SymmetryOffset",
                 "MoveDirection", "DirectionSpace", "RotateAxis", "RelaxStrength", "ShowBrushPreview", "ShowStretchHeatmap", "PinRectFrontOnly",
                 "HandleType", "PivotMode", "HandleSpace", "SelectionFalloffRadius", "SelectThroughOcclusion", "ShowSelectionWeights",
+                "SelectionFalloff", "SelectionMovesAsCloth",
             })
             {
                 EditorPrefs.DeleteKey(keyPrefix + key);

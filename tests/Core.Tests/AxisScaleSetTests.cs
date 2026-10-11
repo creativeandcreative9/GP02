@@ -333,4 +333,32 @@ public class AxisScaleSetTests
         Assert.Throws<ArgumentNullException>(() => solver.CollectSetRange(null!, null, buffer, wbuffer, 10));
         Assert.Throws<ArgumentOutOfRangeException>(() => solver.CollectSetRange(new[] { -1 }, null, buffer, wbuffer, 10));
     }
+
+    [Fact]
+    public void PlaceBrushAtGoals_PutsTheRangeOnItsGoals_WithoutTouchingPinsOrTheRest()
+    {
+        ClothSolver solver = FlatCloth();
+        int pinned = NearestRest(solver, new Vector3(0.01f, 0.1f, 0f));
+        solver.SetPinned(pinned, true);
+        Vector3[] before = solver.Positions.ToArray();
+        int[] set = ParticlesIn(solver, p => MathF.Abs(p.X) <= 0.015f && MathF.Abs(p.Y - 0.1f) <= 0.015f);
+        var options = new BrushOptions { Radius = 0.03f, Falloff = FalloffCurve.Smooth };
+        var motion = BrushMotion.FromTranslation(new Vector3(0f, -0.04f, 0.01f));
+
+        Assert.Equal(0, solver.PlaceBrushAtGoals());   // つまんでいなければ何もしない
+        solver.Grab(set, motion, options);
+        int placed = solver.PlaceBrushAtGoals();
+        Assert.Equal(solver.BrushParticleCount - 1, placed);   // ピン留めの1つだけ置かない
+
+        for (int i = 0; i < before.Length; i++)
+        {
+            float w = solver.BrushWeight(i);
+            Vector3 expected = i == pinned || w == 0f ? before[i] : before[i] + w * motion.Translation;
+            AssertClose(expected, solver.Positions[i]);
+        }
+        // 範囲の外まで広げる計算はしない
+        int far = NearestRest(solver, new Vector3(0.09f, 0.19f, 0f));
+        Assert.Equal(0f, solver.BrushWeight(far));
+        Assert.Equal(before[far], solver.Positions[far]);
+    }
 }

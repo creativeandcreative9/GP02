@@ -118,6 +118,7 @@ namespace GP02.EditorTools
 
         // 選んだ点の変形
         bool _xformActive;              // BeginSelectionTransform から EndSelectionTransform まで
+        bool _xformShapeOnly;           // 形だけ動かす（ClothEditSettings.SelectionMovesAsCloth がオフ）
         bool _setGrab;                  // 集合でつまんでいる（変形の開始から確定まで）
         Vector3 _xformPivot;            // 押したときの中心と、拡大の軸の向き
         Quaternion _xformFrame = Quaternion.identity;
@@ -1573,7 +1574,7 @@ namespace GP02.EditorTools
             return new BrushOptions
             {
                 Radius = radius >= 0f ? Mathf.Min(radius, ClothEditSettings.MaxSelectionFalloffRadius) : 0f,
-                Falloff = _settings.GetFalloffCurve(),
+                Falloff = _settings.GetSelectionFalloffCurve(),
                 DistanceMode = _settings.DistanceMode,
                 Mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null,
             };
@@ -1604,6 +1605,7 @@ namespace GP02.EditorTools
             _xformRawRotation = _xformRotation = Quaternion.identity;
             _xformRawLogScale = _xformLogScale = Vector3.zero;
             _xformPreciseUsed = false;
+            _xformShapeOnly = !_settings.SelectionMovesAsCloth;
             _xformActive = true;
             _setGrab = true;
             _strokeMode = ClothEditMode.Select;
@@ -1671,6 +1673,12 @@ namespace GP02.EditorTools
                 ScaleFrame = new NQuaternion(_xformFrame.x, _xformFrame.y, _xformFrame.z, _xformFrame.w),
             };
             _session.UpdateGrabSet(motion);
+            if (_xformShapeOnly)
+            {
+                // 形だけ動かす: 布の計算をせず、範囲を目標の位置へ置く（Tick では計算しない）
+                _session.Solver.PlaceBrushAtGoals();
+                _session.UpdateCurrentShape();
+            }
 
             if (_xformTranslation.sqrMagnitude > 1e-12f || Quaternion.Angle(_xformRotation, Quaternion.identity) > 1e-3f
                 || (effectiveScale - Vector3.one).sqrMagnitude > 1e-8f)
@@ -1689,6 +1697,13 @@ namespace GP02.EditorTools
             if (!_xformActive) return;
             _xformActive = false;
             if (!EnsureAlive()) return;
+            if (_moved && _xformShapeOnly)
+            {
+                // 形だけ動かしたときは仕上げをしない（布の計算で形が変わらないように）。その場で確定する
+                FinishStroke();
+                AfterShapeChanged();
+                return;
+            }
             if (_moved)
             {
                 _dragging = false;
@@ -1887,6 +1902,8 @@ namespace GP02.EditorTools
             if (!_dragging && !_settling) return;
             // 動かしていないうちは計算しない（クリックしただけで形が変わらないように）
             if (_dragging && !_moved) return;
+            // 形だけ動かしている間も計算しない（UpdateSelectionTransform が置いた形のまま）
+            if (_xformActive && _xformShapeOnly) return;
 
             if (_settleClockPending)
             {
