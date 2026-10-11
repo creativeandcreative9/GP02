@@ -559,6 +559,28 @@ namespace GP02.EditorTools
             Touch(data);
         }
 
+        /// <summary>
+        /// 選んだエントリの法線の差分を、位置の差分から計算し直す（元のエントリを書き換える。Undo の1段）。
+        /// 既存の BlendShape から取り込んだエントリにも使える。計算し直したエントリの数を返す。
+        /// </summary>
+        /// <param name="smoothAngleDegrees">同じ位置の頂点の面をなめらかにつなぐ角度。180 で全部つなぐ</param>
+        /// <param name="mergeCoincident">同じ位置の頂点（UV の継ぎ目など）を結合して計算するか</param>
+        public static int RecomputeNormals(GP02ShapeKeyData data, IReadOnlyList<ShapeKeyEntry> entries, float smoothAngleDegrees, bool mergeCoincident)
+        {
+            Require(data);
+            List<ShapeKeyEntry> targets = InDataOrder(data, entries);
+            if (targets.Count == 0) return 0;
+            foreach (ShapeKeyEntry e in targets) RequireCompatible(data, e);
+            Mesh mesh = RequireSourceMesh(data);
+            var results = new List<ShapeKeyEntry>();
+            foreach (ShapeKeyEntry e in targets) results.Add(ShapeKeyLibrary.RecomputeNormalsEntry(e, mesh, smoothAngleDegrees, mergeCoincident));
+
+            Record(data, "法線を計算し直す", "Recompute normals");
+            for (int i = 0; i < targets.Count; i++) targets[i].Frames = results[i].Frames;
+            Touch(data);
+            return targets.Count;
+        }
+
         static ShapeKeyEntry ApplyResult(GP02ShapeKeyData data, ShapeKeyEntry original, ShapeKeyEntry result, bool asCopy, string suffix, string japanese, string english)
         {
             Record(data, japanese, english);

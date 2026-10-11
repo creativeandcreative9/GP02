@@ -433,4 +433,133 @@ public class ShapeKeyMathTests
 
         Assert.Equal(Vector3.Zero, normalDeltas[^1]);
     }
+
+    // ---- 法線: 同じ位置の頂点を結合・スムーズ角度 ----
+
+    // 継ぎ目で頂点が分かれた平面の右半分を、Z 方向へ少し持ち上げる（折り目ができる）
+    static void BentSeamMesh(out Vector3[] vertices, out int[] triangles, out Vector3[] restNormals, out Vector3[] deltas, out int seamA, out int seamB)
+    {
+        ProceduralMeshes.GridWithSeam(Columns, Rows, Width, Height, out vertices, out triangles);
+        restNormals = new Vector3[vertices.Length];
+        MeshNormals.Compute(vertices, triangles, restNormals);
+        deltas = new Vector3[vertices.Length];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            float x = vertices[i].X - Center;
+            if (x > 0f) deltas[i] = new Vector3(0f, 0f, -x * 0.5f);
+        }
+        int stride = Columns + 1;
+        seamA = 5 * stride + Columns / 2;
+        seamB = vertices.Length - (Rows + 1) + 5;
+        Assert.True(Vector3.Distance(vertices[seamA], vertices[seamB]) < 1e-7f);
+    }
+
+    [Fact]
+    public void RecomputeNormalDeltas_MergeCoincident_SeamVerticesGetTheSameNormal()
+    {
+        BentSeamMesh(out var vertices, out var triangles, out var restNormals, out var deltas, out int seamA, out int seamB);
+
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var separate);
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var merged, 180f, true);
+
+        // 結合しないと、動かない側（seamA）の差分は 0、動く側（seamB）は傾く。結合すると、両方が同じ向きになる
+        Assert.True(separate[seamA].Length() < 1e-5f);
+        Assert.True(separate[seamB].Length() > 0.05f);
+        Assert.True(Vector3.Distance(merged[seamA], merged[seamB]) < 1e-5f, $"{merged[seamA]} {merged[seamB]}");
+        // 結合した法線は、両側の面の平均なので、傾く向きは同じで、傾きは結合しない側より小さい
+        Assert.True(Vector3.Dot(merged[seamA], separate[seamB]) > 0f);
+        Assert.True(merged[seamA].Length() < separate[seamB].Length());
+        Assert.True(merged[seamA].Length() > 1e-3f);
+    }
+
+    [Fact]
+    public void RecomputeNormalDeltas_MergeCoincident_LeavesFarVerticesAlone()
+    {
+        BentSeamMesh(out var vertices, out var triangles, out var restNormals, out var deltas, out _, out _);
+
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var separate);
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var merged, 180f, true);
+
+        // 継ぎ目の頂点どうしが重なっていない頂点は、結合しても変わらない
+        int stride = Columns + 1;
+        int farRight = 5 * stride + Columns;
+        int farLeft = 5 * stride;
+        Assert.True(Vector3.Distance(separate[farRight], merged[farRight]) < 1e-6f);
+        Assert.True(Vector3.Distance(separate[farLeft], merged[farLeft]) < 1e-6f);
+    }
+
+    // 90 度に折れた固いエッジ（頂点を分けてある）。2 枚の板が、同じ辺で直角に会う
+    static void HardEdgeMesh(out Vector3[] vertices, out int[] triangles, out Vector3[] restNormals, out Vector3[] deltas)
+    {
+        // 床（Z=0 の面、X が -1〜0）と壁（X=0 の面、Z が 0〜1）。辺（X=0, Z=0）の頂点を、床と壁で別々に持つ
+        vertices = new[]
+        {
+            new Vector3(-1, 0, 0), new Vector3(0, 0, 0), new Vector3(-1, 1, 0), new Vector3(0, 1, 0),   // 床 0〜3
+            new Vector3(0, 0, 0), new Vector3(0, 0, 1), new Vector3(0, 1, 0), new Vector3(0, 1, 1),     // 壁 4〜7
+        };
+        triangles = new[] { 0, 2, 1, 1, 2, 3, 4, 6, 5, 5, 6, 7 };
+        restNormals = new Vector3[vertices.Length];
+        MeshNormals.Compute(vertices, triangles, restNormals);
+        deltas = new Vector3[vertices.Length];
+        // 壁だけを +X へ少し倒す
+        deltas[5] = new Vector3(0.3f, 0, 0);
+        deltas[7] = new Vector3(0.3f, 0, 0);
+    }
+
+    [Theory]
+    [InlineData(30f, false)]
+    [InlineData(80f, false)]
+    [InlineData(100f, true)]
+    [InlineData(180f, true)]
+    public void RecomputeNormalDeltas_SmoothAngle_KeepsOrJoinsHardEdge(float angle, bool joined)
+    {
+        HardEdgeMesh(out var vertices, out var triangles, out var restNormals, out var deltas);
+
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var separate);
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var merged, angle, true);
+
+        // 床の辺の頂点（1）と壁の辺の頂点（4）は同じ位置。なす角 90 度が限度以内ならつながる
+        if (joined)
+        {
+            Assert.True(Vector3.Distance(merged[1], merged[4]) < 1e-5f);
+            Assert.True(Vector3.Distance(merged[1], separate[1]) > 0.01f || Vector3.Distance(merged[4], separate[4]) > 0.01f);
+        }
+        else
+        {
+            Assert.True(Vector3.Distance(merged[1], separate[1]) < 1e-6f);
+            Assert.True(Vector3.Distance(merged[4], separate[4]) < 1e-6f);
+        }
+    }
+
+    [Fact]
+    public void RecomputeNormalDeltas_MergeCoincident_ZeroForUnmovedMesh()
+    {
+        BentSeamMesh(out var vertices, out var triangles, out var restNormals, out _, out _, out _);
+
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, new Vector3[vertices.Length], restNormals, out var normalDeltas, 60f, true);
+
+        foreach (var d in normalDeltas) Assert.True(d.Length() < 1e-6f);
+    }
+
+    [Fact]
+    public void RecomputeNormalDeltas_DefaultsMatchTheOldBehavior()
+    {
+        BentSeamMesh(out var vertices, out var triangles, out var restNormals, out var deltas, out _, out _);
+
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var byDefault);
+        ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, deltas, restNormals, out var explicitOff, 40f, false);
+
+        AssertClose(byDefault, explicitOff, 0f);
+    }
+
+    [Fact]
+    public void RecomputeNormalDeltas_NegativeAngleIsRejected()
+    {
+        Grid(out var vertices, out var triangles);
+        var restNormals = new Vector3[vertices.Length];
+        MeshNormals.Compute(vertices, triangles, restNormals);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            ShapeKeyMath.RecomputeNormalDeltas(vertices, triangles, new Vector3[vertices.Length], restNormals, out _, -1f, true));
+    }
 }

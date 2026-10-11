@@ -499,6 +499,38 @@ namespace GP02.EditorTools
             return MapEntry(entry, newName ?? entry.Name, deltas => ToUnityArray(ShapeKeyMath.Scale(ToNumericsArray(deltas), factor)));
         }
 
+        /// <summary>
+        /// エントリの全フレームの法線の差分を、位置の差分から計算し直した新しいエントリを返す（位置・接線はそのまま）。
+        /// 既存の BlendShape から取り込んだエントリの法線や、法線が壊れて見える（継ぎ目だけ陰影が違う）エントリを直すのに使う。
+        /// 動かしても法線が変わらなければ、そのフレームの法線の差分は空になる。
+        /// </summary>
+        /// <param name="source">元の形のメッシュ（法線を持っていること）</param>
+        /// <param name="smoothAngleDegrees">同じ位置の頂点の面をなめらかにつなぐ角度（<see cref="ShapeKeyMath.RecomputeNormalDeltas"/>）</param>
+        /// <param name="mergeCoincident">同じ位置の頂点を結合して計算するか</param>
+        /// <exception cref="InvalidOperationException">メッシュに法線が無いとき</exception>
+        public static ShapeKeyEntry RecomputeNormalsEntry(ShapeKeyEntry entry, Mesh source, float smoothAngleDegrees, bool mergeCoincident)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            Vector3[] restNormals = source.normals;
+            if (restNormals.Length != source.vertexCount)
+            {
+                throw new InvalidOperationException($"元のメッシュ「{source.name}」に法線がありません。法線の差分は、メッシュの法線に足して使うため、法線があるメッシュでしか計算できません。");
+            }
+            NVector3[] rest = MeshBridge.ToNumerics(source.vertices, Vector3.one);
+            int[] triangles = source.triangles;
+            NVector3[] restNormalsNumerics = MeshBridge.ToNumerics(restNormals, Vector3.one);
+
+            ShapeKeyEntry result = CloneEntry(entry);
+            foreach (ShapeKeyFrame frame in result.Frames)
+            {
+                ShapeKeyMath.RecomputeNormalDeltas(rest, triangles, ToNumericsArray(frame.DeltaVertices), restNormalsNumerics,
+                    out NVector3[] normalDeltas, smoothAngleDegrees, mergeCoincident);
+                frame.DeltaNormals = EmptyIfZero(ToUnityArray(normalDeltas));
+            }
+            return result;
+        }
+
         /// <summary>エントリの深いコピー（差分の配列も複製する）。</summary>
         public static ShapeKeyEntry CloneEntry(ShapeKeyEntry entry, string newName = null)
         {

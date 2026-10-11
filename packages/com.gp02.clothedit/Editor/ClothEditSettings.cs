@@ -169,6 +169,9 @@ namespace GP02.EditorTools
         /// <summary>伸びのヒートマップを表示するか。</summary>
         public bool ShowStretchHeatmap;
 
+        /// <summary>ピン留め・ピン解除の範囲指定（Shift＋ドラッグの矩形）で、カメラ側を向いた粒子だけを対象にするか（裏側を除く）。</summary>
+        public bool PinRectFrontOnly = true;
+
         // 保存しない（編集を始めるたびに 100% の見た目から始めたいため）
 
         /// <summary>編集中の形と元の形の間の見せ方（0 で元の形、1 で編集中の形）。保存しない。</summary>
@@ -334,6 +337,7 @@ namespace GP02.EditorTools
             RelaxStrength = DefaultRelaxStrength;
             ShowBrushPreview = true;
             ShowStretchHeatmap = false;
+            PinRectFrontOnly = true;
             CompareBlend = 1f;
             ShowOriginal = false;
 
@@ -423,6 +427,7 @@ namespace GP02.EditorTools
                 RelaxStrength = EditorPrefs.GetFloat(keyPrefix + "RelaxStrength", DefaultRelaxStrength),
                 ShowBrushPreview = EditorPrefs.GetBool(keyPrefix + "ShowBrushPreview", true),
                 ShowStretchHeatmap = EditorPrefs.GetBool(keyPrefix + "ShowStretchHeatmap", false),
+                PinRectFrontOnly = EditorPrefs.GetBool(keyPrefix + "PinRectFrontOnly", true),
             };
             settings.Sanitize();
             return settings;
@@ -453,6 +458,7 @@ namespace GP02.EditorTools
             EditorPrefs.SetFloat(keyPrefix + "RelaxStrength", RelaxStrength);
             EditorPrefs.SetBool(keyPrefix + "ShowBrushPreview", ShowBrushPreview);
             EditorPrefs.SetBool(keyPrefix + "ShowStretchHeatmap", ShowStretchHeatmap);
+            EditorPrefs.SetBool(keyPrefix + "PinRectFrontOnly", PinRectFrontOnly);
         }
 
         /// <summary>保存した値を消す（次の Load で既定値に戻る）。</summary>
@@ -464,7 +470,7 @@ namespace GP02.EditorTools
                 "SolveMilliseconds", "CoarseIterations", "UseAcceleration", "KeepOutsideRestSurface",
                 "BrushCompliance", "UseRestSurfaceAllowance",
                 "Tool", "Falloff", "CustomFalloff", "DistanceMode", "SymmetryEnabled", "SymmetryAxis", "SymmetryOffset",
-                "MoveDirection", "DirectionSpace", "RotateAxis", "RelaxStrength", "ShowBrushPreview", "ShowStretchHeatmap",
+                "MoveDirection", "DirectionSpace", "RotateAxis", "RelaxStrength", "ShowBrushPreview", "ShowStretchHeatmap", "PinRectFrontOnly",
             })
             {
                 EditorPrefs.DeleteKey(keyPrefix + key);

@@ -45,6 +45,33 @@ namespace GP02.EditorTools
             }
         }
 
+        /// <summary>道具の説明（ツールバーやオーバーレイのツールチップ）。</summary>
+        public static string ToolTip(ClothEditMode mode)
+        {
+            string key = ToolKey(mode);
+            switch (mode)
+            {
+                case ClothEditMode.Rotate:
+                    return L10n.Tr($"回す（{key}）: 布をクリックして横にドラッグすると、クリックした点を中心に回ります。Ctrl で15°刻み",
+                        $"Rotate ({key}): click the cloth and drag sideways to rotate around the clicked point. Ctrl for 15-degree steps");
+                case ClothEditMode.Scale:
+                    return L10n.Tr($"拡大縮小（{key}）: 布をクリックして横にドラッグすると、クリックした点を中心に大きく・小さくなります（0.2〜3倍）",
+                        $"Scale ({key}): click the cloth and drag sideways to scale around the clicked point (0.2x to 3x)");
+                case ClothEditMode.Pin:
+                    return L10n.Tr($"ピン留め（{key}）: 塗った所を固定します。動かしたくない所（ウエストなど）に使います。Shift+ドラッグで矩形、Ctrl+クリックで部品ごと",
+                        $"Pin ({key}): paint to fix an area so it never moves, such as the waist. Shift+Drag for a rectangle, Ctrl+Click for a whole part");
+                case ClothEditMode.Unpin:
+                    return L10n.Tr($"ピン解除（{key}）: 塗った所のピンを外します。Shift+ドラッグで矩形、Ctrl+クリックで部品ごと",
+                        $"Unpin ({key}): paint to remove pins. Shift+Drag for a rectangle, Ctrl+Click for a whole part");
+                case ClothEditMode.Relax:
+                    return L10n.Tr($"元に戻すブラシ（{key}）: 塗った所を元の形へ近づけます。強さは「ブラシ」の区切りで決めます",
+                        $"Restore Brush ({key}): paint to bring an area back toward its original shape. Set the strength in the Brush section");
+                default:
+                    return L10n.Tr($"つまむ（{key}）: 布をドラッグして、つまんだ所を引っ張ります。周りの布も伸びずに付いてきます。Shift で精密操作",
+                        $"Grab ({key}): drag the cloth to pull the grabbed area. The cloth around follows without stretching. Shift for fine control");
+            }
+        }
+
         /// <summary>ショートカットキーの表示（道具の名前のあとに添える）。</summary>
         public static string ToolKey(ClothEditMode mode)
         {
@@ -93,11 +120,12 @@ namespace GP02.EditorTools
                             $"GP02 {name}: click the cloth and drag sideways to scale (around the clicked point)");
                         break;
                     case ClothEditMode.Pin:
-                        first = L10n.Tr($"GP02 {name}: 左ドラッグで塗る（動かさない所を決める）/ Shift+P: ピン解除",
-                            $"GP02 {name}: drag to paint the parts that should not move / Shift+P: unpin");
+                        first = L10n.Tr($"GP02 {name}: ドラッグで塗る（動かさない所を決める）/ Shift+ドラッグ: 矩形で一度に / Ctrl+クリック: 部品ごと",
+                            $"GP02 {name}: drag to paint what should not move / Shift+Drag: rectangle / Ctrl+Click: whole part");
                         break;
                     case ClothEditMode.Unpin:
-                        first = L10n.Tr($"GP02 {name}: 左ドラッグで塗ってピンを外す", $"GP02 {name}: drag to paint and remove pins");
+                        first = L10n.Tr($"GP02 {name}: ドラッグで塗ってピンを外す / Shift+ドラッグ: 矩形で一度に / Ctrl+クリック: 部品ごと",
+                            $"GP02 {name}: drag to paint and remove pins / Shift+Drag: rectangle / Ctrl+Click: whole part");
                         break;
                     case ClothEditMode.Relax:
                         first = L10n.Tr($"GP02 {name}: 左ドラッグで塗った所を元の形へ近づける（離すと仕上げ）",
@@ -125,6 +153,8 @@ namespace GP02.EditorTools
             Add("Shift+P", "ピン解除", "Unpin");
             Add("T", "元に戻すブラシ", "Restore Brush");
             Add(L10n.Tr("Shift+ドラッグ", "Shift+Drag"), "動きを 1/5 にする（精密操作）", "Move at 1/5 speed (fine control)");
+            Add(L10n.Tr("Shift+ドラッグ（ピン）", "Shift+Drag (Pin)"), "矩形の中をまとめてピン留め・解除", "Pin / unpin everything inside a rectangle");
+            Add(L10n.Tr("Ctrl+クリック（ピン）", "Ctrl+Click (Pin)"), "その部品（島）全体をピン留め・解除", "Pin / unpin the whole part (island)");
             Add(L10n.Tr("Ctrl+ホイール", "Ctrl+Wheel"), "ブラシ半径", "Brush radius");
             Add(L10n.Tr("Ctrl+Shift+ホイール", "Ctrl+Shift+Wheel"), "影響範囲", "Influence range");
             Add("[  ]", "ブラシ半径（Shift で影響範囲）", "Brush radius (Shift for influence range)");
