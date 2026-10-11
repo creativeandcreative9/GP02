@@ -323,19 +323,30 @@ namespace GP02.Core
         /// 動かした後の形で法線を計算し、元の形で計算した法線との差を返す。
         /// 返した差を、メッシュに入っている元の法線に足して使う（法線を人が調整してあるメッシュや、固いエッジを壊さないため、
         /// 法線そのものではなく差だけを持つ）。
-        /// 同じ位置の頂点は結合せず、元メッシュの頂点ごとに計算する。結合すると、固いエッジで分けてある法線が混ざってしまうため。
+        /// 既定（mergeCoincident が false）では、同じ位置の頂点は結合せず、元メッシュの頂点ごとに計算する。結合すると、固いエッジで分けてある法線が混ざってしまうため。
         /// </summary>
         /// <param name="restPositions">元の形の頂点（元メッシュの頂点数）</param>
         /// <param name="triangles">三角形（全サブメッシュを順に並べた、元メッシュの頂点番号）</param>
         /// <param name="deltas">頂点ごとの位置の差分</param>
         /// <param name="restNormals">メッシュに入っている元の法線。面のない頂点（法線を計算できない頂点）と、法線がゼロの頂点の差分を 0 にするのに使う</param>
+        /// <param name="smoothAngleDegrees">
+        /// 同じ位置の頂点の面を、どこまでなめらかにつなぐか（度）。180（既定）で全部つなぐ。
+        /// 頂点の面と、法線のなす角がこの角度以内の面だけを、その頂点の法線に混ぜる（元の形で判定する）。
+        /// UV の継ぎ目の頂点どうしはなめらかにつなぎ、固いエッジは分けたままにするために使う。
+        /// mergeCoincident が false のときは、頂点が持つ面だけを使うので効かない。
+        /// </param>
+        /// <param name="mergeCoincident">
+        /// true なら、同じ位置にある頂点（UV の継ぎ目などで分かれたもの）の面も、その頂点の法線に混ぜる。
+        /// 継ぎ目の両側の法線がそろい、動かしたあとに継ぎ目だけ陰影が違う、ということが無くなる
+        /// </param>
         public static void RecomputeNormalDeltas(Vector3[] restPositions, int[] triangles, Vector3[] deltas, Vector3[] restNormals,
-            out Vector3[] normalDeltas)
+            out Vector3[] normalDeltas, float smoothAngleDegrees = 180f, bool mergeCoincident = false)
         {
             if (restPositions == null) throw new ArgumentNullException(nameof(restPositions));
             if (triangles == null) throw new ArgumentNullException(nameof(triangles));
             if (deltas == null) throw new ArgumentNullException(nameof(deltas));
             if (restNormals == null) throw new ArgumentNullException(nameof(restNormals));
+            if (!(smoothAngleDegrees >= 0f)) throw new ArgumentOutOfRangeException(nameof(smoothAngleDegrees), "スムーズ角度は 0 以上にしてください。");
             CheckSameLength(restPositions.Length, deltas.Length, nameof(deltas));
             CheckSameLength(restPositions.Length, restNormals.Length, nameof(restNormals));
 
@@ -345,8 +356,15 @@ namespace GP02.Core
 
             var before = new Vector3[count];
             var after = new Vector3[count];
-            MeshNormals.Compute(restPositions, triangles, before);
-            MeshNormals.Compute(moved, triangles, after);
+            if (mergeCoincident)
+            {
+                ComputeMergedNormals(restPositions, moved, triangles, smoothAngleDegrees, before, after);
+            }
+            else
+            {
+                MeshNormals.Compute(restPositions, triangles, before);
+                MeshNormals.Compute(moved, triangles, after);
+            }
 
             normalDeltas = new Vector3[count];
             for (int i = 0; i < count; i++)
@@ -354,6 +372,123 @@ namespace GP02.Core
                 if (before[i] == Vector3.Zero || after[i] == Vector3.Zero || restNormals[i] == Vector3.Zero) continue;
                 normalDeltas[i] = after[i] - before[i];
             }
+        }
+
+        // 同じ位置の頂点の面も混ぜた法線を、元の形（before）と動かした後の形（after）で計算する。
+        // 混ぜる面は元の形で決め、両方の形で同じ面を使う（動かした後で面の選び方が変わると、差が不連続になるため）
+        static void ComputeMergedNormals(Vector3[] rest, Vector3[] moved, int[] triangles, float smoothAngleDegrees, Vector3[] before, Vector3[] after)
+        {
+            int vertexCount = rest.Length;
+            int faceCount = triangles.Length / 3;
+
+            var crossRest = new Vector3[faceCount];
+            var crossMoved = new Vector3[faceCount];
+            var unitRest = new Vector3[faceCount];
+            for (int f = 0; f < faceCount; f++)
+            {
+                int a = triangles[3 * f], b = triangles[3 * f + 1], c = triangles[3 * f + 2];
+                // 外積の大きさは面積の2倍なので、正規化せずに足すと面積の重みになる
+                crossRest[f] = Vector3.Cross(rest[b] - rest[a], rest[c] - rest[a]);
+                crossMoved[f] = Vector3.Cross(moved[b] - moved[a], moved[c] - moved[a]);
+                float length = crossRest[f].Length();
+                unitRest[f] = length > 1e-20f ? crossRest[f] / length : Vector3.Zero;
+            }
+
+            int[] group = VertexWelder.Weld(rest, MeshTopology.DefaultWeldTolerance, out Vector3[] groupPositions);
+            int groupCount = groupPositions.Length;
+            BuildFaceLists(triangles, faceCount, vertexCount, null, out int[] vertexOffsets, out int[] vertexFaces);
+            BuildFaceLists(triangles, faceCount, groupCount, group, out int[] groupOffsets, out int[] groupFaces);
+
+            // 180 度以上は、角度を調べずに全部つなぐ
+            bool connectAll = smoothAngleDegrees >= 180f;
+            float cosLimit = MathF.Cos(smoothAngleDegrees * MathF.PI / 180f) - 1e-5f;
+            var ownStamp = new int[faceCount];
+            Array.Fill(ownStamp, -1);
+
+            for (int v = 0; v < vertexCount; v++)
+            {
+                Vector3 sumBefore = Vector3.Zero, sumAfter = Vector3.Zero;
+                int ownStart = vertexOffsets[v], ownEnd = vertexOffsets[v + 1];
+                for (int k = ownStart; k < ownEnd; k++)
+                {
+                    int f = vertexFaces[k];
+                    ownStamp[f] = v;
+                    sumBefore += crossRest[f];
+                    sumAfter += crossMoved[f];
+                }
+
+                int g = group[v];
+                for (int k = groupOffsets[g]; k < groupOffsets[g + 1]; k++)
+                {
+                    int other = groupFaces[k];
+                    if (ownStamp[other] == v) continue;
+                    if (!connectAll && !IsWithinAngle(unitRest[other], vertexFaces, ownStart, ownEnd, unitRest, cosLimit)) continue;
+                    ownStamp[other] = v;   // 同じ面を2回足さない
+                    sumBefore += crossRest[other];
+                    sumAfter += crossMoved[other];
+                }
+
+                before[v] = Normalized(sumBefore);
+                after[v] = Normalized(sumAfter);
+            }
+        }
+
+        static Vector3 Normalized(Vector3 v)
+        {
+            float length = v.Length();
+            return length > 1e-20f ? v / length : Vector3.Zero;
+        }
+
+        // 面 candidate が、頂点の持つ面のどれかと、cosLimit 以上の近さ（なす角が限度以内）か
+        static bool IsWithinAngle(Vector3 candidate, int[] ownFaces, int start, int end, Vector3[] unit, float cosLimit)
+        {
+            if (candidate == Vector3.Zero) return false;
+            for (int k = start; k < end; k++)
+            {
+                Vector3 own = unit[ownFaces[k]];
+                if (own != Vector3.Zero && Vector3.Dot(candidate, own) >= cosLimit) return true;
+            }
+            return false;
+        }
+
+        // 頂点（または、頂点をまとめたグループ）ごとの、面の番号の一覧（CSR 形式）。面の同じグループに重複して入れない
+        static void BuildFaceLists(int[] triangles, int faceCount, int ownerCount, int[] vertexToOwner, out int[] offsets, out int[] faces)
+        {
+            offsets = new int[ownerCount + 1];
+            for (int f = 0; f < faceCount; f++)
+            {
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    int owner = vertexToOwner == null ? triangles[3 * f + corner] : vertexToOwner[triangles[3 * f + corner]];
+                    if (IsRepeatedCorner(triangles, f, corner, vertexToOwner)) continue;
+                    offsets[owner + 1]++;
+                }
+            }
+            for (int i = 0; i < ownerCount; i++) offsets[i + 1] += offsets[i];
+
+            faces = new int[offsets[ownerCount]];
+            var cursor = new int[ownerCount];
+            for (int f = 0; f < faceCount; f++)
+            {
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    int owner = vertexToOwner == null ? triangles[3 * f + corner] : vertexToOwner[triangles[3 * f + corner]];
+                    if (IsRepeatedCorner(triangles, f, corner, vertexToOwner)) continue;
+                    faces[offsets[owner] + cursor[owner]++] = f;
+                }
+            }
+        }
+
+        // 面の前の角が、同じ持ち主（同じ頂点・同じグループ）なら true（つぶれた三角形で同じ面を重ねて数えない）
+        static bool IsRepeatedCorner(int[] triangles, int face, int corner, int[] vertexToOwner)
+        {
+            int owner = vertexToOwner == null ? triangles[3 * face + corner] : vertexToOwner[triangles[3 * face + corner]];
+            for (int earlier = 0; earlier < corner; earlier++)
+            {
+                int other = vertexToOwner == null ? triangles[3 * face + earlier] : vertexToOwner[triangles[3 * face + earlier]];
+                if (other == owner) return true;
+            }
+            return false;
         }
     }
 

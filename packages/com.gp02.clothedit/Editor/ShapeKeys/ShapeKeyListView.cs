@@ -325,6 +325,7 @@ namespace GP02.EditorTools
             EditorGUILayout.Space(2f);
             DrawOperations(data);
             DrawImport(data);
+            ShapeKeyApplyModeGUI.Draw(_component, _renderer);
             DrawExport(data);
         }
 
@@ -648,6 +649,9 @@ namespace GP02.EditorTools
                     _settings.ScalePercent = EditorGUILayout.FloatField(L10n.Tr("量（%）", "Amount (%)"), _settings.ScalePercent);
                     if (GUILayout.Button(L10n.Tr("拡大縮小", "Scale"), GUILayout.Width(80f))) ScaleSelected();
                 }
+                if (GUILayout.Button(new GUIContent(L10n.Tr("法線を計算し直す", "Recompute normals"),
+                    L10n.Tr("選んだシェイプキーの法線を、動かした形から計算し直します（取り込んだものにも使えます）。角度などは下の「操作の設定」で変えられます",
+                        "Recomputes the normals of the selected shape keys from the moved shape (works on imported ones too). The angle and other options are in the settings below")))) RecomputeNormalsSelected();
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     _settings.InBetweenMode = (ShapeKeyInBetweenMode)EditorGUILayout.EnumPopup(L10n.Tr("in-between", "In-between"), _settings.InBetweenMode);
@@ -681,6 +685,13 @@ namespace GP02.EditorTools
                     L10n.Tr("左右対称にするとき、軸の値が大きい側を残して反対側に写します", "Keep the larger-axis side and copy it to the other side")), _settings.KeepPositiveSide);
                 _settings.AsCopy = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("反転・対称は別のシェイプキーにする", "Flip/Symmetrize into a new key"),
                     L10n.Tr("オフなら選んだシェイプキーを書き換えます", "If off, the selected shape key is overwritten")), _settings.AsCopy);
+                _settings.NormalSmoothAngle = EditorGUILayout.Slider(new GUIContent(L10n.Tr("法線のスムーズ角度（°）", "Normal smooth angle (deg)"),
+                    L10n.Tr("法線を計算し直すとき、同じ位置の頂点の面を、この角度以内ならなめらかにつなぎます。180 で全部つなぎます。固いエッジを残したいときは小さくします。「同じ位置の頂点を結合」がオンのときだけ効きます",
+                        "When recomputing normals, faces of vertices at the same position are joined smoothly if within this angle. 180 joins everything; lower it to keep hard edges. Only used when \"Merge vertices at the same position\" is on")),
+                    _settings.NormalSmoothAngle, 0f, 180f);
+                _settings.NormalMergeCoincident = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("法線: 同じ位置の頂点を結合", "Normals: merge vertices at the same position"),
+                    L10n.Tr("UV の継ぎ目などで分かれた頂点の法線をそろえます。オフなら、頂点ごとにそれぞれの面だけで計算します",
+                        "Aligns the normals of vertices split at UV seams and the like. If off, each vertex uses only its own faces")), _settings.NormalMergeCoincident);
                 _settings.DisableSources = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("合成・分割・順に並べたあと元を無効にする", "Disable the originals after merge/split/chain"),
                     L10n.Tr("書き出しで二重に動かないように、元のシェイプキーを無効にします", "Disable the originals so they are not applied twice on export")), _settings.DisableSources);
                 EditorGUI.indentLevel--;
@@ -1044,6 +1055,17 @@ namespace GP02.EditorTools
             });
         }
 
+        void RecomputeNormalsSelected()
+        {
+            Run(() =>
+            {
+                List<ShapeKeyEntry> selected = _tree.GetSelectedEntries();
+                int done = ShapeKeyListOperations.RecomputeNormals(Data, selected, _settings.NormalSmoothAngle, _settings.NormalMergeCoincident);
+                AfterStructuralChange(selected);
+                Show(L10n.Tr($"{done} 個のシェイプキーの法線を計算し直しました。", $"Recomputed the normals of {done} shape key(s)."), MessageType.Info);
+            });
+        }
+
         void MakeInBetween()
         {
             Run(() => AfterStructuralChange(new[]
@@ -1088,6 +1110,7 @@ namespace GP02.EditorTools
             AddItem(menu, L10n.Tr("左右反転", "Flip"), any, FlipSelected);
             AddItem(menu, L10n.Tr("左右対称にする", "Symmetrize"), any, SymmetrizeSelected);
             AddItem(menu, L10n.Tr("量を拡大縮小", "Scale amount"), any, ScaleSelected);
+            AddItem(menu, L10n.Tr("法線を計算し直す", "Recompute normals"), any, RecomputeNormalsSelected);
             AddItem(menu, L10n.Tr("in-between にする（順に並べる）", "Chain into in-between"), any, MakeInBetween);
             menu.AddSeparator("");
             AddItem(menu, L10n.Tr("有効にする", "Enable"), any, () => SetEnabled(selected, true));

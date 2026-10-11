@@ -22,6 +22,10 @@ namespace GP02.EditorTools
         public bool AsCopy;                        // 反転・左右対称を、新しいシェイプキーとして加える
         public bool DisableSources = true;         // 合成・分割・in-between のあと、元を無効にする
 
+        // 法線の計算し直し
+        public float NormalSmoothAngle = 180f;     // 同じ位置の頂点の面を、なめらかにつなぐ角度（180 で全部）
+        public bool NormalMergeCoincident = true;  // 同じ位置の頂点（UV の継ぎ目など）を結合して計算する
+
         // 倍率・in-between
         public float ScalePercent = 150f;
         public ShapeKeyInBetweenMode InBetweenMode = ShapeKeyInBetweenMode.Crossfade;

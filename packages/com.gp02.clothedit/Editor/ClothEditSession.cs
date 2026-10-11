@@ -73,6 +73,7 @@ namespace GP02.EditorTools
         NVector3 _grabPointStart;
 
         int _pinnedCount;
+        readonly List<int> _pinWork = new List<int>();   // 矩形で選んだ粒子（使い回す）
 
         /// <summary>対象のレンダラー（複数のときは最初のもの）。</summary>
         public Renderer Renderer => _parts[0].Renderer;
@@ -902,6 +903,205 @@ namespace GP02.EditorTools
                 changed++;
             }
             return changed;
+        }
+
+        // ---- 範囲を指定したピン留め（矩形・部品全体・すべて外す・反転） ----
+
+        // ピンの状態を変える。変えたら true
+        bool SetPin(int particle, bool pinned)
+        {
+            if (_solver.IsPinned(particle) == pinned) return false;
+            _solver.SetPinned(particle, pinned);
+            _pinnedCount += pinned ? 1 : -1;
+            return true;
+        }
+
+        /// <summary>すべてのピンを外す。外した粒子の数を返す。</summary>
+        public int ClearPins()
+        {
+            int changed = 0;
+            for (int i = 0; i < ParticleCount; i++)
+            {
+                if (SetPin(i, false)) changed++;
+            }
+            return changed;
+        }
+
+        /// <summary>ピン留めと、そうでないものを入れ替える。変えた粒子の数（全粒子）を返す。</summary>
+        public int InvertPins()
+        {
+            int count = ParticleCount;
+            for (int i = 0; i < count; i++) SetPin(i, !_solver.IsPinned(i));
+            return count;
+        }
+
+        /// <summary>
+        /// 当たった三角形と同じ部品（島）の粒子すべてを、ピン留め（または解除）する。変えた粒子の数を返す。
+        /// mirror を渡すと、鏡像の部品（左右に分かれた袖など）も同じようにする。
+        /// </summary>
+        /// <param name="hitTriangle">Raycast が返した三角形の番号。負の値や範囲外なら何もしない</param>
+        public int PinIsland(int hitTriangle, bool pinned, MirrorPlane? mirror = null)
+        {
+            int island = IslandOfMeshTriangle(hitTriangle);
+            if (island < 0) return 0;
+            int changed = PinIslandParticles(island, pinned);
+            if (!mirror.HasValue) return changed;
+
+            // 島の粒子の鏡像がほぼ別の島に乗っていれば、その島もする（一部がはみ出しているだけの島は巻き込まない）
+            int[] particleIsland = _cloth.ParticleIsland;
+            int[] map = BuildMirrorMap(mirror.Value);
+            var hits = new Dictionary<int, int>();
+            int size = 0;
+            for (int i = 0; i < particleIsland.Length; i++)
+            {
+                if (particleIsland[i] != island) continue;
+                size++;
+                int other = map[i];
+                if (other < 0 || particleIsland[other] == island) continue;
+                hits.TryGetValue(particleIsland[other], out int count);
+                hits[particleIsland[other]] = count + 1;
+            }
+            foreach (KeyValuePair<int, int> hit in hits)
+            {
+                if (hit.Value * 2 > size) changed += PinIslandParticles(hit.Key, pinned);
+            }
+            return changed;
+        }
+
+        int PinIslandParticles(int island, bool pinned)
+        {
+            int[] particleIsland = _cloth.ParticleIsland;
+            int changed = 0;
+            for (int i = 0; i < particleIsland.Length; i++)
+            {
+                if (particleIsland[i] == island && SetPin(i, pinned)) changed++;
+            }
+            return changed;
+        }
+
+        /// <summary>
+        /// 画面上の矩形に入る粒子を、ピン留め（または解除）する。変えた粒子の数を返す。
+        /// 矩形は、ビュー射影行列で画面（0〜1 の正規化したビューポート座標、左下が原点）に映した粒子の位置で判定する。
+        /// 他の物に隠れているかは見ない（布どうしの重なりも、画面に入れば対象になる）。
+        /// </summary>
+        /// <param name="viewProjection">カメラの射影行列 × ワールドからカメラへの行列</param>
+        /// <param name="cameraPosition">カメラの位置（表側かどうかの判定に使う。平行投影では使わない）</param>
+        /// <param name="cameraForward">カメラの向き（平行投影のときの、表側かどうかの判定に使う）</param>
+        /// <param name="orthographic">平行投影か</param>
+        /// <param name="viewportRect">矩形（ビューポート座標）</param>
+        /// <param name="frontOnly">true なら、カメラ側を向いた粒子（粒子が乗っている面の表が見えるもの）だけを対象にする</param>
+        /// <param name="mirror">対称編集の鏡の面。渡すと、選んだ粒子の鏡像の粒子も同じようにする</param>
+        public int PinInViewport(Matrix4x4 viewProjection, Vector3 cameraPosition, Vector3 cameraForward, bool orthographic,
+            Rect viewportRect, bool pinned, bool frontOnly, MirrorPlane? mirror = null)
+        {
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            int[] particleTriangle = _cloth.ParticleTriangle;
+            int[] triangles = _cloth.Topology.Triangles;
+            _pinWork.Clear();
+
+            for (int i = 0; i < positions.Length; i++)
+            {
+                NVector3 p = positions[i];
+                float clipW = viewProjection.m30 * p.X + viewProjection.m31 * p.Y + viewProjection.m32 * p.Z + viewProjection.m33;
+                if (!(clipW > 1e-6f)) continue;   // カメラの後ろ
+                float clipX = viewProjection.m00 * p.X + viewProjection.m01 * p.Y + viewProjection.m02 * p.Z + viewProjection.m03;
+                float clipY = viewProjection.m10 * p.X + viewProjection.m11 * p.Y + viewProjection.m12 * p.Z + viewProjection.m13;
+                float viewportX = clipX / clipW * 0.5f + 0.5f;
+                float viewportY = clipY / clipW * 0.5f + 0.5f;
+                if (viewportX < viewportRect.xMin || viewportX > viewportRect.xMax || viewportY < viewportRect.yMin || viewportY > viewportRect.yMax) continue;
+
+                if (frontOnly)
+                {
+                    // 乗っている面の今の向き（MeshNormals と同じ外積の向きが表）。カメラ側を向いているものだけ
+                    int t = particleTriangle[i];
+                    NVector3 a = _welded[triangles[3 * t]];
+                    NVector3 normal = NVector3.Cross(_welded[triangles[3 * t + 1]] - a, _welded[triangles[3 * t + 2]] - a);
+                    float facing = orthographic
+                        ? -(normal.X * cameraForward.x + normal.Y * cameraForward.y + normal.Z * cameraForward.z)
+                        : normal.X * (cameraPosition.x - p.X) + normal.Y * (cameraPosition.y - p.Y) + normal.Z * (cameraPosition.z - p.Z);
+                    if (!(facing > 0f)) continue;
+                }
+                _pinWork.Add(i);
+            }
+
+            int changed = 0;
+            for (int k = 0; k < _pinWork.Count; k++)
+            {
+                if (SetPin(_pinWork[k], pinned)) changed++;
+            }
+            if (mirror.HasValue) changed += PinMirrorOf(_pinWork, mirror.Value, pinned);
+            _pinWork.Clear();
+            return changed;
+        }
+
+        // 粒子ごとの、元の形で鏡に映した位置に一番近い粒子（許容距離内、無ければ -1）。粒子数に比例する時間で済むよう、格子で探す。
+        // 面の向きが分かる粒子どうしは、向きがそろうものだけ（重ね着で、近くの別の層を選ばないため）
+        int[] BuildMirrorMap(MirrorPlane plane)
+        {
+            NVector3[] rest = _cloth.Model.RestPositions;
+            NVector3[] restNormals = _cloth.Model.RestNormals;
+            float tolerance = BrushOptions.DefaultMirrorTolerance;
+            var grid = new PointGrid(tolerance);
+            for (int i = 0; i < rest.Length; i++) grid.Add(i, rest[i]);
+
+            var map = new int[rest.Length];
+            var candidates = new List<int>();
+            float limit = tolerance * tolerance;
+            for (int i = 0; i < rest.Length; i++)
+            {
+                NVector3 target = plane.Reflect(rest[i]);
+                NVector3 normal = restNormals != null ? plane.ReflectDirection(restNormals[i]) : NVector3.Zero;
+                grid.Query(target, tolerance, candidates);
+                int best = -1;
+                float bestSq = float.MaxValue;
+                for (int c = 0; c < candidates.Count; c++)
+                {
+                    int j = candidates[c];
+                    float sq = NVector3.DistanceSquared(rest[j], target);
+                    if (sq > limit || sq >= bestSq) continue;
+                    if (normal != NVector3.Zero && restNormals[j] != NVector3.Zero && NVector3.Dot(restNormals[j], normal) <= 0.5f) continue;
+                    bestSq = sq;
+                    best = j;
+                }
+                map[i] = best;
+            }
+            return map;
+        }
+
+        // 選んだ粒子の鏡像の側も同じようにする。鏡像の側の粒子 j は、j の鏡像の粒子が選ばれていれば対象にする
+        // （選んだ粒子から鏡像を引くと、格子のずれで穴があくため、鏡像の側から引く）
+        int PinMirrorOf(List<int> selected, MirrorPlane plane, bool pinned)
+        {
+            if (selected.Count == 0 || !plane.IsValid) return 0;
+            int[] map = BuildMirrorMap(plane);
+            var isSelected = new bool[map.Length];
+            for (int k = 0; k < selected.Count; k++) isSelected[selected[k]] = true;
+
+            int changed = 0;
+            for (int j = 0; j < map.Length; j++)
+            {
+                if (map[j] >= 0 && isSelected[map[j]] && SetPin(j, pinned)) changed++;
+            }
+            return changed;
+        }
+
+        /// <summary>形が変わるたびに増える番号。変わっていなければ、前に調べた結果を使い回せる。</summary>
+        public int ShapeVersion => _shapeVersion;
+
+        /// <summary>
+        /// 粒子のどれかが、元の形の位置から tolerance（メートル）より離れているか。
+        /// 手順の案内で「引いたか」を知るのに使う（ピン留めだけでは形は変わらない）。
+        /// </summary>
+        public bool IsShapeEdited(float tolerance = 1e-4f)
+        {
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            NVector3[] rest = _cloth.Model.RestPositions;
+            float limit = tolerance * tolerance;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (NVector3.DistanceSquared(positions[i], rest[i]) > limit) return true;
+            }
+            return false;
         }
 
         /// <summary>

@@ -1,0 +1,29 @@
+{
+    "name": "GP02.Editor.NDMF",
+    "rootNamespace": "GP02.EditorTools.NDMF",
+    "references": [
+        "GP02.Editor",
+        "GP02.Runtime",
+        "nadena.dev.ndmf",
+        "nadena.dev.ndmf.runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "GP02_NDMF"
+    ],
+    "versionDefines": [
+        {
+            "name": "nadena.dev.ndmf",
+            "expression": "1.14.0",
+            "define": "GP02_NDMF"
+        }
+    ],
+    "noEngineReferences": false
+}
