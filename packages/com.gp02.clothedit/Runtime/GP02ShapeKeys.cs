@@ -15,5 +15,11 @@ namespace GP02
 
         /// <summary>適用する元のメッシュ。ビルド時に、これの複製へシェイプキーを加える。</summary>
         public Mesh SourceMesh;
+
+        /// <summary>
+        /// 最後に「メッシュに書き出す」で作ったメッシュ（アセット）。書き出し直すときは、これを上書きして、アセットが増え続けないようにする。
+        /// データ（アセット）を消しても、このメッシュはアセットとして残る。
+        /// </summary>
+        public Mesh ExportedMesh;
     }
 }

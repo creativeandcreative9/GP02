@@ -45,6 +45,7 @@ GP02/
   - クラウド環境のプロキシと証明書（`/root/.ccr/ca-bundle.crt`）は、スクリプトがコンテナに渡す
   - イメージは `mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-3`（Docker Hub は匿名の取得上限にかかるためミラーを使う）
   - 結果は `tools/unity/out/`。2回目以降は `unity/Library` が残るので速い
+  - 画面（ウィンドウ・インスペクター）の描画を実際に動かすテスト（`ShapeKeyGuiSmokeTests`）は、通常の実行（`-nographics`）では飛ばす。`GP02_GUI=1 GP02_UNITY_ARGS="-testFilter GP02.Tests.ShapeKeyGuiSmokeTests" tools/unity/run-tests.sh` で仮想画面（Xvfb）の上で動かすと、画面の画像が `tools/unity/out/gui/` に出る（Docker の Unity には日本語フォントが無いので、画像は英語表示にしてある）
 - Unity での見た目の確認（Docker、画面あり）: `tools/unity/render.sh`
   - 仮想画面（Xvfb）とソフトウェア描画（Mesa の llvmpipe）で Unity を起動し、テスト用の衣装の編集前・編集中のプレビュー・保存したシェイプキーを画像にする
   - 描画の中身は `tools/unity/render/RenderScenes.cs`。出力は `tools/unity/out/render/`（`edit_and_save.png` に編集と保存を、`tools.png` に対称でつまむ・回す・拡大縮小・元に戻すブラシの結果を、それぞれ1枚にまとめる）

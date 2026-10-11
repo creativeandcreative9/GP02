@@ -477,6 +477,62 @@ namespace GP02.EditorTools
             return result;
         }
 
+        /// <summary>
+        /// エントリを左右対称にした、新しいエントリを返す（全フレームの位置・法線・接線）。
+        /// 片側を正として、反対側を鏡像で置き換える。鏡像の頂点が見つからない頂点は、そのまま残る。
+        /// </summary>
+        /// <param name="keepPositiveSide">true なら軸の値が center より大きい側を正とする</param>
+        public static ShapeKeyEntry SymmetrizeEntry(ShapeKeyEntry entry, Mesh source, int axis, float center, float tolerance, bool keepPositiveSide, string newName = null)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            NVector3[] rest = MeshBridge.ToNumerics(source.vertices, Vector3.one);
+            int[] map = VertexMirrorMap.Build(rest, axis, center, tolerance);
+            return MapEntry(entry, newName ?? entry.Name,
+                deltas => ToUnityArray(ShapeKeyMath.Symmetrize(ToNumericsArray(deltas), rest, map, axis, center, keepPositiveSide)));
+        }
+
+        /// <summary>エントリの差分を factor 倍した、新しいエントリを返す（全フレームの位置・法線・接線）。</summary>
+        public static ShapeKeyEntry ScaleEntry(ShapeKeyEntry entry, float factor, string newName = null)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            return MapEntry(entry, newName ?? entry.Name, deltas => ToUnityArray(ShapeKeyMath.Scale(ToNumericsArray(deltas), factor)));
+        }
+
+        /// <summary>エントリの深いコピー（差分の配列も複製する）。</summary>
+        public static ShapeKeyEntry CloneEntry(ShapeKeyEntry entry, string newName = null)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            return MapEntry(entry, newName ?? entry.Name, deltas => (Vector3[])deltas.Clone());
+        }
+
+        /// <summary>
+        /// エントリを指定の重みで評価した差分を、重み 100 の1フレームにして返す（Unity が BlendShape を描くときの計算と同じ）。
+        /// 法線・接線は、エントリのどこかのフレームに差分があるときだけ入る（無ければ空）。
+        /// </summary>
+        public static ShapeKeyFrame EvaluateEntry(ShapeKeyEntry entry, float weight, int vertexCount)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            var frame = new ShapeKeyFrame { Weight = ShapeKeyMath.FullWeight };
+            frame.DeltaVertices = EvaluateChannel(entry, weight, vertexCount, f => f.DeltaVertices);
+            if (AnyFrame(entry, f => f.HasNormals)) frame.DeltaNormals = EvaluateChannel(entry, weight, vertexCount, f => f.DeltaNormals);
+            if (AnyFrame(entry, f => f.HasTangents)) frame.DeltaTangents = EvaluateChannel(entry, weight, vertexCount, f => f.DeltaTangents);
+            return frame;
+        }
+
+        /// <summary>エントリの差分の長さが頂点数と合っているか（全フレーム・全チャンネル）。</summary>
+        public static bool IsEntryCompatible(ShapeKeyEntry entry, int vertexCount)
+        {
+            if (entry == null) return false;
+            foreach (ShapeKeyFrame frame in entry.Frames)
+            {
+                if (frame == null || frame.DeltaVertices == null || frame.DeltaVertices.Length != vertexCount) return false;
+                if (frame.HasNormals && frame.DeltaNormals.Length != vertexCount) return false;
+                if (frame.HasTangents && frame.DeltaTangents.Length != vertexCount) return false;
+            }
+            return true;
+        }
+
         // ------------------------------------------------------------------
         // ボーンウェイトの付け替え
         // ------------------------------------------------------------------
@@ -634,6 +690,24 @@ namespace GP02.EditorTools
             component.SourceMesh = data.SourceMesh;
             EditorUtility.SetDirty(component);
             return component;
+        }
+
+        /// <summary>
+        /// レンダラーのシェイプキーのデータを返す。コンポーネントかデータが無ければ作って付ける（Undo できる）。
+        /// データの元のメッシュは、コンポーネントに元のメッシュがあればそれ、無ければレンダラーの今のメッシュ。
+        /// メッシュが無ければ null。
+        /// </summary>
+        public static GP02ShapeKeyData FindOrCreateData(Renderer renderer)
+        {
+            if (renderer == null) throw new ArgumentNullException(nameof(renderer));
+            var component = renderer.GetComponent<GP02ShapeKeys>();
+            if (component != null && component.Data != null) return component.Data;
+
+            Mesh source = component != null && component.SourceMesh != null ? component.SourceMesh : ClothEditController.GetMesh(renderer);
+            if (source == null) return null;
+            GP02ShapeKeyData data = CreateData(source);
+            Attach(renderer, data);
+            return data;
         }
 
         static void EnsureFolder(string folder)
