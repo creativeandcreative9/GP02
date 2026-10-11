@@ -30,6 +30,9 @@ namespace GP02.EditorTools
 
         static bool IsPinTool(ClothEditMode mode) => mode == ClothEditMode.Pin || mode == ClothEditMode.Unpin;
 
+        // 減り方の同心円を出す道具（重みのある道具だけ。ピンと選ぶ道具は円の内側すべて）
+        static bool UsesFalloffRings(ClothEditMode mode) => mode == ClothEditMode.Grab || mode == ClothEditMode.Rotate || mode == ClothEditMode.Scale || mode == ClothEditMode.Relax;
+
         // Graphics.DrawMesh は、シーンのカメラが描く前に呼ばないと次のコマまで表示されない。
         // ショートカットは、シーンビュー自身のキー処理より先に読む必要があるので、ここで受ける
         void OnBeforeSceneGUI(SceneView sceneView)
@@ -39,15 +42,20 @@ namespace GP02.EditorTools
             if (session == null) return;
 
             Event e = Event.current;
+            // 「視点」の向きのハンドル・数値で動かすときの軸は、このシーンビューのカメラの向き
+            _controller.SetViewRotation(sceneView.camera.transform.rotation);
             if (e.type == EventType.Repaint)
             {
                 session.DrawPreview(sceneView.camera);
                 return;
             }
+            if (HandleRadiusDragAndCursor(sceneView, e)) return;
             HandleShortcuts(sceneView, e);
         }
 
-        // 編集中で、マウスがこのシーンビューの上にあるときだけ反応して、イベントを使う
+        // 編集中で、マウスがこのシーンビューの上にあるときだけ反応して、イベントを使う。
+        // キーは Shortcut Manager（ClothEditShortcutBindings）が先に受けるので、ここで読むのは、それが使えないときと、
+        // 配列によってキーコードが違う [ ] を文字で判定するときだけ
         void HandleShortcuts(SceneView sceneView, Event e)
         {
             // C を離したら、マウスの位置にかかわらず元の形の表示をやめる
@@ -73,6 +81,19 @@ namespace GP02.EditorTools
             // 右ボタンを押してのカメラ移動（W/E など）や、Alt・Ctrl・Command の組み合わせは、Unity に任せる
             if (e.alt || e.command || Tools.viewTool == ViewTool.FPS) return;
             KeyCode key = e.keyCode;
+
+            if (ClothEditShortcutBindings.IsActive)
+            {
+                // Shortcut Manager が [ ] のキーコードを受けられない配列（日本語配列など）だけ、文字で判定する
+                if (e.control || GUIUtility.hotControl != 0 || key == KeyCode.LeftBracket || key == KeyCode.RightBracket) return;
+                if (ClothEditShortcuts.TryGetRadiusKey(KeyCode.None, e.character, e.shift, out WheelTarget charTarget, out int charStep))
+                {
+                    ChangeRadius(charTarget, charStep);
+                    RefreshHover(e);
+                    e.Use();
+                }
+                return;
+            }
 
             if (ClothEditShortcuts.IsHelpKey(key))
             {
@@ -112,6 +133,14 @@ namespace GP02.EditorTools
             {
                 ChangeRadius(target, step);
                 RefreshHover(e);
+                e.Use();
+                return;
+            }
+            if (ClothEditShortcuts.IsRadiusDragKey(key))
+            {
+                _lastSceneMouse = e.mousePosition;
+                _hasSceneMouse = true;
+                ToggleRadiusDrag(e.shift);
                 e.Use();
             }
         }
@@ -234,7 +263,8 @@ namespace GP02.EditorTools
                         e.Use();
                         break;
                     }
-                    if (!_controller.PointerDown(HandleUtility.GUIPointToWorldRay(e.mousePosition), sceneView.camera.transform.forward, e.mousePosition.x)) break;
+                    Transform cameraTransform = sceneView.camera.transform;
+                    if (!_controller.PointerDown(HandleUtility.GUIPointToWorldRay(e.mousePosition), cameraTransform.forward, cameraTransform.up, e.mousePosition.x)) break;
                     GUIUtility.hotControl = controlId;
                     e.Use();
                     break;
@@ -332,6 +362,9 @@ namespace GP02.EditorTools
                 }
             }
 
+            DrawCompareAndSymmetryDots(session);
+            DrawCursor();
+
             if (session.PinnedCount > 0)
             {
                 session.GetPinnedPositions(_pinDots, MaxPinDots);
@@ -342,6 +375,12 @@ namespace GP02.EditorTools
             bool selectMode = _controller.Mode == ClothEditMode.Select;
             bool selectBusy = selectMode && (_controller.IsTransformingSelection || _controller.IsSettling);
             if (selectMode) DrawSelectionDisplay(session);
+
+            if (_radiusDrag.Active)
+            {
+                DrawRadiusDrag();
+                return;
+            }
 
             // 選んだ点を動かしている間は、マウスがハンドルの上にあるので、つまんだ範囲の色分けだけ出す（ブラシの円は出さない）
             if (!_controller.HasHover && !(selectBusy && _controller.PreviewCount > 0)) return;
@@ -366,6 +405,7 @@ namespace GP02.EditorTools
 
             Handles.color = ToolColor(_controller.Mode);
             Handles.DrawWireDisc(_controller.BrushRingCenter, _controller.HoverNormal, _controller.BrushRadius);
+            if (UsesFalloffRings(_controller.Mode)) DrawFalloffRings(_controller.BrushRingCenter, _controller.HoverNormal, _controller.BrushRadius, _settings.GetFalloffCurve());
             if (_controller.HasMirrorHover)
             {
                 Color mirrorColor = Handles.color;

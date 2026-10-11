@@ -38,6 +38,9 @@ namespace GP02.EditorTools
         AxisX,
         AxisY,
         AxisZ,
+
+        /// <summary>視線（カメラの向き）に沿って、奥へ・手前へ動かす。上へドラッグで奥へ。</summary>
+        View,
     }
 
     /// <summary>X/Y/Z 軸に固定するときの、軸の基準。</summary>
@@ -80,6 +83,9 @@ namespace GP02.EditorTools
 
         /// <summary>最後にクリックして選んだ、面の上の点。</summary>
         LastClicked,
+
+        /// <summary>3D カーソル（Shift＋右クリック、または「カーソルを選んだ点の中心に」で置く、面の上の点）。置いていなければ選んだ点の中心。</summary>
+        Cursor,
     }
 
     /// <summary>「選んで動かす」のハンドルの向き。</summary>
@@ -93,6 +99,19 @@ namespace GP02.EditorTools
 
         /// <summary>選んだ点の面の法線の平均を Z にした向き。</summary>
         Normal,
+
+        /// <summary>視点（シーンビューのカメラ）の向き。X が画面の右、Y が画面の上、Z が奥。</summary>
+        View,
+    }
+
+    /// <summary>「今の形を左右対称にする」で基準にする側。</summary>
+    public enum SymmetrySourceSide
+    {
+        /// <summary>軸の + 側（X なら +X 側）の変形を、− 側へ写す。</summary>
+        Positive,
+
+        /// <summary>軸の − 側の変形を、+ 側へ写す。</summary>
+        Negative,
     }
 
     /// <summary>
@@ -114,6 +133,20 @@ namespace GP02.EditorTools
         public const float MaxSymmetryOffset = 2f;
         public const float DefaultSelectionFalloffRadius = 0.03f;
         public const float MaxSelectionFalloffRadius = 0.3f;
+        public const float MinMirrorTolerance = 0.001f;
+        public const float MaxMirrorTolerance = 0.1f;
+
+        /// <summary>つながりの許容距離 ε の上限（メートル）。大きいと別の部品どうしの組が増えて、範囲を決めるのが重くなる。</summary>
+        public const float MaxConnectDistance = 0.05f;
+
+        /// <summary>対称がオンのとき、相手のいない点がこの割合を超えたら診断で注意を出す。</summary>
+        public const float UnmatchedMirrorWarnRatio = 0.2f;
+
+        /// <summary>動いた量のヒートマップで赤になる移動距離（メートル）。0 は青。</summary>
+        public const float MoveHeatmapMax = 0.05f;
+
+        /// <summary>左右差の色分けで赤になる差（メートル）。0 は緑。</summary>
+        public const float MirrorDifferenceRed = 0.02f;
 
         /// <summary>伸びのヒートマップで黄色になる伸び（0.05 で 5%）。0 は緑。</summary>
         public const float HeatmapYellow = 0.05f;
@@ -194,6 +227,33 @@ namespace GP02.EditorTools
 
         /// <summary>鏡の面の、アバターの中心からのずれ（アバターのローカル座標でのメートル）。</summary>
         public float SymmetryOffset;
+
+        /// <summary>鏡像の粒子を探す許容距離（メートル。<see cref="BrushOptions.MirrorTolerance"/>）。</summary>
+        public float MirrorTolerance = BrushOptions.DefaultMirrorTolerance;
+
+        /// <summary>対称がオンのとき、鏡像の粒子が見つからない点を目立つ色で見せるか。</summary>
+        public bool ShowUnmatchedMirror = true;
+
+        /// <summary>左右差（鏡像の粒子との変形の差）を色分けして見せるか。</summary>
+        public bool ShowMirrorDifference;
+
+        /// <summary>「今の形を左右対称にする」で基準にする側。</summary>
+        public SymmetrySourceSide SymmetrizeSource = SymmetrySourceSide.Positive;
+
+        /// <summary>
+        /// つながりの許容距離 ε（メートル、0〜<see cref="MaxConnectDistance"/>。<see cref="BrushOptions.ConnectDistance"/>）。
+        /// 「メッシュに沿う」で範囲を測るとき、この距離以内にある別の部品（島）にも範囲を広げる。
+        /// </summary>
+        public float ConnectDistance;
+
+        /// <summary>ブラシの円の中に、減り方を同心円（重み 75% / 50% / 25% の位置）で見せるか。</summary>
+        public bool ShowFalloffRings;
+
+        /// <summary>元の形を半透明で重ねて見せるか（編集中の形と同時に見える）。</summary>
+        public bool ShowOriginalGhost;
+
+        /// <summary>動いた量（元の形からの移動距離）を色分けして見せるか。</summary>
+        public bool ShowMoveHeatmap;
 
         /// <summary>つまんだ点を動かす向き。</summary>
         public MoveDirection MoveDirection = MoveDirection.Free;
@@ -365,7 +425,7 @@ namespace GP02.EditorTools
             }
         }
 
-        static string CurveToString(AnimationCurve curve)
+        internal static string CurveToString(AnimationCurve curve)
         {
             var text = new StringBuilder();
             for (int i = 0; i < curve.length; i++)
@@ -387,7 +447,7 @@ namespace GP02.EditorTools
             return Mathf.Clamp(tangent, -1e6f, 1e6f);
         }
 
-        static AnimationCurve CurveFromString(string text)
+        internal static AnimationCurve CurveFromString(string text)
         {
             if (string.IsNullOrEmpty(text)) return DefaultCustomFalloff();
             var curve = new AnimationCurve();
@@ -416,6 +476,14 @@ namespace GP02.EditorTools
             SymmetryEnabled = false;
             SymmetryAxis = SymmetryAxis.X;
             SymmetryOffset = 0f;
+            MirrorTolerance = BrushOptions.DefaultMirrorTolerance;
+            ShowUnmatchedMirror = true;
+            ShowMirrorDifference = false;
+            SymmetrizeSource = SymmetrySourceSide.Positive;
+            ConnectDistance = 0f;
+            ShowFalloffRings = false;
+            ShowOriginalGhost = false;
+            ShowMoveHeatmap = false;
             MoveDirection = MoveDirection.Free;
             DirectionSpace = AxisSpace.World;
             RotateAxis = RotateAxisMode.View;
@@ -466,6 +534,11 @@ namespace GP02.EditorTools
             if (!Enum.IsDefined(typeof(BrushDistanceMode), DistanceMode)) DistanceMode = BrushDistanceMode.Surface;
             if (!Enum.IsDefined(typeof(SymmetryAxis), SymmetryAxis)) SymmetryAxis = SymmetryAxis.X;
             if (!(Mathf.Abs(SymmetryOffset) <= MaxSymmetryOffset)) SymmetryOffset = float.IsNaN(SymmetryOffset) ? 0f : Mathf.Clamp(SymmetryOffset, -MaxSymmetryOffset, MaxSymmetryOffset);
+            if (!(MirrorTolerance >= MinMirrorTolerance)) MirrorTolerance = float.IsNaN(MirrorTolerance) ? BrushOptions.DefaultMirrorTolerance : MinMirrorTolerance;
+            else if (MirrorTolerance > MaxMirrorTolerance) MirrorTolerance = MaxMirrorTolerance;
+            if (!Enum.IsDefined(typeof(SymmetrySourceSide), SymmetrizeSource)) SymmetrizeSource = SymmetrySourceSide.Positive;
+            if (!(ConnectDistance >= 0f)) ConnectDistance = 0f;
+            else if (ConnectDistance > MaxConnectDistance) ConnectDistance = MaxConnectDistance;
             if (!Enum.IsDefined(typeof(MoveDirection), MoveDirection)) MoveDirection = MoveDirection.Free;
             if (!Enum.IsDefined(typeof(AxisSpace), DirectionSpace)) DirectionSpace = AxisSpace.World;
             if (!Enum.IsDefined(typeof(RotateAxisMode), RotateAxis)) RotateAxis = RotateAxisMode.View;
@@ -523,6 +596,14 @@ namespace GP02.EditorTools
                 SymmetryEnabled = EditorPrefs.GetBool(keyPrefix + "SymmetryEnabled", false),
                 SymmetryAxis = (SymmetryAxis)EditorPrefs.GetInt(keyPrefix + "SymmetryAxis", (int)SymmetryAxis.X),
                 SymmetryOffset = EditorPrefs.GetFloat(keyPrefix + "SymmetryOffset", 0f),
+                MirrorTolerance = EditorPrefs.GetFloat(keyPrefix + "MirrorTolerance", BrushOptions.DefaultMirrorTolerance),
+                ShowUnmatchedMirror = EditorPrefs.GetBool(keyPrefix + "ShowUnmatchedMirror", true),
+                ShowMirrorDifference = EditorPrefs.GetBool(keyPrefix + "ShowMirrorDifference", false),
+                SymmetrizeSource = (SymmetrySourceSide)EditorPrefs.GetInt(keyPrefix + "SymmetrizeSource", (int)SymmetrySourceSide.Positive),
+                ConnectDistance = EditorPrefs.GetFloat(keyPrefix + "ConnectDistance", 0f),
+                ShowFalloffRings = EditorPrefs.GetBool(keyPrefix + "ShowFalloffRings", false),
+                ShowOriginalGhost = EditorPrefs.GetBool(keyPrefix + "ShowOriginalGhost", false),
+                ShowMoveHeatmap = EditorPrefs.GetBool(keyPrefix + "ShowMoveHeatmap", false),
                 MoveDirection = (MoveDirection)EditorPrefs.GetInt(keyPrefix + "MoveDirection", (int)MoveDirection.Free),
                 DirectionSpace = (AxisSpace)EditorPrefs.GetInt(keyPrefix + "DirectionSpace", (int)AxisSpace.World),
                 RotateAxis = (RotateAxisMode)EditorPrefs.GetInt(keyPrefix + "RotateAxis", (int)RotateAxisMode.View),
@@ -563,6 +644,14 @@ namespace GP02.EditorTools
             EditorPrefs.SetBool(keyPrefix + "SymmetryEnabled", SymmetryEnabled);
             EditorPrefs.SetInt(keyPrefix + "SymmetryAxis", (int)SymmetryAxis);
             EditorPrefs.SetFloat(keyPrefix + "SymmetryOffset", SymmetryOffset);
+            EditorPrefs.SetFloat(keyPrefix + "MirrorTolerance", MirrorTolerance);
+            EditorPrefs.SetBool(keyPrefix + "ShowUnmatchedMirror", ShowUnmatchedMirror);
+            EditorPrefs.SetBool(keyPrefix + "ShowMirrorDifference", ShowMirrorDifference);
+            EditorPrefs.SetInt(keyPrefix + "SymmetrizeSource", (int)SymmetrizeSource);
+            EditorPrefs.SetFloat(keyPrefix + "ConnectDistance", ConnectDistance);
+            EditorPrefs.SetBool(keyPrefix + "ShowFalloffRings", ShowFalloffRings);
+            EditorPrefs.SetBool(keyPrefix + "ShowOriginalGhost", ShowOriginalGhost);
+            EditorPrefs.SetBool(keyPrefix + "ShowMoveHeatmap", ShowMoveHeatmap);
             EditorPrefs.SetInt(keyPrefix + "MoveDirection", (int)MoveDirection);
             EditorPrefs.SetInt(keyPrefix + "DirectionSpace", (int)DirectionSpace);
             EditorPrefs.SetInt(keyPrefix + "RotateAxis", (int)RotateAxis);
@@ -592,6 +681,8 @@ namespace GP02.EditorTools
                 "MoveDirection", "DirectionSpace", "RotateAxis", "RelaxStrength", "ShowBrushPreview", "ShowStretchHeatmap", "PinRectFrontOnly",
                 "HandleType", "PivotMode", "HandleSpace", "SelectionFalloffRadius", "SelectThroughOcclusion", "ShowSelectionWeights",
                 "SelectionFalloff", "SelectionMovesAsCloth",
+                "MirrorTolerance", "ShowUnmatchedMirror", "ShowMirrorDifference", "SymmetrizeSource", "ConnectDistance",
+                "ShowFalloffRings", "ShowOriginalGhost", "ShowMoveHeatmap",
             })
             {
                 EditorPrefs.DeleteKey(keyPrefix + key);

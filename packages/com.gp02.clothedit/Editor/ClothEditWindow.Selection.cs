@@ -93,13 +93,16 @@ namespace GP02.EditorTools
             _settings.HandleType = (SelectionHandle)GUILayout.Toolbar((int)_settings.HandleType, handleLabels);
 
             _settings.PivotMode = (SelectionPivot)EditorGUILayout.Popup(new GUIContent(L10n.Tr("中心", "Pivot"),
-                L10n.Tr("ハンドルを出す位置で、回転・拡大縮小の中心です。選んだ点の中心: 選んだ点の今の位置の平均。クリックした点: 最後にクリックして選んだ面の上の点",
-                    "Where the handle is shown, and the center of rotation and scaling. Selection center: the average of the selected points. Clicked point: the point on the surface you clicked last")),
-                (int)_settings.PivotMode, new[] { L10n.Tr("選んだ点の中心", "Selection center"), L10n.Tr("クリックした点", "Clicked point") });
+                L10n.Tr("ハンドルを出す位置で、回転・拡大縮小の中心です。選んだ点の中心: 選んだ点の今の位置の平均。クリックした点: 最後にクリックして選んだ面の上の点。" +
+                        "3D カーソル: Shift+右クリックで置いた面の上の点（置いていなければ選んだ点の中心）",
+                    "Where the handle is shown, and the center of rotation and scaling. Selection center: the average of the selected points. Clicked point: the point on the surface you clicked last. " +
+                    "3D cursor: the point on the surface placed with Shift+Right-click (the selection center if not placed)")),
+                (int)_settings.PivotMode, new[] { L10n.Tr("選んだ点の中心", "Selection center"), L10n.Tr("クリックした点", "Clicked point"), L10n.Tr("3D カーソル", "3D cursor") });
+            if (_settings.PivotMode == SelectionPivot.Cursor) DrawCursorButtons(count);
             _settings.HandleSpace = (HandleOrientation)EditorGUILayout.Popup(new GUIContent(L10n.Tr("向き", "Orientation"),
-                L10n.Tr("ハンドルの軸の向き。グローバル: ワールドの軸。アバター: アバター（対称編集の基準）の向き。面の法線: 選んだ点の面の向きを Z にした向き",
-                    "The axes of the handle. Global: world axes. Avatar: the avatar's orientation (the symmetry reference). Surface normal: Z is the surface normal of the selected points")),
-                (int)_settings.HandleSpace, new[] { L10n.Tr("グローバル", "Global"), L10n.Tr("アバター", "Avatar"), L10n.Tr("面の法線", "Surface normal") });
+                L10n.Tr("ハンドルの軸の向き。グローバル: ワールドの軸。アバター: アバター（対称編集の基準）の向き。面の法線: 選んだ点の面の向きを Z にした向き。視点: 画面の右・上・奥の向き",
+                    "The axes of the handle. Global: world axes. Avatar: the avatar's orientation (the symmetry reference). Surface normal: Z is the surface normal of the selected points. View: the screen's right, up and depth")),
+                (int)_settings.HandleSpace, new[] { L10n.Tr("グローバル", "Global"), L10n.Tr("アバター", "Avatar"), L10n.Tr("面の法線", "Surface normal"), L10n.Tr("視点", "View") });
 
             // 動かし方
             int moveStyle = EditorGUILayout.Popup(new GUIContent(L10n.Tr("動かし方", "Move Style"),
@@ -157,6 +160,34 @@ namespace GP02.EditorTools
             EditorGUILayout.Space();
         }
 
+        // 3D カーソルの置き方（Shift+右クリックのほか、ボタンで選んだ点の中心に置く・消す）
+        void DrawCursorButtons(int count)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                using (new EditorGUI.DisabledScope(count == 0))
+                {
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("カーソルを選んだ点の中心に", "Cursor to Selection"),
+                        L10n.Tr("3D カーソルを、選んだ点の今の位置の平均に置きます", "Places the 3D cursor at the average of the selected points"))))
+                    {
+                        _controller.PlaceCursorAtSelectionCenter();
+                        SceneView.RepaintAll();
+                    }
+                }
+                using (new EditorGUI.DisabledScope(!_controller.HasCursor))
+                {
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("カーソルを消す", "Clear Cursor"), L10n.Tr("3D カーソルを消します（中心は選んだ点の中心になります）", "Removes the 3D cursor (the pivot becomes the selection center)")), GUILayout.Width(110f)))
+                    {
+                        _controller.ClearCursor();
+                        SceneView.RepaintAll();
+                    }
+                }
+            }
+            EditorGUILayout.LabelField(_controller.HasCursor
+                ? L10n.Tr("Shift+右クリックで、布の上に置き直せます", "Shift+Right-click on the cloth to move it")
+                : L10n.Tr("Shift+右クリックで、布の上に 3D カーソルを置きます", "Shift+Right-click on the cloth to place the 3D cursor"), EditorStyles.wordWrappedMiniLabel);
+        }
+
         void DrawSelectionButtons(int count)
         {
             bool has = count > 0;
@@ -208,7 +239,8 @@ namespace GP02.EditorTools
             if (!_foldNumeric) return;
 
             string space = _settings.HandleSpace == HandleOrientation.Avatar ? L10n.Tr("アバター", "avatar")
-                : _settings.HandleSpace == HandleOrientation.Normal ? L10n.Tr("面の法線", "surface normal") : L10n.Tr("グローバル", "global");
+                : _settings.HandleSpace == HandleOrientation.Normal ? L10n.Tr("面の法線", "surface normal")
+                : _settings.HandleSpace == HandleOrientation.View ? L10n.Tr("視点", "view") : L10n.Tr("グローバル", "global");
             EditorGUILayout.LabelField(L10n.Tr($"軸は、今のハンドルの向き（{space}）です", $"The axes are those of the handle's current orientation ({space})"), EditorStyles.wordWrappedMiniLabel);
             _numericMove = EditorGUILayout.Vector3Field(new GUIContent(L10n.Tr("移動（cm）", "Move (cm)"), L10n.Tr("各軸の向きに動かす距離です", "Distance to move along each axis")), _numericMove);
             _numericRotate = EditorGUILayout.Vector3Field(new GUIContent(L10n.Tr("回転（°）", "Rotate (deg)"),

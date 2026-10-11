@@ -71,6 +71,13 @@ namespace GP02.Core
         /// <summary>鏡像の粒子を探す許容距離（メートル）。</summary>
         public float MirrorTolerance { get; set; } = DefaultMirrorTolerance;
 
+        /// <summary>
+        /// つながりの許容距離 ε（メートル）。<see cref="BrushDistanceMode.Surface"/> で範囲を測るとき、元の形でこの距離以内にある
+        /// 別の部品（島）の粒子にも距離を伝える（分かれたパーツを一緒に動かすため）。0 なら伝えない。
+        /// 範囲の決め方だけに使い、布の計算のつながり（伸び・曲げ・テザー）は変えない。
+        /// </summary>
+        public float ConnectDistance { get; set; }
+
         public BrushOptions Clone() => (BrushOptions)MemberwiseClone();
     }
 }

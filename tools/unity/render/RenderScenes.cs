@@ -25,8 +25,12 @@ public static class RenderScenes
             LayerScenes();
             ClearScene();
             SelectScenes();
+            ClearScene();
+            SymmetryScenes();
         });
     }
+
+    public static void Symmetry() => Run(SymmetryScenes);
 
     public static void Layers() => Run(LayerScenes);
 
@@ -392,6 +396,171 @@ public static class RenderScenes
         mesh.SetTriangles(triangles, 0);
         var material = new Material(Shader.Find("Sprites/Default"));
         Graphics.DrawMesh(mesh, Matrix4x4.identity, material, 0, camera);
+    }
+
+    // ---- 対称の補助 ----
+    // 上の段: ① 右（+X）の前の裾だけを持ち上げた（左右差の色分けつき。緑→黄→赤）② 「今の形を左右対称にする」（+X を基準）で左へ写した（色分けつき）③ ②の形だけ
+    // 下の段: 衣装がアバターの中心から 6cm ずれている。④ そのまま対称編集で右の前の裾を持ち上げる（鏡の面がずれていて、相手のいない点＝赤紫が多く、左は動かない）
+    // ⑤ 「鏡の面を自動で合わせる」のあとで同じ操作（左右そろって上がる）⑥ ⑤の左右差の色分け
+    // ログに、左右差の最大、相手のいない点の割合、合わせた中心のずれを出す
+
+    static void SymmetryScenes()
+    {
+        Camera camera = SetUpCamera(new Vector3(0f, 0.75f, -1.35f), new Vector3(0f, 0.55f, 0f));
+        GameObject root = TestClothMenu.CreateInScene(null);
+        var skirt = root.transform.Find("Skirt").GetComponent<SkinnedMeshRenderer>();
+        foreach (Transform bone in skirt.bones) bone.localRotation = Quaternion.identity;
+        var shots = new List<Texture2D>();
+
+        // 上の段: 片側を持ち上げて、左右対称にする
+        var controller = new ClothEditController(new ClothEditSettings { Falloff = FalloffPreset.Smooth }) { BrushRadius = 0.06f, InfluenceRadius = 0.3f };
+        try
+        {
+            if (!controller.TryStart(skirt, out string error)) throw new InvalidOperationException(error);
+            PinWaist(controller.Session);
+            LiftFrontHem(controller, camera, 0.12f);
+            ClothEditSymmetry.TryBuildMirrorPlane(controller.Settings, controller.AvatarRoot, true, out GP02.Core.MirrorPlane plane);
+            float before = controller.Session.MaxMirrorDifference(plane, controller.Settings.MirrorTolerance);
+            controller.Session.UpdateCurrentShape();
+            controller.Session.DrawPreview(camera);
+            DrawDifferenceDots(camera, controller.Session, plane, controller.Settings.MirrorTolerance);
+            shots.Add(Shot(camera, "sym_1_one_sided"));
+            controller.Settings.SymmetrizeSource = SymmetrySourceSide.Positive;
+            int changed = controller.SymmetrizeShape();
+            Settle(controller);
+            float after = controller.Session.MaxMirrorDifference(plane, controller.Settings.MirrorTolerance);
+            Debug.Log($"[GP02描画] 左右対称にする: 写した点 {changed} / 左右差の最大 {before * 1000f:F1} mm → {after * 1000f:F1} mm / 最大の伸び {controller.LastStretch:P1}");
+            controller.Session.UpdateCurrentShape();
+            controller.Session.DrawPreview(camera);
+            DrawDifferenceDots(camera, controller.Session, plane, controller.Settings.MirrorTolerance);
+            shots.Add(Shot(camera, "sym_2_symmetrized_marked"));
+            controller.Session.DrawPreview(camera);
+            shots.Add(Shot(camera, "sym_3_symmetrized"));
+        }
+        finally
+        {
+            controller.Dispose();
+        }
+
+        // 下の段: 中心からずれた衣装。アバターの基準（Animator）を -X へ 6cm ずらす
+        var avatar = new GameObject("Avatar");
+        avatar.AddComponent<Animator>();
+        avatar.transform.position = new Vector3(-0.06f, 0f, 0f);
+        root.transform.SetParent(avatar.transform, true);
+        foreach (bool fit in new[] { false, true })
+        {
+            var settings = new ClothEditSettings { SymmetryEnabled = true, Falloff = FalloffPreset.Smooth };
+            controller = new ClothEditController(settings) { BrushRadius = 0.06f, InfluenceRadius = 0.3f };
+            try
+            {
+                if (!controller.TryStart(skirt, out string error)) throw new InvalidOperationException(error);
+                PinWaist(controller.Session);
+                float unmatchedBefore = controller.UnmatchedMirrorRatio;
+                string fitLog = "";
+                if (fit)
+                {
+                    controller.AutoFitSymmetryPlane(out string message);
+                    fitLog = $" / {message}";
+                }
+                LiftFrontHem(controller, camera, 0.12f);
+                controller.TryGetMirrorPlane(out GP02.Core.MirrorPlane plane);
+                float difference = controller.Session.MaxMirrorDifference(plane, settings.MirrorTolerance);
+                Debug.Log($"[GP02描画] 中心からずれた衣装（{(fit ? "自動で合わせた" : "合わせない")}）: 相手のいない点 {unmatchedBefore:P1} → {controller.UnmatchedMirrorRatio:P1} / 中心のずれ {settings.SymmetryOffset * 100f:F1} cm / 左右差の最大 {difference * 1000f:F1} mm{fitLog}");
+                controller.Session.UpdateCurrentShape();
+                controller.Session.DrawPreview(camera);
+                if (!fit)
+                {
+                    var unmatched = new List<Vector3>();
+                    controller.Session.GetUnmatchedMirrorPositions(plane, settings.MirrorTolerance, unmatched, 4000);
+                    var colors = new List<Color>();
+                    foreach (Vector3 _ in unmatched) colors.Add(ClothEditHelp.UnmatchedMirrorColor);
+                    DrawDots(camera, unmatched, colors);
+                    shots.Add(Shot(camera, "sym_4_offcenter_not_fitted"));
+                }
+                else
+                {
+                    shots.Add(Shot(camera, "sym_5_offcenter_fitted"));
+                    controller.Session.DrawPreview(camera);
+                    DrawDifferenceDots(camera, controller.Session, plane, settings.MirrorTolerance);
+                    shots.Add(Shot(camera, "sym_6_offcenter_fitted_marked"));
+                }
+            }
+            finally
+            {
+                controller.Dispose();
+            }
+        }
+        SaveGrid(shots, 3, "symmetry");
+    }
+
+    // 右（+X）の前の裾寄りをつまみ、視点の平面の上で外上へ持ち上げて離し、仕上げる
+    static void LiftFrontHem(ClothEditController c, Camera camera, float x)
+    {
+        c.Mode = ClothEditMode.Grab;
+        c.Settings.MoveDirection = MoveDirection.Free;
+        Vector3 cameraPosition = camera.transform.position;
+        var ray = new Ray(cameraPosition, (new Vector3(x, 0.47f, -0.3f) - cameraPosition).normalized);
+        if (!c.PointerDown(ray, camera.transform.forward, camera.transform.up, 100f)) throw new InvalidOperationException("スカートに当たりませんでした。");
+        Vector3 hit = c.HoverPoint;
+        for (int k = 1; k <= 20; k++)
+        {
+            Vector3 target = hit + new Vector3(0.03f, 0.08f, 0f) * (k / 20f);
+            c.PointerDrag(new Ray(cameraPosition, (target - cameraPosition).normalized));
+            c.Tick(NextTime());
+        }
+        c.PointerUp();
+        Settle(c);
+    }
+
+    // 左右差（緑 → 黄 → 赤）の点を重ねる（シーンビューの「左右差を色分け」の代わり）
+    static void DrawDifferenceDots(Camera camera, ClothEditSession session, GP02.Core.MirrorPlane plane, float tolerance)
+    {
+        var positions = new List<Vector3>();
+        var values = new List<float>();
+        session.GetMirrorDifferenceDots(plane, tolerance, positions, values, 4000);
+        var colors = new List<Color>();
+        foreach (float v in values) colors.Add(ClothEditHelp.MirrorDifferenceColor(v));
+        DrawDots(camera, positions, colors);
+    }
+
+    // 小さな四角をカメラに向けて重ねる
+    static void DrawDots(Camera camera, List<Vector3> positions, List<Color> colors)
+    {
+        var vertices = new List<Vector3>();
+        var vertexColors = new List<Color>();
+        var triangles = new List<int>();
+        Vector3 right = camera.transform.right, up = camera.transform.up, toCamera = -camera.transform.forward;
+        for (int i = 0; i < positions.Count; i++)
+        {
+            Vector3 c = positions[i] + toCamera * 0.006f;
+            int v = vertices.Count;
+            const float h = 0.0025f;
+            vertices.Add(c - right * h - up * h);
+            vertices.Add(c - right * h + up * h);
+            vertices.Add(c + right * h + up * h);
+            vertices.Add(c + right * h - up * h);
+            Color color = colors[i];
+            color.a = 1f;
+            for (int k = 0; k < 4; k++) vertexColors.Add(color);
+            triangles.AddRange(new[] { v, v + 1, v + 2, v, v + 2, v + 3 });
+        }
+        var mesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+        mesh.SetVertices(vertices);
+        mesh.SetColors(vertexColors);
+        mesh.SetTriangles(triangles, 0);
+        Graphics.DrawMesh(mesh, Matrix4x4.identity, new Material(Shader.Find("Sprites/Default")), 0, camera);
+    }
+
+    static void PinWaist(ClothEditSession session)
+    {
+        float top = float.MinValue;
+        foreach (Vector3 v in session.CurrentWorldVertices) top = Mathf.Max(top, v.y);
+        var waist = new List<Vector3>();
+        foreach (System.Numerics.Vector3 r in session.Cloth.Model.RestPositions)
+        {
+            if (r.Y > top - 1.5f * session.Cloth.Spacing) waist.Add(new Vector3(r.X, r.Y, r.Z));
+        }
+        session.PinNear(waist, 0.004f);
     }
 
     // 前の裾寄りを、面の法線まわりに回す（pixels が回す量）か、拡大縮小する（負で縮める）

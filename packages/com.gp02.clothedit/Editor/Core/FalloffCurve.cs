@@ -78,6 +78,31 @@ namespace GP02.Core
             return _samples[k] + (_samples[k + 1] - _samples[k]) * f;
         }
 
+        /// <summary>
+        /// 重みが weight 以上になる、一番外側の位置（0〜1。半径に対する割合）。どこでも weight 未満なら 0、端でも weight 以上なら 1。
+        /// ブラシの減り方を同心円（重み 75% / 50% / 25% の位置）で見せるのに使う。減ったあとでまた増えるカーブでも、外側の位置を返す。
+        /// </summary>
+        public float OuterPositionForWeight(float weight)
+        {
+            if (Evaluate(1f) >= weight) return 1f;
+            const int Steps = 256;
+            for (int k = Steps - 1; k >= 0; k--)
+            {
+                float t = k / (float)Steps;
+                if (Evaluate(t) < weight) continue;
+                // t と次の刻みの間で、重みが weight を下回る所を二分法で詰める
+                float inside = t, outside = (k + 1) / (float)Steps;
+                for (int i = 0; i < 20; i++)
+                {
+                    float middle = 0.5f * (inside + outside);
+                    if (Evaluate(middle) >= weight) inside = middle;
+                    else outside = middle;
+                }
+                return inside;
+            }
+            return 0f;
+        }
+
         // 同じカーブか（同じ参照か、サンプルがすべて同じ）。範囲を選び直すかどうかの判断に使う
         internal bool SameAs(FalloffCurve other)
         {

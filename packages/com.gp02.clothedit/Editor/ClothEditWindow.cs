@@ -72,6 +72,7 @@ namespace GP02.EditorTools
             _controller.Changed += OnControllerChanged;
             // シェイプキーの一覧の「布で編集する」から、このウィンドウの編集を使う
             ShapeKeyClothEdit.ControllerProvider = () => _controller;
+            ClothEditShortcutBindings.Handler = OnShortcut;
             SyncController();
             SceneView.beforeSceneGui += OnBeforeSceneGUI;
             SceneView.duringSceneGui += OnSceneGUI;
@@ -89,6 +90,8 @@ namespace GP02.EditorTools
             EditorApplication.update -= OnUpdate;
             EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
             if (ShapeKeyClothEdit.ControllerProvider != null && ShapeKeyClothEdit.ControllerProvider() == _controller) ShapeKeyClothEdit.ControllerProvider = null;
+            if (ClothEditShortcutBindings.Handler == (System.Action<ClothEditShortcutAction, bool>)OnShortcut) ClothEditShortcutBindings.Handler = null;
+            ClothEditShortcutBindings.SetEditing(false);
             if (_controller != null)
             {
                 _controller.Changed -= OnControllerChanged;
@@ -129,6 +132,8 @@ namespace GP02.EditorTools
         {
             RememberToolBeforeSelect();
             _controller?.Tick(EditorApplication.timeSinceStartup);
+            SyncShortcutContext();
+            if (_radiusDrag.Active && (_controller == null || !_controller.IsEditing)) _radiusDrag.Cancel();
         }
 
         void OnGUI()
@@ -137,11 +142,13 @@ namespace GP02.EditorTools
             string title = L10n.Tr("GP02 布の編集", "GP02 Cloth Edit");
             if (titleContent.text != title) titleContent = new GUIContent(title);
 
+            if (Event.current.type == EventType.Layout) RefreshTargetWarnings();
             DrawTopBar();
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             DrawGuide();
             if (!_controller.IsEditing && ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
             DrawTargetSection();
+            DrawDiagnosticsSection();
             DrawToolSection();
             DrawSelectionSection();
             DrawBrushSection();
@@ -356,40 +363,14 @@ namespace GP02.EditorTools
                 }
             }
 
-            List<Renderer> targets = CollectTargets();
-            if (Event.current.type == EventType.Layout && (_warningsDirty || _warningsTarget != _target || _warningsTargetCount != targets.Count))
-            {
-                _warnings.Clear();
-                _warningOwners.Clear();
-                foreach (Renderer renderer in targets)
-                {
-                    ClothEditWarnings.Collect(renderer, _warningWork);
-                    foreach (TargetWarning warning in _warningWork)
-                    {
-                        _warnings.Add(warning);
-                        _warningOwners.Add(renderer);
-                    }
-                }
-                _warningsTarget = _target;
-                _warningsTargetCount = targets.Count;
-                _warningsDirty = false;
-            }
+            // 問題の一覧と「直す」ボタンは「診断」の区切りに出す。ここでは始められないものだけを見る
             bool blocked = false;
-            if (!editing)
+            foreach (TargetWarning warning in _warnings)
             {
-                for (int i = 0; i < _warnings.Count; i++)
-                {
-                    TargetWarning warning = _warnings[i];
-                    if (warning.Kind == TargetWarningKind.CannotStart) blocked = true;
-                    EditorGUILayout.HelpBox(warning.Message, warning.Severity);
-                    if (warning.CanAutoFix && GUILayout.Button(L10n.Tr("Read/Write を有効にする", "Enable Read/Write")))
-                    {
-                        FixReadWrite(i < _warningOwners.Count ? _warningOwners[i] : _target);
-                        GUIUtility.ExitGUI();
-                    }
-                }
-                if (!string.IsNullOrEmpty(_controller.LastError)) EditorGUILayout.HelpBox(_controller.LastError, MessageType.Error);
+                if (warning.Kind == TargetWarningKind.CannotStart) blocked = true;
             }
+            if (!editing && blocked) EditorGUILayout.HelpBox(L10n.Tr("この対象では編集を始められません。理由は下の「診断」を見てください。", "Editing cannot start with this target. See Diagnostics below for the reason."), MessageType.Error);
+            if (!editing && !string.IsNullOrEmpty(_controller.LastError)) EditorGUILayout.HelpBox(_controller.LastError, MessageType.Error);
 
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
@@ -420,6 +401,28 @@ namespace GP02.EditorTools
                 if (ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
             }
             EditorGUILayout.Space();
+        }
+
+        // 対象ごとの点検（ClothEditWarnings.Collect）を、対象や内容が変わったときだけ作り直す（OnGUI の Layout で呼ぶ）
+        void RefreshTargetWarnings()
+        {
+            List<Renderer> targets = CollectTargets();
+            if (!(_warningsDirty || _warningsTarget != _target || _warningsTargetCount != targets.Count)) return;
+            _warnings.Clear();
+            _warningOwners.Clear();
+            foreach (Renderer renderer in targets)
+            {
+                ClothEditWarnings.Collect(renderer, _warningWork);
+                foreach (TargetWarning warning in _warningWork)
+                {
+                    _warnings.Add(warning);
+                    _warningOwners.Add(renderer);
+                }
+            }
+            _warningsTarget = _target;
+            _warningsTargetCount = targets.Count;
+            _warningsDirty = false;
+            _warningsVersion++;
         }
 
         void PickFromSelection()
@@ -545,14 +548,20 @@ namespace GP02.EditorTools
                 case ClothEditMode.Grab:
                     _settings.MoveDirection = (MoveDirection)EditorGUILayout.Popup(
                         new GUIContent(L10n.Tr("動かす向き", "Move Direction"),
-                            L10n.Tr("自由: 視点の平面の上を動かす。面の法線: つまんだ所の面に垂直な向きだけ。X/Y/Z: その軸の向きだけ。", "Free: move on the view plane. Surface normal: only perpendicular to the surface. X/Y/Z: only along that axis.")),
+                            L10n.Tr("自由: 視点の平面の上を動かす。面の法線: つまんだ所の面に垂直な向きだけ。X/Y/Z: その軸の向きだけ。視線: 画面の奥・手前の向きだけ（上下のドラッグで）。",
+                                "Free: move on the view plane. Surface normal: only perpendicular to the surface. X/Y/Z: only along that axis. View: only toward or away from the screen (drag up / down).")),
                         (int)_settings.MoveDirection,
                         new[]
                         {
                             L10n.Tr("自由（視点の平面）", "Free (view plane)"), L10n.Tr("面の法線に沿って", "Along surface normal"),
                             L10n.Tr("X 軸に固定", "Lock to X axis"), L10n.Tr("Y 軸に固定", "Lock to Y axis"), L10n.Tr("Z 軸に固定", "Lock to Z axis"),
+                            L10n.Tr("視線に沿って（奥へ・手前へ）", "Along the view (push / pull)"),
                         });
-                    if (_settings.MoveDirection >= MoveDirection.AxisX)
+                    if (_settings.MoveDirection == MoveDirection.View)
+                    {
+                        EditorGUILayout.LabelField(L10n.Tr("上へドラッグで奥へ、下へドラッグで手前へ動きます", "Drag up to push away, drag down to pull toward you"), EditorStyles.wordWrappedMiniLabel);
+                    }
+                    if (_settings.MoveDirection == MoveDirection.AxisX || _settings.MoveDirection == MoveDirection.AxisY || _settings.MoveDirection == MoveDirection.AxisZ)
                     {
                         _settings.DirectionSpace = (AxisSpace)EditorGUILayout.Popup(new GUIContent(L10n.Tr("軸の基準", "Axis Space"),
                             L10n.Tr("X/Y/Z 軸を、シーンのワールド座標で見るか、アバターの向きに合わせたローカル座標で見るか。", "Whether the X/Y/Z axes are in world space or in the avatar's local space.")),
@@ -656,11 +665,22 @@ namespace GP02.EditorTools
                 _settings.CustomFalloff = edited;
                 _settings.Falloff = FalloffPreset.Custom;
             }
+            DrawCurveLibrary();
 
             _settings.DistanceMode = (BrushDistanceMode)EditorGUILayout.Popup(new GUIContent(L10n.Tr("距離の測り方", "Distance"),
                 L10n.Tr("メッシュに沿う: つながった布だけを範囲にする（重ね着の別の層は動かさない）。直線: 近くにあるものを層に関係なく範囲にする。",
                     "Along the surface: only connected cloth is in range (other layers are left alone). Straight: anything nearby is in range, whatever layer it is on.")),
                 (int)_settings.DistanceMode, new[] { L10n.Tr("メッシュに沿う", "Along the surface"), L10n.Tr("直線", "Straight line") });
+            using (new EditorGUI.DisabledScope(_settings.DistanceMode != BrushDistanceMode.Surface))
+            {
+                float connectCm = EditorGUILayout.Slider(new GUIContent(L10n.Tr("つながりの許容距離 ε（cm）", "Connect Distance ε (cm)"),
+                    L10n.Tr("「メッシュに沿う」で範囲を測るとき、この距離以内にある別の部品（島）にも範囲を広げます。袖とフリルのように分かれたパーツを一緒に動かせます。" +
+                            "布の計算のつながりは変わりません（範囲の決め方だけ）。0 で広げません。重ね着の層どうしも、この距離より近ければつながります",
+                        "When measuring along the surface, the range also spreads to other parts (islands) within this distance, so separate pieces such as a sleeve and its frill move together. " +
+                        "The cloth simulation's connections are unchanged (only the range). 0 disables it. Layers closer than this distance are connected too")),
+                    _settings.ConnectDistance * 100f, 0f, ClothEditSettings.MaxConnectDistance * 100f);
+                _settings.ConnectDistance = connectCm * 0.01f;
+            }
 
             _settings.RelaxStrength = EditorGUILayout.Slider(new GUIContent(L10n.Tr("元に戻すブラシの強さ", "Restore Brush Strength"),
                 L10n.Tr("1回塗るごとに、元の形へ近づける割合です。1 で元の形に戻ります。", "How far each stroke brings the cloth back to its original shape. 1 restores it fully.")),
@@ -681,32 +701,113 @@ namespace GP02.EditorTools
             _settings.SymmetryEnabled = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("対称編集", "Symmetric Editing"),
                 L10n.Tr("オンにすると、つまむ・回す・拡大縮小・ピン・元に戻すブラシが、反対側にも鏡に映したように働きます。", "When on, grab / rotate / scale / pin / restore also act on the opposite side, mirrored.")),
                 _settings.SymmetryEnabled);
-            using (new EditorGUI.DisabledScope(!_settings.SymmetryEnabled))
-            {
-                _settings.SymmetryAxis = (SymmetryAxis)EditorGUILayout.Popup(new GUIContent(L10n.Tr("軸", "Axis"),
-                    L10n.Tr("アバターのローカル座標の軸。この軸に垂直な面が鏡になります（左右対称なら X）。", "An axis in the avatar's local space. The plane perpendicular to it is the mirror (X for left / right).")),
-                    (int)_settings.SymmetryAxis, new[] { "X", "Y", "Z" });
-                float offsetCm = EditorGUILayout.FloatField(new GUIContent(L10n.Tr("中心のずれ（cm）", "Center Offset (cm)"),
-                    L10n.Tr("アバターの中心から、鏡の面までのずれ（アバターのローカル座標）。", "Offset of the mirror plane from the avatar's center (in the avatar's local space).")),
-                    _settings.SymmetryOffset * 100f);
-                _settings.SymmetryOffset = offsetCm * 0.01f;
-            }
-            if (EditorGUI.EndChangeCheck()) _settingsDirty = true;
+            _settings.SymmetryAxis = (SymmetryAxis)EditorGUILayout.Popup(new GUIContent(L10n.Tr("軸", "Axis"),
+                L10n.Tr("アバターのローカル座標の軸。この軸に垂直な面が鏡になります（左右対称なら X）。", "An axis in the avatar's local space. The plane perpendicular to it is the mirror (X for left / right).")),
+                (int)_settings.SymmetryAxis, new[] { "X", "Y", "Z" });
+            float offsetCm = EditorGUILayout.FloatField(new GUIContent(L10n.Tr("中心のずれ（cm）", "Center Offset (cm)"),
+                L10n.Tr("アバターの中心から、鏡の面までのずれ（アバターのローカル座標）。「鏡の面を自動で合わせる」で衣装に合わせられます。", "Offset of the mirror plane from the avatar's center (in the avatar's local space). Auto-Fit Mirror Plane matches it to the outfit.")),
+                _settings.SymmetryOffset * 100f);
+            _settings.SymmetryOffset = offsetCm * 0.01f;
+            float toleranceCm = EditorGUILayout.Slider(new GUIContent(L10n.Tr("鏡像を探す許容距離（cm）", "Mirror Tolerance (cm)"),
+                L10n.Tr("鏡に映した位置から、この距離以内の点を反対側の相手にします。左右で形が少し違う衣装では広げます。広げすぎると、別の部分を相手にすることがあります。既定 2cm",
+                    "A point within this distance of the mirrored position becomes the partner on the opposite side. Widen it for outfits whose sides differ slightly; too wide may pick an unrelated part. Default 2 cm")),
+                _settings.MirrorTolerance * 100f, ClothEditSettings.MinMirrorTolerance * 100f, ClothEditSettings.MaxMirrorTolerance * 100f);
+            _settings.MirrorTolerance = toleranceCm * 0.01f;
+            bool symmetryChanged = EditorGUI.EndChangeCheck();
+            if (symmetryChanged) _settingsDirty = true;
 
-            if (_settings.SymmetryEnabled)
+            bool editing = _controller.IsEditing;
+            using (new EditorGUI.DisabledScope(!editing || _controller.IsBusy))
             {
-                Transform root = _controller.IsEditing ? _controller.AvatarRoot : (_target != null ? ClothEditSymmetry.FindAvatarRoot(_target.transform) : null);
-                if (root != null)
+                if (GUILayout.Button(new GUIContent(L10n.Tr("鏡の面を自動で合わせる", "Auto-Fit Mirror Plane"),
+                    L10n.Tr("元の形を鏡に映したとき一番よく重なる位置を探して、「中心のずれ」に入れます。衣装がアバターの中心からずれていても、衣装の左右対称の面で編集できます（編集中に使えます）",
+                        "Finds where the original shape best overlaps its mirror image and puts it in Center Offset, so you can edit symmetrically around the outfit's own plane even if it is off the avatar's center (while editing)"))))
                 {
-                    EditorGUILayout.LabelField(L10n.Tr("基準", "Reference"), root.name, EditorStyles.miniLabel);
-                    if (root.GetComponentInParent<Animator>() == null)
-                    {
-                        EditorGUILayout.HelpBox(L10n.Tr("Animator のある親が見つからなかったので、一番上の親「" + root.name + "」を基準にしています。",
-                            "No parent with an Animator was found, so the topmost parent \"" + root.name + "\" is used as the reference."), MessageType.Info);
-                    }
+                    FitMirrorPlane();
+                }
+            }
+
+            if (editing && _settings.SymmetryEnabled)
+            {
+                int unmatched = _controller.UnmatchedMirrorCount;
+                float ratio = _controller.UnmatchedMirrorRatio;
+                EditorGUILayout.LabelField(L10n.Tr("相手のいない点", "Points Without a Partner"), L10n.Tr($"{unmatched:N0} 個（{ratio * 100f:F1}%）", $"{unmatched:N0} ({ratio * 100f:F1}%)"));
+                if (ratio > ClothEditSettings.UnmatchedMirrorWarnRatio)
+                {
+                    EditorGUILayout.HelpBox(L10n.Tr("相手のいない点が多いです。その点をつまんでも、反対側は動きません。「鏡の面を自動で合わせる」か、許容距離を広げてください。",
+                        "Many points have no partner. Grabbing them does not move the opposite side. Use Auto-Fit Mirror Plane or widen the tolerance."), MessageType.Warning);
+                }
+            }
+
+            EditorGUI.BeginChangeCheck();
+            _settings.ShowUnmatchedMirror = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("相手のいない点を表示", "Show Points Without a Partner"),
+                L10n.Tr("対称がオンのとき、鏡像の相手が見つからない点を赤紫の点で見せます。そこをつまんでも反対側は動きません", "While symmetry is on, shows points with no mirror partner as magenta dots. Grabbing them does not move the opposite side")),
+                _settings.ShowUnmatchedMirror);
+            _settings.ShowMirrorDifference = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("左右差を色分け", "Show Left / Right Difference"),
+                L10n.Tr("点ごとに、反対側の相手との変形の差（鏡に映した動きとの差）を緑→黄→赤で見せます（0 → 0.5cm → 2cm）", "Shows, per point, how much its deformation differs from its mirrored partner's, from green to yellow to red (0 / 0.5 cm / 2 cm)")),
+                _settings.ShowMirrorDifference);
+            if (EditorGUI.EndChangeCheck())
+            {
+                _settingsDirty = true;
+                SceneView.RepaintAll();
+            }
+            if (editing && _settings.ShowMirrorDifference && _controller.TryGetMirrorPlane(out MirrorPlane differencePlane))
+            {
+                float max = _controller.Session.MaxMirrorDifference(differencePlane, _settings.MirrorTolerance);
+                EditorGUILayout.LabelField(L10n.Tr("左右差の最大", "Max Difference"), $"{max * 100f:F2} cm");
+            }
+
+            // 今の形を左右対称にする
+            EditorGUILayout.Space(2f);
+            string axisName = _settings.SymmetryAxis.ToString();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUI.BeginChangeCheck();
+                _settings.SymmetrizeSource = (SymmetrySourceSide)EditorGUILayout.Popup(new GUIContent(L10n.Tr("基準にする側", "Keep Side"),
+                    L10n.Tr("「今の形を左右対称にする」で、変形を残す側です。反対側は、この側の変形を鏡に映した形になります（X 軸では、+X がアバターの右側です）",
+                        "The side whose deformation is kept by Symmetrize Shape. The other side becomes its mirror image (on the X axis, +X is the avatar's right side)")),
+                    (int)_settings.SymmetrizeSource, new[] { L10n.Tr($"+{axisName} 側", $"+{axisName} side"), L10n.Tr($"−{axisName} 側", $"-{axisName} side") });
+                if (EditorGUI.EndChangeCheck()) _settingsDirty = true;
+            }
+            using (new EditorGUI.DisabledScope(!editing || _controller.IsBusy))
+            {
+                if (GUILayout.Button(new GUIContent(L10n.Tr("今の形を左右対称にする", "Symmetrize Shape"),
+                    L10n.Tr("基準にする側の変形（元の形からの移動）を、鏡に映して反対側へ写し、仕上げで伸びを直します。中央は両側の平均にします。ピンの点と相手のいない点は動きません。Ctrl+Z で戻せます（1回で1段）",
+                        "Mirrors the deformation of the kept side onto the other side, then settles the stretch. The middle becomes the average of both sides. Pinned points and points without a partner do not move. Ctrl+Z undoes it (one step)"))))
+                {
+                    SymmetrizeShape();
+                }
+            }
+
+            Transform root = editing ? _controller.AvatarRoot : (_target != null ? ClothEditSymmetry.FindAvatarRoot(_target.transform) : null);
+            if (root != null)
+            {
+                EditorGUILayout.LabelField(L10n.Tr("基準", "Reference"), root.name, EditorStyles.miniLabel);
+                if (_settings.SymmetryEnabled && root.GetComponentInParent<Animator>() == null)
+                {
+                    EditorGUILayout.HelpBox(L10n.Tr("Animator のある親が見つからなかったので、一番上の親「" + root.name + "」を基準にしています。",
+                        "No parent with an Animator was found, so the topmost parent \"" + root.name + "\" is used as the reference."), MessageType.Info);
                 }
             }
             EditorGUILayout.Space();
+        }
+
+        void FitMirrorPlane()
+        {
+            bool ok = _controller.AutoFitSymmetryPlane(out string message);
+            _settings.Save();
+            if (ok) ShowNotification(new GUIContent(message));
+            else EditorUtility.DisplayDialog("GP02", message, "OK");
+            SceneView.RepaintAll();
+        }
+
+        void SymmetrizeShape()
+        {
+            int changed = _controller.SymmetrizeShape();
+            ShowNotification(new GUIContent(changed > 0
+                ? L10n.Tr($"{changed:N0} 個の点を左右対称にしました（仕上げ中）", $"Symmetrized {changed:N0} points (settling)")
+                : L10n.Tr("変わる点がありませんでした（すでに左右対称か、相手のいない点だけです）", "Nothing changed (already symmetric, or only points without a partner)")));
+            SceneView.RepaintAll();
         }
 
         // ---- 表示 ----
@@ -723,6 +824,16 @@ namespace GP02.EditorTools
             _settings.ShowStretchHeatmap = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("伸びのヒートマップ", "Stretch Heatmap"),
                 L10n.Tr("粒子ごとの伸びを緑→黄→赤で表示します（0% → 5% → 15%）。", "Shows each particle's stretch from green to yellow to red (0% to 5% to 15%).")),
                 _settings.ShowStretchHeatmap);
+            _settings.ShowMoveHeatmap = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("動いた量のヒートマップ", "Movement Heatmap"),
+                L10n.Tr("元の形からどれだけ動いたかを、青→黄→赤で表示します（0 → 2.5cm → 5cm 以上）。どこまで動いたか・動かしたくない所が動いていないかを確かめられます。",
+                    "Shows how far each point moved from the original shape, from blue to yellow to red (0 / 2.5 cm / 5 cm or more). Check how far edits reach and that areas that should stay did not move.")),
+                _settings.ShowMoveHeatmap);
+            _settings.ShowOriginalGhost = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("元の形を重ねて表示", "Overlay Original Shape"),
+                L10n.Tr("編集前の形を半透明の水色で重ねます。「元の形を表示」と違い、編集中の形と同時に見えます。", "Overlays the shape before editing in translucent light blue. Unlike Show Original Shape, you see it together with the edited shape.")),
+                _settings.ShowOriginalGhost);
+            _settings.ShowFalloffRings = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("減り方を同心円で表示", "Show Falloff Rings"),
+                L10n.Tr("ブラシの円の中に、動きの強さが 75% / 50% / 25% になる位置を同心円で見せます（減衰カーブの形が分かります）。", "Draws rings inside the brush circle where the motion strength is 75% / 50% / 25% (shows the falloff curve's shape).")),
+                _settings.ShowFalloffRings);
             if (EditorGUI.EndChangeCheck())
             {
                 _settingsDirty = true;

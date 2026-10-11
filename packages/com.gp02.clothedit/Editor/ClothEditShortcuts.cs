@@ -35,11 +35,85 @@ namespace GP02.EditorTools
     }
 
     /// <summary>
+    /// ショートカットの動作。Unity の Shortcut Manager に登録する1つ1つ（<see cref="ClothEditShortcutBindings"/>）に対応する。
+    /// </summary>
+    public enum ClothEditShortcutAction
+    {
+        /// <summary>つまむ（「選んで動かす」の間は移動ハンドル）。</summary>
+        Grab,
+
+        /// <summary>回す（「選んで動かす」の間は回転ハンドル）。</summary>
+        Rotate,
+
+        /// <summary>拡大縮小（「選んで動かす」の間は拡大縮小ハンドル）。</summary>
+        Scale,
+        Pin,
+        Unpin,
+        Relax,
+
+        /// <summary>「選んで動かす」（もう一度で前の道具）。</summary>
+        SelectTool,
+
+        /// <summary>押している間だけ元の形を見せる。</summary>
+        HoldOriginal,
+
+        /// <summary>ショートカット一覧を出す・隠す。</summary>
+        ToggleHelp,
+        BrushRadiusDown,
+        BrushRadiusUp,
+        InfluenceDown,
+        InfluenceUp,
+
+        /// <summary>マウスを横に動かしてブラシ半径を変える（「選んで動かす」の間は、なめらかさの半径）。</summary>
+        RadiusDrag,
+
+        /// <summary>マウスを横に動かして影響範囲を変える。</summary>
+        InfluenceDrag,
+    }
+
+    /// <summary>
     /// シーンビューのショートカット。キーと操作の対応だけを持つ（画面に依存しないので、テストで確かめられる）。
-    /// 実際にイベントを読んで消費するのはウィンドウ。
+    /// キーは Unity の Shortcut Manager に登録してあり（<see cref="ClothEditShortcutBindings"/>）、ここの判定は、それが使えないときの代わりと、
+    /// 配列によってキーコードが違う [ ] の文字での判定に使う。
     /// </summary>
     public static class ClothEditShortcuts
     {
+        /// <summary>
+        /// 道具を切り替える動作の結果。<see cref="ResolveToolKey"/> の、キーの代わりに動作で受け取る版（Shortcut Manager から呼ばれる）。
+        /// 「選んで動かす」の間は、つまむ・回す・拡大縮小が、道具ではなくハンドルの種類を切り替える。道具の動作でなければ Handled が false。
+        /// </summary>
+        public static ToolKeyResult ResolveToolAction(ClothEditShortcutAction action, ClothEditMode current, ClothEditMode previousTool, SelectionHandle handle)
+        {
+            bool selecting = current == ClothEditMode.Select;
+            switch (action)
+            {
+                case ClothEditShortcutAction.Grab: return selecting ? new ToolKeyResult(current, SelectionHandle.Move) : new ToolKeyResult(ClothEditMode.Grab, handle);
+                case ClothEditShortcutAction.Rotate: return selecting ? new ToolKeyResult(current, SelectionHandle.Rotate) : new ToolKeyResult(ClothEditMode.Rotate, handle);
+                case ClothEditShortcutAction.Scale: return selecting ? new ToolKeyResult(current, SelectionHandle.Scale) : new ToolKeyResult(ClothEditMode.Scale, handle);
+                case ClothEditShortcutAction.Pin: return new ToolKeyResult(ClothEditMode.Pin, handle);
+                case ClothEditShortcutAction.Unpin: return new ToolKeyResult(ClothEditMode.Unpin, handle);
+                case ClothEditShortcutAction.Relax: return new ToolKeyResult(ClothEditMode.Relax, handle);
+                case ClothEditShortcutAction.SelectTool: return new ToolKeyResult(selecting ? LeaveSelectTool(previousTool) : ClothEditMode.Select, handle);
+                default: return default;
+            }
+        }
+
+        /// <summary>半径を1段変える動作なら、変える大きさとステップ（[ で -1、] で +1）。</summary>
+        public static bool TryGetRadiusAction(ClothEditShortcutAction action, out WheelTarget target, out int step)
+        {
+            switch (action)
+            {
+                case ClothEditShortcutAction.BrushRadiusDown: target = WheelTarget.BrushRadius; step = -1; return true;
+                case ClothEditShortcutAction.BrushRadiusUp: target = WheelTarget.BrushRadius; step = 1; return true;
+                case ClothEditShortcutAction.InfluenceDown: target = WheelTarget.InfluenceRadius; step = -1; return true;
+                case ClothEditShortcutAction.InfluenceUp: target = WheelTarget.InfluenceRadius; step = 1; return true;
+                default: target = WheelTarget.None; step = 0; return false;
+            }
+        }
+
+        /// <summary>F キー（Shift+F）での半径の変え方。Shortcut Manager が使えないときの代わり。</summary>
+        public static bool IsRadiusDragKey(KeyCode key) => key == KeyCode.F;
+
         /// <summary>ホイール1目盛り（Event.delta.y で 3）が何ステップか。</summary>
         const float WheelDeltaPerStep = 3f;
 

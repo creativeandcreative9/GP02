@@ -32,6 +32,46 @@ namespace GP02.EditorTools
             return c;
         }
 
+        /// <summary>
+        /// 動いた量のヒートマップの色。0 は薄い青、<see cref="ClothEditSettings.MoveHeatmapMax"/> の半分で黄、それ以上で赤。間は線形に補う。
+        /// </summary>
+        public static Color MoveColor(float distance)
+        {
+            var blue = new Color(0.3f, 0.5f, 1f, 0.45f);
+            var yellow = new Color(1f, 0.9f, 0.1f, 1f);
+            var red = new Color(1f, 0.15f, 0.1f, 1f);
+            float half = 0.5f * ClothEditSettings.MoveHeatmapMax;
+            if (!(distance > 0f)) return blue;
+            if (distance <= half) return Color.Lerp(blue, yellow, distance / half);
+            if (distance >= ClothEditSettings.MoveHeatmapMax) return red;
+            return Color.Lerp(yellow, red, (distance - half) / half);
+        }
+
+        /// <summary>左右差の色。0 は緑、<see cref="ClothEditSettings.MirrorDifferenceRed"/> の 1/4 で黄、それ以上で赤。</summary>
+        public static Color MirrorDifferenceColor(float difference)
+        {
+            var green = new Color(0.2f, 0.85f, 0.3f, 0.5f);
+            var yellow = new Color(1f, 0.9f, 0.1f, 1f);
+            var red = new Color(1f, 0.15f, 0.1f, 1f);
+            float quarter = 0.25f * ClothEditSettings.MirrorDifferenceRed;
+            if (!(difference > 0f)) return green;
+            if (difference <= quarter) return Color.Lerp(green, yellow, difference / quarter);
+            if (difference >= ClothEditSettings.MirrorDifferenceRed) return red;
+            return Color.Lerp(yellow, red, (difference - quarter) / (ClothEditSettings.MirrorDifferenceRed - quarter));
+        }
+
+        /// <summary>対称の相手のいない点の色（目立つ赤紫）。</summary>
+        public static Color UnmatchedMirrorColor => new Color(1f, 0.1f, 0.9f, 1f);
+
+        /// <summary>3D カーソルの色。</summary>
+        public static Color CursorColor => new Color(1f, 0.25f, 0.25f, 1f);
+
+        /// <summary>減り方の同心円の色（ブラシの円の色を薄くして使う）。</summary>
+        public const float FalloffRingAlpha = 0.45f;
+
+        /// <summary>減り方の同心円で見せる重み。</summary>
+        public static readonly float[] FalloffRingWeights = { 0.75f, 0.5f, 0.25f };
+
         /// <summary>選んだ点の色（橙）。</summary>
         public static Color SelectedColor => new Color(1f, 0.55f, 0.08f, 1f);
 
@@ -144,18 +184,20 @@ namespace GP02.EditorTools
             }
         }
 
-        /// <summary>ショートカットキーの表示（道具の名前のあとに添える）。</summary>
+        /// <summary>
+        /// ショートカットキーの表示（道具の名前のあとに添える）。Edit > Shortcuts で変えていれば、そのキー（<see cref="ClothEditShortcutBindings.GetKeyLabel"/>）。
+        /// </summary>
         public static string ToolKey(ClothEditMode mode)
         {
             switch (mode)
             {
-                case ClothEditMode.Rotate: return "E";
-                case ClothEditMode.Scale: return "R";
-                case ClothEditMode.Pin: return "P";
-                case ClothEditMode.Unpin: return "Shift+P";
-                case ClothEditMode.Relax: return "T";
-                case ClothEditMode.Select: return "Q";
-                default: return "W";
+                case ClothEditMode.Rotate: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdRotate, "E");
+                case ClothEditMode.Scale: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdScale, "R");
+                case ClothEditMode.Pin: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdPin, "P");
+                case ClothEditMode.Unpin: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdUnpin, "Shift+P");
+                case ClothEditMode.Relax: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdRelax, "T");
+                case ClothEditMode.Select: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdSelectTool, "Q");
+                default: return ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdGrab, "W");
             }
         }
 
@@ -249,6 +291,10 @@ namespace GP02.EditorTools
             Add(L10n.Tr("ダブルクリック（選ぶ）", "Double-click (Select)"), "その部品（島）ごと選ぶ（Ctrl で外す）", "Select the whole part (island) (Ctrl to deselect)");
             Add(L10n.Tr("空の所をクリック（選ぶ）", "Click empty space (Select)"), "選択を解除", "Clear the selection");
             Add(L10n.Tr("ハンドルのドラッグ", "Drag the handle"), "選んだ点を動かす（Shift でゆっくり、Ctrl で刻み）", "Move the selected points (Shift to slow down, Ctrl to snap)");
+            Add("F", "マウスを横に動かしてブラシ半径を変える（選んで動かす中は、なめらかさの半径）。クリックか F で確定、Esc か右クリックで取り消し",
+                "Move the mouse sideways to change the brush radius (the smoothness radius in Select & Move). Click or F to confirm, Esc or right-click to cancel");
+            Add("Shift+F", "マウスを横に動かして影響範囲を変える", "Move the mouse sideways to change the influence range");
+            Add(L10n.Tr("Shift+右クリック", "Shift+Right-click"), "3D カーソルを置く（中心を「3D カーソル」にしたときの回転・拡大縮小の中心）", "Place the 3D cursor (the pivot when Pivot is \"3D cursor\")");
             Add(L10n.Tr("Ctrl+ホイール", "Ctrl+Wheel"), "ブラシ半径", "Brush radius");
             Add(L10n.Tr("Ctrl+Shift+ホイール", "Ctrl+Shift+Wheel"), "影響範囲", "Influence range");
             Add("[  ]", "ブラシ半径（Shift で影響範囲）", "Brush radius (Shift for influence range)");
@@ -257,6 +303,7 @@ namespace GP02.EditorTools
             Add("Ctrl+Z / Ctrl+Y", "1操作ずつ戻す・やり直す", "Undo / redo one operation at a time");
             Add(L10n.Tr("Alt+ドラッグ", "Alt+Drag"), "視点を動かす", "Orbit the view");
             Add("F1", "この一覧を出す・隠す", "Show / hide this list");
+            Add("Edit > Shortcuts", "「GP02」の項目で、キーを変えられます", "Change the keys under \"GP02\"");
         }
     }
 }

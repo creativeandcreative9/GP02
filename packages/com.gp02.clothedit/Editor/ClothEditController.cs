@@ -42,7 +42,7 @@ namespace GP02.EditorTools
     /// EditMode テストから動かせる。ウィンドウは、イベントを読んでここに渡し、描画するだけ。
     /// 編集の中身（粒子・保存）は <see cref="ClothEditSession"/> が持つ。
     /// </summary>
-    public sealed class ClothEditController : IDisposable
+    public sealed partial class ClothEditController : IDisposable
     {
         public const string DefaultSaveFolder = "Assets/GP02/Meshes";
 
@@ -154,6 +154,8 @@ namespace GP02.EditorTools
         float _weightRadius;
         FalloffCurve _weightCurve;
         BrushDistanceMode _weightMode;
+        float _weightConnect;
+        float _weightTolerance;
         bool _weightHasMirror;
         MirrorPlane _weightPlane;
         int _weightShape;
@@ -344,6 +346,8 @@ namespace GP02.EditorTools
                 Falloff = _settings.GetFalloffCurve(),
                 DistanceMode = _settings.DistanceMode,
                 Mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null,
+                MirrorTolerance = _settings.MirrorTolerance,
+                ConnectDistance = _settings.ConnectDistance,
             };
         }
 
@@ -396,8 +400,13 @@ namespace GP02.EditorTools
         public void ApplySettings()
         {
             _settings.Sanitize();
-            if (_session != null) _settings.ApplyTo(_session.Solver, _session.GetRestAllowance(_settings.KeepLayersApart));
+            if (_session != null)
+            {
+                _settings.ApplyTo(_session.Solver, _session.GetRestAllowance(_settings.KeepLayersApart));
+                ApplyViewSettings();
+            }
             _previewKeyValid = false;
+            _hoverMirrorValid = false;
             ApplyPreviewBlend();
         }
 
@@ -624,6 +633,7 @@ namespace GP02.EditorTools
             }
 
             _settings.ApplyTo(_session.Solver, _session.GetRestAllowance(_settings.KeepLayersApart));
+            ApplyViewSettings();
             _session.Solver.InfluenceRadius = _influenceRadius;
             if (reuseCloth != null)
             {
@@ -841,7 +851,7 @@ namespace GP02.EditorTools
                     _hoverMirrorSeed = seed;
                     _hoverMirrorPlane = plane;
                     _hoverMirrorValid = true;
-                    int mirror = _session.Solver.FindMirrorParticle(seed, plane, BrushOptions.DefaultMirrorTolerance);
+                    int mirror = _session.Solver.FindMirrorParticle(seed, plane, _settings.MirrorTolerance);
                     _hoverMirrorParticle = mirror == seed ? -1 : mirror;
                 }
                 // 鏡像が範囲の2倍以内にあるとき（中央線の近く）は、同じ範囲なので別の円は出さない
@@ -884,7 +894,18 @@ namespace GP02.EditorTools
         /// <param name="screenX">マウスの横位置（ピクセル）。「回す」「拡大縮小」の横ドラッグの量を測る基準</param>
         public bool PointerDown(Ray ray, Vector3 cameraForward, float screenX = 0f)
         {
+            return PointerDown(ray, cameraForward, ViewUpFallback(cameraForward), screenX);
+        }
+
+        /// <summary>
+        /// <see cref="PointerDown(Ray, Vector3, float)"/> の、カメラの上の向きも渡す版。「動かす向き」が視線（<see cref="MoveDirection.View"/>）のとき、
+        /// 画面の上下のドラッグを奥行きの動きにするのに使う。
+        /// </summary>
+        public bool PointerDown(Ray ray, Vector3 cameraForward, Vector3 cameraUp, float screenX)
+        {
             if (!EnsureAlive()) return false;
+            _dragCameraForward = cameraForward.normalized;
+            _dragCameraUp = cameraUp;
             if (!UpdateHover(ray)) return false;
 
             // 前のストロークの仕上げ中なら、そこで確定する
@@ -893,6 +914,7 @@ namespace GP02.EditorTools
             _strokeMode = Mode;
             _moved = false;
             _dragOnLine = false;
+            _dragAlongView = false;
             _startScreenX = screenX;
             _lastScreenX = screenX;
             _effectivePixels = 0f;
@@ -952,6 +974,10 @@ namespace GP02.EditorTools
                 case MoveDirection.AxisY:
                 case MoveDirection.AxisZ:
                     _dragOnLine = ClothEditSymmetry.TryGetAxisDirection(_settings.MoveDirection, _settings.DirectionSpace, _avatarRoot, out _dragLineDirection);
+                    break;
+                case MoveDirection.View:
+                    // 視線の向きは、レイと直線の交わりでは決まらないので、視点の平面の上の上下の動きを奥行きに読み替える（TryGetDragPoint）
+                    _dragAlongView = _dragCameraForward.sqrMagnitude > 0.5f;
                     break;
             }
         }
@@ -1033,6 +1059,7 @@ namespace GP02.EditorTools
             if (_dragPlane.Raycast(ray, out float distance))
             {
                 point = ray.GetPoint(distance);
+                if (_dragAlongView) point = ViewDepthPoint(_dragStartPoint, point, _dragCameraForward, _dragCameraUp);
                 return true;
             }
             point = Vector3.zero;
@@ -1188,7 +1215,7 @@ namespace GP02.EditorTools
         {
             if (!HasHover) return;
             MirrorPlane? mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null;
-            _session.RelaxAt(HoverPoint, _hoverTriangle, _brushRadius, _settings.RelaxStrength, _settings.GetFalloffCurve(), _settings.DistanceMode, mirror);
+            _session.RelaxAt(HoverPoint, _hoverTriangle, _brushRadius, _settings.RelaxStrength, _settings.GetFalloffCurve(), _settings.DistanceMode, mirror, _settings.ConnectDistance);
         }
 
         // ---- 選んで動かす（点の選択と、選んだ点の変形） ----
@@ -1594,6 +1621,7 @@ namespace GP02.EditorTools
                 if (_xformActive) return _xformPivot;
                 if (_session == null || _selectionCount == 0) return Vector3.zero;
                 if (_settings.PivotMode == PivotKind.LastClicked && HasLastClickPoint) return LastClickPoint;
+                if (_settings.PivotMode == PivotKind.Cursor && HasCursor) return CursorPosition;
                 if (_pivotVersion != _selectionVersion || _pivotShape != _session.ShapeVersion)
                 {
                     NVector3 sum = NVector3.Zero;
@@ -1623,6 +1651,8 @@ namespace GP02.EditorTools
                 {
                     case HandleOrientation.Avatar:
                         return _avatarRoot != null ? _avatarRoot.rotation : Quaternion.identity;
+                    case HandleOrientation.View:
+                        return ViewRotation;
                     case HandleOrientation.Normal:
                         if (_session == null || _selectionCount == 0) return Quaternion.identity;
                         if (_frameVersion != _selectionVersion || _frameShape != _session.ShapeVersion || _frameSpace != HandleOrientation.Normal)
@@ -1661,6 +1691,8 @@ namespace GP02.EditorTools
                 Falloff = _settings.GetSelectionFalloffCurve(),
                 DistanceMode = _settings.DistanceMode,
                 Mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null,
+                MirrorTolerance = _settings.MirrorTolerance,
+                ConnectDistance = _settings.ConnectDistance,
             };
         }
 
@@ -1866,7 +1898,8 @@ namespace GP02.EditorTools
             // 直線距離で測るときは、形が変わると範囲も変わる。つまんでいる間は毎コマ計算しない
             int shape = options.DistanceMode == BrushDistanceMode.Linear && !IsBusy ? _session.ShapeVersion : 0;
             if (_weightShown && _weightVersion == _selectionVersion && _weightRadius == options.Radius && ReferenceEquals(_weightCurve, options.Falloff)
-                && _weightMode == options.DistanceMode && _weightHasMirror == hasMirror && (!hasMirror || SamePlane(_weightPlane, plane)) && _weightShape == shape)
+                && _weightMode == options.DistanceMode && _weightConnect == options.ConnectDistance && _weightTolerance == options.MirrorTolerance
+                && _weightHasMirror == hasMirror && (!hasMirror || SamePlane(_weightPlane, plane)) && _weightShape == shape)
             {
                 return;
             }
@@ -1875,6 +1908,8 @@ namespace GP02.EditorTools
             _weightRadius = options.Radius;
             _weightCurve = options.Falloff;
             _weightMode = options.DistanceMode;
+            _weightConnect = options.ConnectDistance;
+            _weightTolerance = options.MirrorTolerance;
             _weightHasMirror = hasMirror;
             _weightPlane = plane;
             _weightShape = shape;

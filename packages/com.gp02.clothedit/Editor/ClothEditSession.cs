@@ -23,7 +23,7 @@ namespace GP02.EditorTools
     /// シーンに見えている形のまま触れるようにするため。
     /// シェイプキーとして保存するときは、頂点ごとの変換行列（メッシュ座標 → ワールド座標）の逆で、メッシュ座標の差分に直す。
     /// </summary>
-    public sealed class ClothEditSession : IDisposable
+    public sealed partial class ClothEditSession : IDisposable
     {
         const string ShapeNamePrefix = "GP02_";
         const string MeshSuffix = "_GP02";
@@ -77,6 +77,7 @@ namespace GP02.EditorTools
         readonly List<int> _pinWork = new List<int>();   // 矩形で選んだ粒子（使い回す）
         int[] _mirrorMap;                                // BuildMirrorMap の結果（面ごとに1つだけ持つ）
         MirrorPlane _mirrorMapPlane;
+        float _mirrorMapTolerance;
         bool[] _growWork;                                // GrowSelection / ShrinkSelection の作業用
 
         /// <summary>対象のレンダラー（複数のときは最初のもの）。</summary>
@@ -1243,9 +1244,11 @@ namespace GP02.EditorTools
         // 面ごとに1つだけ覚えておく（元の形は変わらないので、面が同じなら使い回せる）
         int[] GetMirrorMap(MirrorPlane plane)
         {
-            if (_mirrorMap != null && _mirrorMapPlane.Point == plane.Point && _mirrorMapPlane.Normal == plane.Normal) return _mirrorMap;
-            _mirrorMap = BuildMirrorMap(plane);
+            float tolerance = MirrorTolerance;
+            if (_mirrorMap != null && _mirrorMapPlane.Point == plane.Point && _mirrorMapPlane.Normal == plane.Normal && _mirrorMapTolerance == tolerance) return _mirrorMap;
+            _mirrorMap = BuildMirrorMap(plane, tolerance);
             _mirrorMapPlane = plane;
+            _mirrorMapTolerance = tolerance;
             return _mirrorMap;
         }
 
@@ -1383,12 +1386,11 @@ namespace GP02.EditorTools
         // 粒子ごとの、元の形で鏡に映した位置に一番近い粒子（許容距離内、無ければ -1）。粒子数に比例する時間で済むよう、格子で探す。
         // 同じ島の粒子を優先する（重ね着で、近くの別の層に移らないため）。同じ島に無ければ、別の島の粒子のうち、
         // 面の向きが分かる粒子どうしは向きがそろうもの（左右の袖のように、別の島に分かれた部品のため）
-        int[] BuildMirrorMap(MirrorPlane plane)
+        int[] BuildMirrorMap(MirrorPlane plane, float tolerance)
         {
             NVector3[] rest = _cloth.Model.RestPositions;
             NVector3[] restNormals = _cloth.Model.RestNormals;
             int[] particleIsland = _cloth.ParticleIsland;
-            float tolerance = BrushOptions.DefaultMirrorTolerance;
             var grid = new PointGrid(tolerance);
             for (int i = 0; i < rest.Length; i++) grid.Add(i, rest[i]);
 
@@ -1507,13 +1509,22 @@ namespace GP02.EditorTools
         /// <param name="hitTriangle">Raycast が返した三角形の番号（重ね着で、当たった布だけを対象にする）</param>
         public int RelaxAt(Vector3 worldPoint, int hitTriangle, float radius, float strength, FalloffCurve curve, BrushDistanceMode mode, MirrorPlane? mirror)
         {
+            return RelaxAt(worldPoint, hitTriangle, radius, strength, curve, mode, mirror, 0f);
+        }
+
+        /// <summary>
+        /// <see cref="RelaxAt(Vector3, int, float, float, FalloffCurve, BrushDistanceMode, MirrorPlane?)"/> の、
+        /// つながりの許容距離 ε（<see cref="BrushOptions.ConnectDistance"/>）を指定する版。鏡像は <see cref="MirrorTolerance"/> で探す。
+        /// </summary>
+        public int RelaxAt(Vector3 worldPoint, int hitTriangle, float radius, float strength, FalloffCurve curve, BrushDistanceMode mode, MirrorPlane? mirror, float connectDistance)
+        {
             int seed = FindParticle(worldPoint, hitTriangle);
             if (seed < 0) return 0;
-            int changed = _solver.RelaxTowardRest(seed, radius, strength, curve, mode);
+            int changed = _solver.RelaxTowardRest(seed, radius, strength, curve, mode, connectDistance);
             if (mirror.HasValue)
             {
-                int other = _solver.FindMirrorParticle(seed, mirror.Value, BrushOptions.DefaultMirrorTolerance);
-                if (other >= 0 && other != seed) changed += _solver.RelaxTowardRest(other, radius, strength, curve, mode);
+                int other = _solver.FindMirrorParticle(seed, mirror.Value, MirrorTolerance);
+                if (other >= 0 && other != seed) changed += _solver.RelaxTowardRest(other, radius, strength, curve, mode, connectDistance);
             }
             if (changed > 0) UpdateCurrentShape();
             return changed;
@@ -1540,9 +1551,9 @@ namespace GP02.EditorTools
                 if (mirror >= 0 && NVector3.Distance(_solver.Positions[seed], _solver.Positions[mirror]) <= 2f * options.Radius) mirror = -1;
             }
 
-            int first = _solver.CollectBrushRange(seed, options.Radius, curve, options.DistanceMode, indices, weights, mirror >= 0 ? maxCount / 2 : maxCount);
+            int first = _solver.CollectBrushRange(seed, options.Radius, curve, options.DistanceMode, indices, weights, mirror >= 0 ? maxCount / 2 : maxCount, 0, options.ConnectDistance);
             if (mirror < 0 || mirror == seed) return first;
-            return first + _solver.CollectBrushRange(mirror, options.Radius, curve, options.DistanceMode, indices, weights, maxCount - first, first);
+            return first + _solver.CollectBrushRange(mirror, options.Radius, curve, options.DistanceMode, indices, weights, maxCount - first, first, options.ConnectDistance);
         }
 
         /// <summary>
@@ -2018,6 +2029,7 @@ namespace GP02.EditorTools
                     Graphics.DrawMesh(part.PreviewMesh, Matrix4x4.identity, material, layer, camera, sub);
                 }
             }
+            if (ShowGhost) DrawGhost(camera);
         }
 
         public void Dispose()
@@ -2029,6 +2041,7 @@ namespace GP02.EditorTools
                 if (part.Renderer != null) part.Renderer.forceRenderingOff = false;
                 if (part.PreviewMesh != null) Object.DestroyImmediate(part.PreviewMesh);
             }
+            DisposeGhost();
         }
     }
 }

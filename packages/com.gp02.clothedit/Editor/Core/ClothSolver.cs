@@ -77,6 +77,7 @@ namespace GP02.Core
         float _brushRadius;
         FalloffCurve _brushCurve = FalloffCurve.Constant;
         BrushDistanceMode _brushMode;
+        float _brushConnect;              // 範囲を選んだときのつながりの許容距離 ε
         bool _hasMirror;
         MirrorPlane _mirrorPlane;
         float _mirrorTolerance;
@@ -108,6 +109,10 @@ namespace GP02.Core
         float _mirrorGridCell;
         List<int> _queryWork;
         float[] _workDistance;            // RelaxTowardRest 用
+        MeshGraph _rangeGraph;            // 範囲を決めるときの、ε 以内の別の島もつないだグラフ（RangeGraph）
+        readonly int[] _nearIndex = new int[4];   // ReflectedDisplacement の作業用
+        readonly float[] _nearSq = new float[4];
+        float _rangeGraphConnect = -1f;
 
         // 計算する範囲。固定の粒子（ピン、つまんだ範囲、計算範囲の外）は逆質量 0
         readonly float[] _inverseMass;
@@ -372,9 +377,9 @@ namespace GP02.Core
         {
             if ((uint)particle >= (uint)_positions.Length) throw new ArgumentOutOfRangeException(nameof(particle));
             if (!(brushRadius >= 0f)) throw new ArgumentOutOfRangeException(nameof(brushRadius));
-            if (NeedsSelection(particle, brushRadius, FalloffCurve.Constant, BrushDistanceMode.Surface, false, default, 0f))
+            if (NeedsSelection(particle, brushRadius, FalloffCurve.Constant, BrushDistanceMode.Surface, 0f, false, default, 0f))
             {
-                SelectBrush(particle, brushRadius, FalloffCurve.Constant, BrushDistanceMode.Surface, false, default, 0f);
+                SelectBrush(particle, brushRadius, FalloffCurve.Constant, BrushDistanceMode.Surface, 0f, false, default, 0f);
             }
             SetMotion(AffineMotion.FromTranslation(target - _origin - _grabOrigin));
         }
@@ -407,10 +412,12 @@ namespace GP02.Core
             if (hasMirror && !plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(options));
             float tolerance = options != null ? options.MirrorTolerance : BrushOptions.DefaultMirrorTolerance;
             if (hasMirror && !(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(options), "鏡像を探す許容距離が不正です。");
+            float connect = options != null ? options.ConnectDistance : 0f;
+            if (!(connect >= 0f) || float.IsInfinity(connect)) throw new ArgumentOutOfRangeException(nameof(options), "つながりの許容距離が不正です。");
 
-            if (NeedsSelection(particle, radius, curve, mode, hasMirror, plane, tolerance))
+            if (NeedsSelection(particle, radius, curve, mode, connect, hasMirror, plane, tolerance))
             {
-                SelectBrush(particle, radius, curve, mode, hasMirror, plane, tolerance);
+                SelectBrush(particle, radius, curve, mode, connect, hasMirror, plane, tolerance);
             }
             if (_midline) motion = SymmetrizeMotion(motion, _mirrorPlane);
             SetMotion(AffineMotion.FromBrushMotion(motion, _origin));
@@ -446,19 +453,21 @@ namespace GP02.Core
             if (hasMirror && !plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(options));
             float tolerance = options != null ? options.MirrorTolerance : BrushOptions.DefaultMirrorTolerance;
             if (hasMirror && !(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(options), "鏡像を探す許容距離が不正です。");
+            float connect = options != null ? options.ConnectDistance : 0f;
+            if (!(connect >= 0f) || float.IsInfinity(connect)) throw new ArgumentOutOfRangeException(nameof(options), "つながりの許容距離が不正です。");
 
-            if (NeedsSetSelection(particles, radius, curve, mode, hasMirror, plane, tolerance))
+            if (NeedsSetSelection(particles, radius, curve, mode, connect, hasMirror, plane, tolerance))
             {
-                SelectSet(particles, radius, curve, mode, hasMirror, plane, tolerance);
+                SelectSet(particles, radius, curve, mode, connect, hasMirror, plane, tolerance);
             }
             if (_midline) motion = SymmetrizeMotion(motion, _mirrorPlane);
             SetMotion(AffineMotion.FromBrushMotion(motion, _origin));
         }
 
-        bool NeedsSetSelection(int[] particles, float radius, FalloffCurve curve, BrushDistanceMode mode, bool hasMirror, MirrorPlane plane, float tolerance)
+        bool NeedsSetSelection(int[] particles, float radius, FalloffCurve curve, BrushDistanceMode mode, float connect, bool hasMirror, MirrorPlane plane, float tolerance)
         {
             if (_grabbed < 0 || _selectionCount != particles.Length) return true;
-            if (radius != _brushRadius || mode != _brushMode || hasMirror != _hasMirror || !curve.SameAs(_brushCurve)) return true;
+            if (radius != _brushRadius || mode != _brushMode || connect != _brushConnect || hasMirror != _hasMirror || !curve.SameAs(_brushCurve)) return true;
             if (hasMirror && (plane.Point != _mirrorPlane.Point || plane.Normal != _mirrorPlane.Normal || tolerance != _mirrorTolerance)) return true;
             for (int k = 0; k < particles.Length; k++)
             {
@@ -468,7 +477,7 @@ namespace GP02.Core
         }
 
         // 集合でつまむ範囲を選ぶ。集合（と鏡像）を起点に距離を測り、範囲の粒子・重み・属する側を決める
-        void SelectSet(int[] particles, float radius, FalloffCurve curve, BrushDistanceMode mode, bool hasMirror, MirrorPlane plane, float tolerance)
+        void SelectSet(int[] particles, float radius, FalloffCurve curve, BrushDistanceMode mode, float connect, bool hasMirror, MirrorPlane plane, float tolerance)
         {
             for (int k = 0; k < _brushCount; k++)
             {
@@ -491,6 +500,7 @@ namespace GP02.Core
             _brushRadius = radius;
             _brushCurve = curve;
             _brushMode = mode;
+            _brushConnect = connect;
             _hasMirror = hasMirror;
             _mirrorPlane = plane;
             _mirrorTolerance = tolerance;
@@ -520,7 +530,7 @@ namespace GP02.Core
             float[] distance = _grabDistance;
             int[] nearest = _grabSource;
             Vector3[] p = _positions;
-            ComputeSetDistances(sources, sourceCount, radius, mode, distance, nearest);
+            ComputeSetDistances(sources, sourceCount, radius, mode, connect, distance, nearest);
 
             // 印を、集合から鏡像の起点に付け替える（範囲の粒子が、どちらの起点に属するかを見るため）
             for (int k = 0; k < setCount; k++) mark[sources[k]] = false;
@@ -583,13 +593,13 @@ namespace GP02.Core
 
         // 起点 sources からの距離と、一番近い起点を求める（範囲 radius の外は届かなくてよい）。radius が 0 なら起点だけが距離 0。
         // nearest は null でもよい
-        void ComputeSetDistances(int[] sources, int sourceCount, float radius, BrushDistanceMode mode, float[] distance, int[] nearest)
+        void ComputeSetDistances(int[] sources, int sourceCount, float radius, BrushDistanceMode mode, float connect, float[] distance, int[] nearest)
         {
             int n = _positions.Length;
             Vector3[] p = _positions;
             if (radius > 0f && mode == BrushDistanceMode.Surface)
             {
-                _graph.ShortestDistances(sources, sourceCount, distance, nearest, radius);
+                RangeGraph(connect).ShortestDistances(sources, sourceCount, distance, nearest, radius);
             }
             else if (radius > 0f)
             {
@@ -667,6 +677,8 @@ namespace GP02.Core
             if (hasMirror && !plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(options));
             float tolerance = options != null ? options.MirrorTolerance : BrushOptions.DefaultMirrorTolerance;
             if (hasMirror && !(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(options), "鏡像を探す許容距離が不正です。");
+            float connect = options != null ? options.ConnectDistance : 0f;
+            if (!(connect >= 0f) || float.IsInfinity(connect)) throw new ArgumentOutOfRangeException(nameof(options), "つながりの許容距離が不正です。");
             maxCount = Math.Min(maxCount, Math.Min(indices.Length, weights.Length));
             if (maxCount <= 0 || particles.Length == 0) return 0;
 
@@ -685,7 +697,7 @@ namespace GP02.Core
 
             if (_workDistance == null) _workDistance = new float[n];
             float[] distance = _workDistance;
-            ComputeSetDistances(sources, sourceCount, radius, mode, distance, null);
+            ComputeSetDistances(sources, sourceCount, radius, mode, connect, distance, null);
 
             int total = 0;
             for (int i = 0; i < n; i++)
@@ -710,19 +722,46 @@ namespace GP02.Core
             return written;
         }
 
+        // 範囲を決めるときに使うグラフ。connect（ε）が正なら、元の位置で ε 以内にある別の島の粒子どうしも、その距離の辺でつなぐ。
+        // 同じ島の中は、メッシュに沿った距離のまま（折り返したひだを近道しないため）。ε が変わったときだけ作り直す
+        MeshGraph RangeGraph(float connect)
+        {
+            if (!(connect > 0f)) return _graph;
+            if (_rangeGraph != null && _rangeGraphConnect == connect) return _rangeGraph;
+            EnsureComponents();
+            Vector3[] rest = _model.RestPositions;
+            int n = rest.Length;
+            var pairs = new List<int>(_model.StretchPairs);
+            var lengths = new List<float>(_model.StretchRestLengths);
+            var grid = new PointGrid(connect);
+            for (int i = 0; i < n; i++) grid.Add(i, rest[i]);
+            var near = new List<int>();
+            float limit = connect * connect;
+            for (int i = 0; i < n; i++)
+            {
+                grid.Query(rest[i], connect, near);
+                for (int c = 0; c < near.Count; c++)
+                {
+                    int j = near[c];
+                    if (j <= i || _components[j] == _components[i]) continue;
+                    float sq = DistanceSquared(rest[i].X, rest[i].Y, rest[i].Z, rest[j]);
+                    if (sq > limit) continue;
+                    pairs.Add(i);
+                    pairs.Add(j);
+                    lengths.Add(MathF.Sqrt(sq));
+                }
+            }
+            _rangeGraph = new MeshGraph(n, pairs.ToArray(), lengths.ToArray());
+            _rangeGraphConnect = connect;
+            return _rangeGraph;
+        }
+
         // FindMirrorParticle と同じ選び方を、元の位置の格子で近くの粒子だけ調べて行う（集合の粒子ごとに全粒子を調べると遅いため）
         int FindMirrorNear(int particle, MirrorPlane plane, float tolerance)
         {
             EnsureComponents();
             Vector3[] rest = _model.RestPositions;
-            float cell = MathF.Max(tolerance, 1e-4f);
-            if (_mirrorGrid == null || _mirrorGridCell != cell)
-            {
-                _mirrorGrid = new PointGrid(cell);
-                for (int i = 0; i < rest.Length; i++) _mirrorGrid.Add(i, rest[i]);
-                _mirrorGridCell = cell;
-            }
-            if (_queryWork == null) _queryWork = new List<int>();
+            EnsureMirrorGrid(tolerance);
 
             Vector3 target = plane.Reflect(rest[particle]);
             Vector3 normal = _restNormals != null ? plane.ReflectDirection(_restNormals[particle]) : Vector3.Zero;
@@ -754,15 +793,92 @@ namespace GP02.Core
             return bestSame >= 0 ? bestSame : bestOther;
         }
 
-        bool NeedsSelection(int particle, float radius, FalloffCurve curve, BrushDistanceMode mode, bool hasMirror, MirrorPlane plane, float tolerance)
+        // 元の位置の格子（鏡像を探す用）。セルの大きさが変わったときだけ作り直す
+        void EnsureMirrorGrid(float tolerance)
         {
-            if (_selectionCount >= 0 || particle != _grabbed || radius != _brushRadius || mode != _brushMode || hasMirror != _hasMirror) return true;
+            float cell = MathF.Max(tolerance, 1e-4f);
+            if (_mirrorGrid == null || _mirrorGridCell != cell)
+            {
+                Vector3[] rest = _model.RestPositions;
+                _mirrorGrid = new PointGrid(cell);
+                for (int i = 0; i < rest.Length; i++) _mirrorGrid.Add(i, rest[i]);
+                _mirrorGridCell = cell;
+            }
+            if (_queryWork == null) _queryWork = new List<int>();
+        }
+
+        // 鏡像の側の変形を、鏡に映した元の位置 q のまわりで補って求め、鏡に映して返す。
+        // 一番近い1個だけを写すと、粒子の並びが左右でそろっていないため、変形が急に変わる所（つまんだ範囲の縁）で数 mm〜数 cm の段差が出る。
+        // そこで、鏡像の粒子 m と同じ島の、q から tolerance 以内の近い粒子（最大 4 個）の変形を、距離の逆二乗の重みで平均する
+        Vector3 ReflectedDisplacement(int i, int m, MirrorPlane plane, float tolerance)
+        {
+            Vector3[] rest = _model.RestPositions;
+            Vector3 q = plane.Reflect(rest[i]);
+            int island = _components[m];
+            EnsureMirrorGrid(tolerance);
+            _mirrorGrid.Query(q, MathF.Max(tolerance, 1e-4f), _queryWork);
+            const int K = 4;
+            int count = 0;
+            for (int c = 0; c < _queryWork.Count; c++)
+            {
+                int j = _queryWork[c];
+                if (_components[j] != island) continue;
+                float sq = DistanceSquared(rest[j].X, rest[j].Y, rest[j].Z, q);
+                if (count < K)
+                {
+                    _nearIndex[count] = j;
+                    _nearSq[count] = sq;
+                    count++;
+                }
+                else
+                {
+                    int worst = 0;
+                    for (int k = 1; k < K; k++)
+                    {
+                        if (_nearSq[k] > _nearSq[worst]) worst = k;
+                    }
+                    if (sq >= _nearSq[worst]) continue;
+                    _nearIndex[worst] = j;
+                    _nearSq[worst] = sq;
+                }
+            }
+            float dx, dy, dz;
+            if (count == 0)
+            {
+                dx = _worldPositions[m].X - rest[m].X;
+                dy = _worldPositions[m].Y - rest[m].Y;
+                dz = _worldPositions[m].Z - rest[m].Z;
+            }
+            else
+            {
+                float wx = 0f, wy = 0f, wz = 0f, total = 0f;
+                for (int k = 0; k < count; k++)
+                {
+                    int j = _nearIndex[k];
+                    float w = 1f / (_nearSq[k] + 1e-10f);
+                    wx += w * (_worldPositions[j].X - rest[j].X);
+                    wy += w * (_worldPositions[j].Y - rest[j].Y);
+                    wz += w * (_worldPositions[j].Z - rest[j].Z);
+                    total += w;
+                }
+                dx = wx / total;
+                dy = wy / total;
+                dz = wz / total;
+            }
+            Vector3 n = plane.Normal;
+            float along = 2f * (dx * n.X + dy * n.Y + dz * n.Z);
+            return new Vector3(dx - along * n.X, dy - along * n.Y, dz - along * n.Z);
+        }
+
+        bool NeedsSelection(int particle, float radius, FalloffCurve curve, BrushDistanceMode mode, float connect, bool hasMirror, MirrorPlane plane, float tolerance)
+        {
+            if (_selectionCount >= 0 || particle != _grabbed || radius != _brushRadius || mode != _brushMode || connect != _brushConnect || hasMirror != _hasMirror) return true;
             if (!curve.SameAs(_brushCurve)) return true;
             return hasMirror && (plane.Point != _mirrorPlane.Point || plane.Normal != _mirrorPlane.Normal || tolerance != _mirrorTolerance);
         }
 
         // 範囲を選び直す。範囲の粒子・重み・属する中心を決め、範囲全体からのメッシュに沿った距離（テザーと計算範囲に使う）を求める
-        void SelectBrush(int seed, float radius, FalloffCurve curve, BrushDistanceMode mode, bool hasMirror, MirrorPlane plane, float tolerance)
+        void SelectBrush(int seed, float radius, FalloffCurve curve, BrushDistanceMode mode, float connect, bool hasMirror, MirrorPlane plane, float tolerance)
         {
             for (int k = 0; k < _brushCount; k++)
             {
@@ -778,6 +894,7 @@ namespace GP02.Core
             _brushRadius = radius;
             _brushCurve = curve;
             _brushMode = mode;
+            _brushConnect = connect;
             _hasMirror = hasMirror;
             _mirrorPlane = plane;
             _mirrorTolerance = tolerance;
@@ -793,12 +910,13 @@ namespace GP02.Core
             Vector3[] p = _positions;
             if (mode == BrushDistanceMode.Surface)
             {
-                // メッシュに沿った距離で選ぶので、近くにあってもつながっていない布（重ね着など）はつままない
+                // メッシュに沿った距離で選ぶので、近くにあってもつながっていない布（重ね着など）はつままない（ε 以内の別の島は除く）
+                MeshGraph graph = RangeGraph(connect);
                 _seedWork[0] = seed;
                 bool done = false;
                 if (mirror >= 0)
                 {
-                    _graph.ShortestDistances(_seedWork, 1, distance, null, 2f * radius);
+                    graph.ShortestDistances(_seedWork, 1, distance, null, 2f * radius);
                     if (distance[mirror] <= 2f * radius)
                     {
                         midline = true;
@@ -809,11 +927,11 @@ namespace GP02.Core
                 if (mirror >= 0)
                 {
                     _seedWork[1] = mirror;
-                    _graph.ShortestDistances(_seedWork, 2, distance, nearest, radius);
+                    graph.ShortestDistances(_seedWork, 2, distance, nearest, radius);
                 }
                 else if (!done)
                 {
-                    _graph.ShortestDistances(_seedWork, 1, distance, null, radius);
+                    graph.ShortestDistances(_seedWork, 1, distance, null, radius);
                 }
             }
             else
@@ -1061,6 +1179,120 @@ namespace GP02.Core
         }
 
         /// <summary>
+        /// すべての粒子の鏡像の粒子（<see cref="FindMirrorParticle"/> と同じ選び方）を result に入れる。見つからない粒子は -1。
+        /// 元の位置の格子で近くだけを調べるので、粒子数に比例する時間で済む。相手のいない点の表示・左右差・「左右対称にする」に使う。
+        /// </summary>
+        /// <param name="result">粒子数以上の長さの配列</param>
+        /// <returns>鏡像が見つからなかった粒子の数</returns>
+        public int FindMirrorParticles(MirrorPlane plane, float tolerance, int[] result)
+        {
+            if (!plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(plane));
+            if (!(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(tolerance));
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            int n = _positions.Length;
+            if (result.Length < n) throw new ArgumentException("配列が粒子数より短いです。", nameof(result));
+            int unmatched = 0;
+            for (int i = 0; i < n; i++)
+            {
+                result[i] = FindMirrorNear(i, plane, tolerance);
+                if (result[i] < 0) unmatched++;
+            }
+            return unmatched;
+        }
+
+        /// <summary>
+        /// 粒子ごとの左右差（メートル）を result に入れる。粒子 i の変形（元の位置からの移動）と、鏡像の側の変形を鏡に映したものとの差の大きさ。
+        /// 鏡像の側の変形は、i の元の位置を鏡に映した点のまわりの粒子（鏡像の粒子 m と同じ島、tolerance 以内の最大 4 個）から補う。
+        /// 左右対称に変形していれば 0。鏡像が無い粒子（mirrorMap が負）は -1。
+        /// </summary>
+        /// <param name="mirrorMap"><see cref="FindMirrorParticles"/> の結果</param>
+        public void MeasureMirrorDifference(int[] mirrorMap, MirrorPlane plane, float tolerance, float[] result)
+        {
+            if (mirrorMap == null) throw new ArgumentNullException(nameof(mirrorMap));
+            if (result == null) throw new ArgumentNullException(nameof(result));
+            if (!plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(plane));
+            if (!(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(tolerance));
+            int n = _positions.Length;
+            if (mirrorMap.Length < n || result.Length < n) throw new ArgumentException("配列が粒子数より短いです。");
+            EnsureComponents();
+            Vector3[] rest = _model.RestPositions;
+            for (int i = 0; i < n; i++)
+            {
+                int m = mirrorMap[i];
+                if ((uint)m >= (uint)n)
+                {
+                    result[i] = -1f;
+                    continue;
+                }
+                Vector3 reflected = ReflectedDisplacement(i, m, plane, tolerance);
+                float dx = _worldPositions[i].X - rest[i].X - reflected.X;
+                float dy = _worldPositions[i].Y - rest[i].Y - reflected.Y;
+                float dz = _worldPositions[i].Z - rest[i].Z - reflected.Z;
+                result[i] = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+            }
+        }
+
+        /// <summary>
+        /// 今の形を左右対称にする。基準の側（keepPositiveSide なら、元の位置が鏡の面の法線の向きにある側）の変形（元の位置からの移動）を、
+        /// 鏡に映して反対側へ写す（写す変形は <see cref="MeasureMirrorDifference"/> と同じく、鏡に映した位置のまわりの粒子から補う）。
+        /// 中央線の近く（元の位置が面から tolerance の半分以内）の粒子は、
+        /// 自分の変形と鏡像の変形を鏡に映したものの平均にする（中央で左右がつながるように）。
+        /// 鏡像が無い粒子とピン留めの粒子は動かさない。つまんでいる状態は解除する。布の計算はしないので、写したあとは仕上げ（Solve）で伸びを直す。
+        /// </summary>
+        /// <param name="mirrorMap"><see cref="FindMirrorParticles"/> の結果。null ならここで求める</param>
+        /// <returns>位置を変えた粒子の数</returns>
+        public int SymmetrizeShape(MirrorPlane plane, float tolerance, bool keepPositiveSide, int[] mirrorMap = null)
+        {
+            if (!plane.IsValid) throw new ArgumentException("鏡の面の法線が 0 ベクトルです。", nameof(plane));
+            if (!(tolerance >= 0f)) throw new ArgumentOutOfRangeException(nameof(tolerance));
+            int n = _positions.Length;
+            if (mirrorMap == null)
+            {
+                mirrorMap = new int[n];
+                FindMirrorParticles(plane, tolerance, mirrorMap);
+            }
+            else if (mirrorMap.Length < n)
+            {
+                throw new ArgumentException("配列が粒子数より短いです。", nameof(mirrorMap));
+            }
+
+            EnsureComponents();
+            Vector3[] rest = _model.RestPositions;
+            float sign = keepPositiveSide ? 1f : -1f;
+            float band = 0.5f * tolerance;
+            var result = (Vector3[])_worldPositions.Clone();
+            int changed = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int m = mirrorMap[i];
+                if ((uint)m >= (uint)n || _pinned[i]) continue;
+                float side = sign * plane.SignedDistance(rest[i]);
+                if (side > band) continue;
+                Vector3 reflected = ReflectedDisplacement(i, m, plane, tolerance);
+                Vector3 target;
+                if (MathF.Abs(side) <= band)
+                {
+                    target = rest[i] + 0.5f * (_worldPositions[i] - rest[i] + reflected);
+                }
+                else if (side < 0f && sign * plane.SignedDistance(rest[m]) >= -band)
+                {
+                    target = rest[i] + reflected;
+                }
+                else
+                {
+                    continue;
+                }
+                if (Vector3.DistanceSquared(target, _worldPositions[i]) <= 1e-14f) continue;
+                result[i] = target;
+                changed++;
+            }
+            SetInternalPositions(result);
+            _grabbed = -1;
+            _activeDirty = true;
+            return changed;
+        }
+
+        /// <summary>
         /// 範囲内の粒子を、元の位置へ strength × 重み だけ近づける（部分的なリセット）。ピン留めした粒子は動かさない。
         /// つまんでいる間に呼ぶと、つまんだ範囲の粒子は次の Solve で目標へ戻ろうとする。
         /// </summary>
@@ -1069,8 +1301,9 @@ namespace GP02.Core
         /// <param name="strength">近づける割合（0〜1。1 で、中心は元の位置に戻る）</param>
         /// <param name="curve">範囲の中の重み。null なら <see cref="FalloffCurve.Constant"/></param>
         /// <param name="mode">範囲を決める距離の測り方（Linear は今の位置での直線距離）</param>
+        /// <param name="connectDistance">つながりの許容距離 ε（<see cref="BrushOptions.ConnectDistance"/>）。Surface のときだけ使う</param>
         /// <returns>動かした粒子の数</returns>
-        public int RelaxTowardRest(int particle, float radius, float strength, FalloffCurve curve, BrushDistanceMode mode)
+        public int RelaxTowardRest(int particle, float radius, float strength, FalloffCurve curve, BrushDistanceMode mode, float connectDistance = 0f)
         {
             if ((uint)particle >= (uint)_positions.Length) throw new ArgumentOutOfRangeException(nameof(particle));
             if (!(radius >= 0f)) throw new ArgumentOutOfRangeException(nameof(radius));
@@ -1082,7 +1315,7 @@ namespace GP02.Core
             {
                 if (_workDistance == null) _workDistance = new float[n];
                 _seedWork[0] = particle;
-                _graph.ShortestDistances(_seedWork, 1, _workDistance, null, radius);
+                RangeGraph(connectDistance).ShortestDistances(_seedWork, 1, _workDistance, null, radius);
             }
 
             Vector3[] rest = _model.RestPositions;
@@ -1127,8 +1360,10 @@ namespace GP02.Core
         /// <param name="weights">範囲の中の重み（出力、indices と同じ順）</param>
         /// <param name="maxCount">書き込む数の上限</param>
         /// <param name="offset">配列のどこから書き込むか（鏡像側の範囲を続けて入れるため）</param>
+        /// <param name="connectDistance">つながりの許容距離 ε（<see cref="BrushOptions.ConnectDistance"/>）。Surface のときだけ使う</param>
         /// <returns>書き込んだ数</returns>
-        public int CollectBrushRange(int particle, float radius, FalloffCurve curve, BrushDistanceMode mode, int[] indices, float[] weights, int maxCount, int offset = 0)
+        public int CollectBrushRange(int particle, float radius, FalloffCurve curve, BrushDistanceMode mode, int[] indices, float[] weights, int maxCount, int offset = 0,
+            float connectDistance = 0f)
         {
             if ((uint)particle >= (uint)_positions.Length) throw new ArgumentOutOfRangeException(nameof(particle));
             if (!(radius >= 0f) || float.IsInfinity(radius)) throw new ArgumentOutOfRangeException(nameof(radius));
@@ -1145,7 +1380,7 @@ namespace GP02.Core
             if (mode == BrushDistanceMode.Surface)
             {
                 _seedWork[0] = particle;
-                _graph.ShortestDistances(_seedWork, 1, distance, null, radius);
+                RangeGraph(connectDistance).ShortestDistances(_seedWork, 1, distance, null, radius);
             }
             else
             {
