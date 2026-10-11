@@ -10,6 +10,8 @@
 #   環境変数が使えない場合は、UNITY_LICENSES_ZIP_B64 と同じ内容をファイル ~/.gp02/unity_licenses_zip.b64 に置いてもよい
 #   （クラウド環境のセットアップスクリプトで書き出す）
 #
+# 追加の引数: 環境変数 GP02_UNITY_ARGS に入れると Unity に渡す（例: GP02_UNITY_ARGS=-releaseCodeOptimization）
+#
 # 出力（Gitには含めない）:
 #   tools/unity/out/editmode.xml … テスト結果
 #   tools/unity/out/unity.log    … Unity のログ（コンパイルエラーはここに出る）
@@ -71,6 +73,7 @@ docker run --rm \
   "${DOCKER_ARGS[@]}" \
   -e GP02_LICENSE="$LICENSE" \
   -e GP02_USE_LOGIN="$USE_LOGIN" \
+  -e GP02_UNITY_ARGS="${GP02_UNITY_ARGS:-}" \
   -e UNITY_EMAIL -e UNITY_PASSWORD \
   -v "$REPO:/repo" \
   "$IMAGE" \
@@ -92,7 +95,7 @@ docker run --rm \
       -projectPath /repo/unity \
       -runTests -testPlatform EditMode \
       -testResults /repo/tools/unity/out/editmode.xml \
-      -logFile /repo/tools/unity/out/unity.log
+      -logFile /repo/tools/unity/out/unity.log $GP02_UNITY_ARGS
     code=$?
     # ライセンスまわりの調査用に、ライセンス管理のログも残す
     cp ~/.config/unity3d/Unity/Unity.Licensing.Client.log /repo/tools/unity/out/licensing-client.log 2>/dev/null
