@@ -794,12 +794,16 @@ namespace GP02.Core
 
     /// <summary>
     /// 動作チェックの全ポーズの集計。ポーズ（段階）ごとの結果を順に足すと、頂点ごとの最悪の深さと、それが起きた結果の番号を持つ。
+    /// 結果は「集計に入れない」こともできる（<see cref="Add(PosePenetration, bool)"/>・<see cref="Select"/>）。入れない結果も番号は持つので、
+    /// 範囲を絞った集計（よく使うポーズだけ、など）でも、結果の番号は元の集計・呼び出し側の一覧と同じになる。
+    /// 数・最悪の深さ・悪い順・外へ逃がす量・ウェイトを寄せる対象・前後の比べ方は、集計に入れた結果だけで決める。
     /// </summary>
     public sealed class PoseCheckSummary
     {
         readonly float[] _worstDepth;
         readonly int[] _worstEntry;
         readonly List<PosePenetration> _entries = new List<PosePenetration>();
+        readonly List<bool> _included = new List<bool>();
 
         public PoseCheckSummary(int vertexCount)
         {
@@ -812,21 +816,29 @@ namespace GP02.Core
         /// <summary>布の頂点（まとめた後）の数。</summary>
         public int VertexCount => _worstDepth.Length;
 
-        /// <summary>足した結果（足した順）。</summary>
+        /// <summary>足した結果（足した順。集計に入れない結果も含む）。</summary>
         public IReadOnlyList<PosePenetration> Entries => _entries;
 
-        /// <summary>頂点ごとの、全ポーズでの最悪の深さ（メートル。数えられなかった頂点は 0）。書き換えないこと。</summary>
+        /// <summary>頂点ごとの、集計に入れた全ポーズでの最悪の深さ（メートル。数えられなかった頂点は 0）。書き換えないこと。</summary>
         public float[] WorstDepth => _worstDepth;
 
         /// <summary>頂点ごとの、最悪の深さが起きた結果の番号（<see cref="Entries"/> の番号。無ければ -1）。書き換えないこと。</summary>
         public int[] WorstEntry => _worstEntry;
 
         /// <summary>結果を足す。頂点ごとの最悪の深さを更新し、結果の番号を返す。</summary>
-        public int Add(PosePenetration entry)
+        public int Add(PosePenetration entry) => Add(entry, true);
+
+        /// <summary>
+        /// 結果を足し、結果の番号を返す。included が false なら、番号はとるが集計には入れない
+        /// （最悪の深さ・数・悪い順・外へ逃がす量・ウェイトを寄せる対象のどれにも入らない）。
+        /// </summary>
+        public int Add(PosePenetration entry, bool included)
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
             int index = _entries.Count;
             _entries.Add(entry);
+            _included.Add(included);
+            if (!included) return index;
             for (int k = 0; k < entry.Vertices.Count; k++)
             {
                 int v = entry.Vertices[k];
@@ -841,15 +853,62 @@ namespace GP02.Core
             return index;
         }
 
+        /// <summary>
+        /// 同じ結果を同じ順に持ち、include で true の結果だけを集計に入れた、新しい集計を作る（結果の番号は、この集計と同じ）。
+        /// include が null なら、この集計で集計に入れている結果をそのまま入れる。include より後ろの結果は入れない。
+        /// よく使うポーズだけで直す範囲を決める、などに使う。結果そのもの（<see cref="PosePenetration"/>）は写さず、同じものを共有する。
+        /// </summary>
+        public PoseCheckSummary Select(IReadOnlyList<bool> include)
+        {
+            var selected = new PoseCheckSummary(_worstDepth.Length);
+            for (int e = 0; e < _entries.Count; e++)
+            {
+                bool on = include == null ? _included[e] : e < include.Count && include[e];
+                selected.Add(_entries[e], on);
+            }
+            return selected;
+        }
+
+        /// <summary>e 番目の結果を、集計に入れているか。</summary>
+        public bool IsIncluded(int e) => (uint)e < (uint)_included.Count && _included[e];
+
+        /// <summary>集計に入れている結果の数。</summary>
+        public int IncludedEntryCount
+        {
+            get
+            {
+                int count = 0;
+                for (int e = 0; e < _included.Count; e++)
+                {
+                    if (_included[e]) count++;
+                }
+                return count;
+            }
+        }
+
+        /// <summary>集計に入れている結果の、ポーズの数（<see cref="PosePenetration.Group"/> が同じ結果は1つと数える）。</summary>
+        public int IncludedGroupCount
+        {
+            get
+            {
+                var groups = new HashSet<int>();
+                for (int e = 0; e < _entries.Count; e++)
+                {
+                    if (_included[e]) groups.Add(_entries[e].Group);
+                }
+                return groups.Count;
+            }
+        }
+
         /// <summary>貫通が見つかった結果の数。</summary>
         public int PenetratingEntryCount
         {
             get
             {
                 int count = 0;
-                foreach (PosePenetration entry in _entries)
+                for (int e = 0; e < _entries.Count; e++)
                 {
-                    if (entry.IsPenetrating) count++;
+                    if (_included[e] && _entries[e].IsPenetrating) count++;
                 }
                 return count;
             }
@@ -861,43 +920,52 @@ namespace GP02.Core
             get
             {
                 var groups = new HashSet<int>();
-                foreach (PosePenetration entry in _entries)
+                for (int e = 0; e < _entries.Count; e++)
                 {
-                    if (entry.IsPenetrating) groups.Add(entry.Group);
+                    if (_included[e] && _entries[e].IsPenetrating) groups.Add(_entries[e].Group);
                 }
                 return groups.Count;
             }
         }
 
-        /// <summary>全結果の、貫通している所の数の合計。</summary>
+        /// <summary>集計に入れた結果の、貫通している所の数の合計（同じ所でも、ポーズ・段階ごとに1か所と数える）。</summary>
         public int TotalRegionCount
         {
             get
             {
                 int count = 0;
-                foreach (PosePenetration entry in _entries) count += entry.RegionCount;
+                for (int e = 0; e < _entries.Count; e++)
+                {
+                    if (_included[e]) count += _entries[e].RegionCount;
+                }
                 return count;
             }
         }
 
-        /// <summary>全結果で一番深い貫通の深さ（メートル）。</summary>
+        /// <summary>集計に入れた結果で一番深い貫通の深さ（メートル）。</summary>
         public float MaxDepth
         {
             get
             {
                 float max = 0f;
-                foreach (PosePenetration entry in _entries) max = Math.Max(max, entry.MaxDepth);
+                for (int e = 0; e < _entries.Count; e++)
+                {
+                    if (_included[e]) max = Math.Max(max, _entries[e].MaxDepth);
+                }
                 return max;
             }
         }
 
-        /// <summary>全結果の、体どうしの重なりの所の数の合計（貫通の数には入れていない）。</summary>
+        /// <summary>集計に入れた結果の、体どうしの重なりの所の数の合計（貫通の数には入れていない）。</summary>
         public int TotalOverlapRegionCount
         {
             get
             {
                 int count = 0;
-                foreach (PosePenetration entry in _entries) count += entry.OverlapRegionCount;
+                for (int e = 0; e < _entries.Count; e++)
+                {
+                    if (_included[e]) count += _entries[e].OverlapRegionCount;
+                }
                 return count;
             }
         }
@@ -908,21 +976,24 @@ namespace GP02.Core
             get
             {
                 var groups = new HashSet<int>();
-                foreach (PosePenetration entry in _entries)
+                for (int e = 0; e < _entries.Count; e++)
                 {
-                    if (entry.HasOverlap) groups.Add(entry.Group);
+                    if (_included[e] && _entries[e].HasOverlap) groups.Add(_entries[e].Group);
                 }
                 return groups.Count;
             }
         }
 
-        /// <summary>全結果の布の伸びの、一番大きいものと、大きいほうから 1% の所の一番大きいもの（<see cref="PosePenetration.MaxStretch"/>）。</summary>
+        /// <summary>集計に入れた結果の布の伸びの、一番大きいものと、大きいほうから 1% の所の一番大きいもの（<see cref="PosePenetration.MaxStretch"/>）。</summary>
         public float MaxStretch
         {
             get
             {
                 float max = 0f;
-                foreach (PosePenetration entry in _entries) max = Math.Max(max, entry.MaxStretch);
+                for (int e = 0; e < _entries.Count; e++)
+                {
+                    if (_included[e]) max = Math.Max(max, _entries[e].MaxStretch);
+                }
                 return max;
             }
         }
@@ -932,7 +1003,10 @@ namespace GP02.Core
             get
             {
                 float max = 0f;
-                foreach (PosePenetration entry in _entries) max = Math.Max(max, entry.HighStretch);
+                for (int e = 0; e < _entries.Count; e++)
+                {
+                    if (_included[e]) max = Math.Max(max, _entries[e].HighStretch);
+                }
                 return max;
             }
         }
@@ -952,14 +1026,14 @@ namespace GP02.Core
         }
 
         /// <summary>
-        /// 貫通が見つかった結果の番号を、悪い順（一番深い所の深さ、同じなら所の数、同じなら足した順）に並べて返す。
+        /// 集計に入れた結果のうち、貫通が見つかったものの番号を、悪い順（一番深い所の深さ、同じなら所の数、同じなら足した順）に並べて返す。
         /// </summary>
         public int[] RankEntries()
         {
             var ranked = new List<int>();
             for (int k = 0; k < _entries.Count; k++)
             {
-                if (_entries[k].IsPenetrating) ranked.Add(k);
+                if (_included[k] && _entries[k].IsPenetrating) ranked.Add(k);
             }
             ranked.Sort((a, b) =>
             {
@@ -1024,6 +1098,8 @@ namespace GP02.Core
             extra = Math.Max(0f, extra);
             for (int e = 0; e < _entries.Count; e++)
             {
+                // 集計に入れていない結果（直す範囲の外のポーズ）は逃がさない
+                if (!_included[e]) continue;
                 PosePenetration entry = _entries[e];
                 int regions = entry.RegionDepths.Count;
                 if (regions == 0) continue;
@@ -1116,6 +1192,8 @@ namespace GP02.Core
             extra = Math.Max(0f, extra);
             for (int e = 0; e < _entries.Count; e++)
             {
+                // 集計に入れていない結果（直す範囲の外のポーズ）は対象にしない
+                if (!_included[e]) continue;
                 PosePenetration entry = _entries[e];
                 plan.OverlapRegions += entry.OverlapRegionCount;
                 int regions = entry.RegionDepths.Count;
@@ -1151,22 +1229,34 @@ namespace GP02.Core
         }
 
         /// <summary>
+        /// 集計に入れた結果の、数えた頂点の深さ（1つの深さは depthCap で頭打ち）の合計（メートル）。直す前後の比べ方（<see cref="MeasureFixEffect"/>）に使う。
+        /// </summary>
+        public double TotalDepth(float depthCap)
+        {
+            double total = 0.0;
+            for (int e = 0; e < _entries.Count; e++)
+            {
+                if (!_included[e]) continue;
+                List<float> depths = _entries[e].Depths;
+                for (int k = 0; k < depths.Count; k++) total += Math.Min(depths[k], depthCap);
+            }
+            return total;
+        }
+
+        /// <summary>
         /// 直した所（regions: 結果の番号ごと・か所の番号ごとの印）が、直したあとに同じポーズ・段階を同じ順に調べ直した集計 after で、
-        /// どれだけ浅くなったかと、全ポーズの深さの合計（1つの深さは depthCap で頭打ち）の前後を測る。before は regions を作った集計。
+        /// どれだけ浅くなったかと、集計に入れた全ポーズの深さの合計（1つの深さは depthCap で頭打ち）の前後を測る。before は regions を作った集計。
+        /// 範囲を絞った集計（<see cref="Select"/>）で比べるときは、before と after を同じ範囲で絞ること。
         /// </summary>
         public static PoseFixEffect MeasureFixEffect(PoseCheckSummary before, PoseCheckSummary after, bool[][] regions, float depthCap)
         {
             if (before == null) throw new ArgumentNullException(nameof(before));
             if (after == null) throw new ArgumentNullException(nameof(after));
-            var effect = new PoseFixEffect();
-            foreach (PosePenetration entry in before.Entries)
+            var effect = new PoseFixEffect
             {
-                for (int k = 0; k < entry.Depths.Count; k++) effect.TotalDepthBefore += Math.Min(entry.Depths[k], depthCap);
-            }
-            foreach (PosePenetration entry in after.Entries)
-            {
-                for (int k = 0; k < entry.Depths.Count; k++) effect.TotalDepthAfter += Math.Min(entry.Depths[k], depthCap);
-            }
+                TotalDepthBefore = before.TotalDepth(depthCap),
+                TotalDepthAfter = after.TotalDepth(depthCap),
+            };
             var depthAfter = new float[Math.Max(before.VertexCount, after.VertexCount)];
             double sumBefore = 0.0, sumAfter = 0.0;
             int count = Math.Min(before.Entries.Count, after.Entries.Count);
@@ -1272,22 +1362,19 @@ namespace GP02.Core
 
         /// <summary>
         /// 逃がしたあとに同じポーズ・段階を同じ順に調べ直した集計 after で、逃がしたか所（ポーズごとの頂点）がどれだけ浅くなったかと、
-        /// 全ポーズの深さの合計（1つの深さは depthCap で頭打ち）の前後を測る。before はこの計画を作った集計。
+        /// 集計に入れた全ポーズの深さの合計（1つの深さは depthCap で頭打ち）の前後を測る。before はこの計画を作った集計。
         /// 頭打ちにするのは、逃がさない深い所（ウェイトが原因）が、周りの布がわずかに動いただけで合計を大きく動かさないようにするため。
+        /// 範囲を絞った集計（<see cref="PoseCheckSummary.Select"/>）で計画を作ったときは、after も同じ範囲で絞ること（範囲の外のポーズは比べない）。
         /// </summary>
         public PoseEscapeEffect MeasureEffect(PoseCheckSummary before, PoseCheckSummary after, float depthCap)
         {
             if (before == null) throw new ArgumentNullException(nameof(before));
             if (after == null) throw new ArgumentNullException(nameof(after));
-            var effect = new PoseEscapeEffect();
-            foreach (PosePenetration entry in before.Entries)
+            var effect = new PoseEscapeEffect
             {
-                for (int k = 0; k < entry.Depths.Count; k++) effect.TotalDepthBefore += Math.Min(entry.Depths[k], depthCap);
-            }
-            foreach (PosePenetration entry in after.Entries)
-            {
-                for (int k = 0; k < entry.Depths.Count; k++) effect.TotalDepthAfter += Math.Min(entry.Depths[k], depthCap);
-            }
+                TotalDepthBefore = before.TotalDepth(depthCap),
+                TotalDepthAfter = after.TotalDepth(depthCap),
+            };
             var depthAfter = new float[Math.Max(before.VertexCount, after.VertexCount)];
             double sumBefore = 0.0, sumAfter = 0.0;
             int count = Math.Min(before.Entries.Count, after.Entries.Count);
