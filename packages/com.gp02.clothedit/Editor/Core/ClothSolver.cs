@@ -20,8 +20,12 @@ namespace GP02.Core
     /// <see cref="ActiveMargin"/> を有限にすると、さらに周りだけに絞れるが、
     /// 外側を固定するため、大きく引っ張ると境目が伸びる（布を周りから引き寄せられないため）。
     /// </summary>
-    public sealed class ClothSolver
+    public sealed class ClothSolver : PhaseRunner.IWork
     {
+        // 1つの小片で解く、区画をまたぐ制約・テザーの数の目安。小さすぎると数え上げの手間の方が大きくなる
+        const int ConstraintChunk = 256;
+        const int ParticleChunk = 512;
+
         readonly ClothModel _model;
         readonly ClothHierarchy _hierarchy;
         readonly Vector3[] _levelStart;   // 粗い段を解き始めたときの位置（その段の粒子だけ使う）
@@ -33,8 +37,13 @@ namespace GP02.Core
         readonly Vector3[] _positions;        // 内部の座標（ワールド座標 - _origin）
         readonly Vector3[] _worldPositions;   // 外に見せるワールド座標
         readonly bool[] _pinned;
-        readonly float[] _stretchLambda;
-        readonly float[] _bendLambda;
+        // 制約の組。1スレッドのときは番号順（区画1つ）、複数スレッドのときは区画に分けた組を使う
+        readonly ConstraintGroups _stretchSerial;
+        readonly ConstraintGroups _bendSerial;
+        readonly ConstraintGroups _stretchParallel;
+        readonly ConstraintGroups _bendParallel;
+        ConstraintGroups _stretch;
+        ConstraintGroups _bend;
 
         // テザー：つまんだ点・ピンから、メッシュに沿った距離より遠くへは離れない。
         // 少ない反復回数でも布が伸びないようにするための制約（Long Range Attachments）。
@@ -54,11 +63,11 @@ namespace GP02.Core
         // 計算する範囲。固定の粒子（ピン、つまんだ範囲、計算範囲の外）は逆質量 0
         readonly float[] _inverseMass;
         readonly int[] _activeParticles;   // 計算範囲にある、ピン留めでない粒子
-        readonly int[] _activeStretch;
-        readonly int[] _activeBend;
+        PhaseRunner _runner;
+        readonly PhaseRunner _serialRunner;
+        PhaseRunner _parallelRunner;
+        Vector3 _grabbedSnapshot;   // テザーを解く間の、つまんだ点の位置
         int _activeParticleCount;
-        int _activeStretchCount;
-        int _activeBendCount;
         bool _activeDirty = true;
         float _activePull;   // 計算範囲を決めたときの、つまみ始めからの移動距離
         float _influenceRadius = 0.3f;
@@ -123,16 +132,58 @@ namespace GP02.Core
             for (int i = 0; i < n; i++) _positions[i] = rest[i] - _origin;
             _worldPositions = (Vector3[])rest.Clone();
             _pinned = new bool[n];
-            _stretchLambda = new float[model.StretchRestLengths.Length];
-            _bendLambda = new float[model.BendRestLengths.Length];
+            _stretchSerial = new ConstraintGroups(n, model.StretchPairs, model.StretchRestLengths, 1);
+            _bendSerial = new ConstraintGroups(n, model.BendPairs, model.BendRestLengths, 1);
+            _stretchParallel = new ConstraintGroups(n, model.StretchPairs, model.StretchRestLengths, ConstraintGroups.ParallelRegionCount);
+            _bendParallel = new ConstraintGroups(n, model.BendPairs, model.BendRestLengths, ConstraintGroups.ParallelRegionCount);
             _grabDistance = new float[n];
             _pinDistance = new float[n];
             _nearestPin = new int[n];
             _inBrush = new bool[n];
             _inverseMass = new float[n];
             _activeParticles = new int[n];
-            _activeStretch = new int[model.StretchRestLengths.Length];
-            _activeBend = new int[model.BendRestLengths.Length];
+            _serialRunner = new PhaseRunner(1);
+            ThreadCount = 1;
+        }
+
+        /// <summary>
+        /// 計算に使うスレッド数の既定値（論理コア数の半分。ただし8まで）。
+        /// 段階の切り替えでは全スレッドがそろうのを待つので、1つでも他の処理に割り込まれると全員が待たされる。
+        /// Unity 自身も描画などでスレッドを使うので、すべてのコアは使わない。
+        /// </summary>
+        public static int DefaultThreadCount => Math.Max(1, Math.Min(8, Environment.ProcessorCount / 2));
+
+        /// <summary>
+        /// 計算に使うスレッド数（呼び出したスレッドを含む）。既定は 1。
+        /// 1 なら、すべての制約を番号順に解く。2 以上なら、布を区画に分けて並列に解く。1回の反復は速いが、
+        /// 仕上げには反復が多く要る（詳しくは ConstraintGroups）。そのため、ドラッグ中は複数スレッド、手を止めた後の仕上げは 1 が向いている。
+        /// 2 以上なら、スレッド数によらず結果はまったく同じになる。
+        /// </summary>
+        public int ThreadCount
+        {
+            get => _runner.ThreadCount;
+            set
+            {
+                if (value < 1) throw new ArgumentOutOfRangeException(nameof(value));
+                if (_runner != null && value == _runner.ThreadCount) return;
+                if (value == 1)
+                {
+                    _runner = _serialRunner;
+                }
+                else
+                {
+                    // ドラッグのたびに切り替えるので、複数スレッド用は使い回す
+                    if (_parallelRunner == null || _parallelRunner.ThreadCount != value) _parallelRunner = new PhaseRunner(value);
+                    _runner = _parallelRunner;
+                }
+                ConstraintGroups stretch = value == 1 ? _stretchSerial : _stretchParallel;
+                if (stretch != _stretch)
+                {
+                    _stretch = stretch;
+                    _bend = value == 1 ? _bendSerial : _bendParallel;
+                    _activeDirty = true;
+                }
+            }
         }
 
         public ClothModel Model => _model;
@@ -250,9 +301,9 @@ namespace GP02.Core
             int[] pairs = _model.StretchPairs;
             float[] rest = _model.StretchRestLengths;
             float max = 0f;
-            for (int a = 0; a < _activeStretchCount; a++)
+            for (int a = 0; a < _stretch.ActiveCount; a++)
             {
-                int k = _activeStretch[a];
+                int k = _stretch.Active[a];
                 // 内部の座標は原点をずらした分の丸め誤差を含むので、外に見せるワールド座標で測る
                 float length = Vector3.Distance(_worldPositions[pairs[2 * k]], _worldPositions[pairs[2 * k + 1]]);
                 max = MathF.Max(max, length / rest[k] - 1f);
@@ -333,39 +384,93 @@ namespace GP02.Core
             if (_grabbed >= 0) SpreadGrabMotion();
             if (_hierarchy != null && iterations > 0) SolveCoarseLevels();
 
-            int[] stretchPairs = _model.StretchPairs;
-            float[] stretchRest = _model.StretchRestLengths;
-            int[] bendPairs = _model.BendPairs;
-            float[] bendRest = _model.BendRestLengths;
+            _stretch.ResetLambda();
+            _bend.ResetLambda();
 
-            for (int a = 0; a < _activeStretchCount; a++) _stretchLambda[_activeStretch[a]] = 0f;
-            for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
-
-            for (int it = 0; it < iterations; it++)
-            {
-                // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
-                float bendCompliance = BendCompliance;
-                for (int a = 0; a < _activeBendCount; a++)
-                {
-                    int k = _activeBend[a];
-                    SolveDistance(bendPairs[2 * k], bendPairs[2 * k + 1], bendRest[k], bendCompliance, ref _bendLambda[k]);
-                }
-
-                float stretchCompliance = StretchCompliance;
-                for (int a = 0; a < _activeStretchCount; a++)
-                {
-                    int k = _activeStretch[a];
-                    SolveDistance(stretchPairs[2 * k], stretchPairs[2 * k + 1], stretchRest[k], stretchCompliance, ref _stretchLambda[k]);
-                }
-
-                SolveTethers();
-            }
+            // 1回の反復は「曲げ（区画の中 → 区画をまたぐ各色）→ 伸び（同じ）→ テザー」の段階に分かれる。
+            // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
+            if (iterations > 0) _runner.Run(this, iterations * StepsPerIteration);
 
             // 動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）
             for (int a = 0; a < _activeParticleCount; a++)
             {
                 int i = _activeParticles[a];
                 _worldPositions[i] = _positions[i] + _origin;
+            }
+        }
+
+        int StepsPerIteration => _bend.StepCount + _stretch.StepCount + 1;
+
+        // 段階を、曲げ・伸びのどちらの何番目の段階か、またはテザー（groups = null）かに分ける
+        void Decode(int phase, out ConstraintGroups groups, out int step)
+        {
+            step = phase % StepsPerIteration;
+            if (step < _bend.StepCount)
+            {
+                groups = _bend;
+                return;
+            }
+            step -= _bend.StepCount;
+            if (step < _stretch.StepCount)
+            {
+                groups = _stretch;
+                return;
+            }
+            groups = null;
+        }
+
+        int PhaseRunner.IWork.ChunkCount(int phase)
+        {
+            Decode(phase, out ConstraintGroups groups, out int step);
+            if (groups == null) return _activeParticleCount / ParticleChunk;
+            if (step == 0) return groups.RegionCount;
+            if (groups.HasSerialColor && step == groups.StepCount - 1) return 1;
+            groups.StepRange(step, out int begin, out int end);
+            return (end - begin) / ConstraintChunk;
+        }
+
+        void PhaseRunner.IWork.EnterPhase(int phase)
+        {
+            // テザーは粒子ごとに独立に解くが、つまんだ点自身もピンのテザーで動くことがある。
+            // 同時に読み書きしないよう、テザーの段階の間は、始まる直前の位置を使う
+            if (phase % StepsPerIteration == StepsPerIteration - 1 && _grabbed >= 0) _grabbedSnapshot = _positions[_grabbed];
+        }
+
+        void PhaseRunner.IWork.RunChunk(int phase, int chunk)
+        {
+            Decode(phase, out ConstraintGroups groups, out int step);
+            int chunkCount = ((PhaseRunner.IWork)this).ChunkCount(phase);
+            chunkCount = Math.Max(1, Math.Min(PhaseRunner.MaxChunks, chunkCount));
+            if (groups == null)
+            {
+                SolveTethers(Split(0, _activeParticleCount, chunk, chunkCount), Split(0, _activeParticleCount, chunk + 1, chunkCount));
+                return;
+            }
+
+            float compliance = groups == _bend ? BendCompliance : StretchCompliance;
+            if (step == 0)
+            {
+                // 区画の中の制約を、番号順に解く
+                SolveRange(groups, compliance, groups.GroupStart[chunk], groups.GroupStart[chunk + 1]);
+                return;
+            }
+            groups.StepRange(step, out int begin, out int end);
+            SolveRange(groups, compliance, Split(begin, end, chunk, chunkCount), Split(begin, end, chunk + 1, chunkCount));
+        }
+
+        // [begin, end) を chunkCount 等分したときの、chunk 番目の始まり
+        static int Split(int begin, int end, int chunk, int chunkCount) => begin + (int)((long)(end - begin) * chunk / chunkCount);
+
+        void SolveRange(ConstraintGroups groups, float compliance, int begin, int end)
+        {
+            int[] active = groups.Active;
+            int[] pairs = groups.Pairs;
+            float[] rest = groups.RestLengths;
+            float[] lambda = groups.Lambda;
+            for (int a = begin; a < end; a++)
+            {
+                int k = active[a];
+                SolveDistance(pairs[2 * k], pairs[2 * k + 1], rest[k], compliance, ref lambda[k]);
             }
         }
 
@@ -433,20 +538,10 @@ namespace GP02.Core
                 if (active && !_pinned[i]) _activeParticles[_activeParticleCount++] = i;
             }
 
-            _activeStretchCount = CollectActive(_model.StretchPairs, _activeStretch);
-            _activeBendCount = CollectActive(_model.BendPairs, _activeBend);
+            _stretch.CollectActive(_inverseMass);
+            _bend.CollectActive(_inverseMass);
         }
 
-        // 少なくとも一方の粒子が動ける制約だけを集める
-        int CollectActive(int[] pairs, int[] result)
-        {
-            int count = 0;
-            for (int k = 0; k < result.Length; k++)
-            {
-                if (_inverseMass[pairs[2 * k]] > 0f || _inverseMass[pairs[2 * k + 1]] > 0f) result[count++] = k;
-            }
-            return count;
-        }
 
         void SpreadGrabMotion()
         {
@@ -484,12 +579,12 @@ namespace GP02.Core
             _graph.ShortestDistances(sources, _pinDistance, _nearestPin);
         }
 
-        void SolveTethers()
+        void SolveTethers(int begin, int end)
         {
-            for (int a = 0; a < _activeParticleCount; a++)
+            for (int a = begin; a < end; a++)
             {
                 int i = _activeParticles[a];
-                if (_grabbed >= 0 && !_inBrush[i]) SolveTether(i, _positions[_grabbed], _grabDistance[i]);
+                if (_grabbed >= 0 && !_inBrush[i]) SolveTether(i, _grabbedSnapshot, _grabDistance[i]);
 
                 // つまんだ範囲も、ピンから布の長さ以上は離れない。
                 // 布の長さが足りない方向へ引っ張ると、本物の布のように目標の手前で止まる（持ち上がる）。

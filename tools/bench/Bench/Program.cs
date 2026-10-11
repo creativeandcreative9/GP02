@@ -14,9 +14,11 @@ var offset = new Vector3(0f, 0.02f, 0.1f);
 float[] sizes = { 0.63f, 1f };
 int[] meshCells = { 50, 100, 220 };
 int[] iterationCounts = { 20, 40 };
+// 1スレッドと、既定のスレッド数（論理コア数の半分）を比べる
+int[] threadCounts = ClothSolver.DefaultThreadCount > 1 ? new[] { 1, ClothSolver.DefaultThreadCount } : new[] { 1 };
 
-Console.WriteLine("布(m) | メッシュの頂点 | 粒子 | 準備(ms) | 反復 | 1コマ(ms) | 粒子間の伸び 最大 / 99% | メッシュの辺の伸び 95%");
-Console.WriteLine("---|---|---|---|---|---|---|---");
+Console.WriteLine("布(m) | メッシュの頂点 | 粒子 | 準備(ms) | 反復 | スレッド | 1コマ(ms) | 粒子間の伸び 最大 / 99% | メッシュの辺の伸び 95%");
+Console.WriteLine("---|---|---|---|---|---|---|---|---");
 
 foreach (float size in sizes)
 foreach (int cells in meshCells)
@@ -27,8 +29,9 @@ foreach (int cells in meshCells)
     buildTimer.Stop();
 
     foreach (int iterations in iterationCounts)
+    foreach (int threads in threadCounts)
     {
-        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { InfluenceRadius = 0.15f };
+        var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { InfluenceRadius = 0.15f, ThreadCount = threads };
         for (int p = 0; p < cloth.Model.ParticleCount; p++)
         {
             if (cloth.Model.RestPositions[p].Y > size - cloth.Spacing) solver.SetPinned(p, true);
@@ -53,7 +56,7 @@ foreach (int cells in meshCells)
         cloth.DeformWelded(solver.Positions, welded);
         var meshStretch = MeshEdgeStretches(cloth.Topology, welded);
 
-        Console.WriteLine($"{size} | {vertices.Length} | {cloth.Model.ParticleCount} | {buildTimer.Elapsed.TotalMilliseconds:F0} | {iterations} | " +
+        Console.WriteLine($"{size} | {vertices.Length} | {cloth.Model.ParticleCount} | {buildTimer.Elapsed.TotalMilliseconds:F0} | {iterations} | {threads} | " +
             $"{frameTimer.Elapsed.TotalMilliseconds / DragFrames:F1} | {particleStretch[^1]:P1} / {Percentile(particleStretch, 0.99f):P1} | {Percentile(meshStretch, 0.95f):P1}");
     }
 }
