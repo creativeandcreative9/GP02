@@ -32,6 +32,9 @@ namespace GP02.Core
         /// <summary>粒子ごとの、乗っている三角形。</summary>
         public int[] ParticleTriangle { get; }
 
+        /// <summary>粒子ごとの、乗っている島（<see cref="MeshTopology.TriangleIsland"/>）。重ね着で層を区別するのに使う。</summary>
+        public int[] ParticleIsland { get; }
+
         // まとめた後の頂点ごとに、結びつけた粒子と重み（合計1）。CSR形式
         readonly int[] _bindOffsets;
         readonly int[] _bindParticles;
@@ -45,6 +48,8 @@ namespace GP02.Core
             Hierarchy = hierarchy;
             Spacing = spacing;
             ParticleTriangle = particleTriangle;
+            ParticleIsland = new int[particleTriangle.Length];
+            for (int i = 0; i < particleTriangle.Length; i++) ParticleIsland[i] = topology.TriangleIsland[particleTriangle[i]];
             _bindOffsets = bindOffsets;
             _bindParticles = bindParticles;
             _bindWeights = bindWeights;

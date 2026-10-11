@@ -24,7 +24,6 @@ namespace GP02.EditorTools
 
         readonly Renderer _renderer;
         readonly Mesh _sourceMesh;
-        readonly int[] _triangles;
         readonly Vector3[] _baseWorld;            // 編集前のワールド頂点
         readonly Matrix4x4[] _vertexMatrices;     // 頂点ごとの、メッシュ座標 → ワールド座標
         readonly Matrix4x4[] _inverseMatrices;    // 上の 3x3 部分の逆行列（特異なら 0）
@@ -33,6 +32,8 @@ namespace GP02.EditorTools
         readonly ClothSolver _solver;
         readonly NVector3[] _welded;
         readonly NVector3[] _toposRest;
+        readonly TriangleBvh _bvh;                // レイキャスト用。まとめた後の三角形（_welded の位置）を入れてある
+        bool _bvhDirty;                           // 形が変わったあと、次のレイキャストの前に箱を更新する
         readonly int[] _vertexToWelded;
         readonly float[] _createdWeights;         // セッション作成時のシェイプキーの重み（保存の取り消しを見つけるため）
         readonly Mesh _previewMesh;
@@ -81,7 +82,8 @@ namespace GP02.EditorTools
             var timer = Stopwatch.StartNew();
             Vector3[] baseVertices = _sourceMesh.vertices;
             if (renderer is SkinnedMeshRenderer skinned) ApplyBlendShapeWeights(skinned, _sourceMesh, baseVertices);
-            _triangles = _sourceMesh.triangles;
+            // 全サブメッシュの三角形を順に並べたもの
+            int[] triangles = _sourceMesh.triangles;
 
             _vertexMatrices = ComputeVertexMatrices(renderer, _sourceMesh);
             _baseWorld = new Vector3[baseVertices.Length];
@@ -93,10 +95,11 @@ namespace GP02.EditorTools
                 _inverseScale[v] = Invert3x3(_vertexMatrices[v], out _inverseMatrices[v]);
             }
 
-            _cloth = ParticleCloth.Build(MeshBridge.ToNumerics(_baseWorld, Vector3.one), _triangles);
+            _cloth = ParticleCloth.Build(MeshBridge.ToNumerics(_baseWorld, Vector3.one), triangles);
             _solver = _cloth.CreateSolver();
-            _welded = new NVector3[_cloth.Topology.Positions.Length];
             _toposRest = _cloth.Topology.Positions;
+            _welded = (NVector3[])_toposRest.Clone();
+            _bvh = new TriangleBvh(_welded, _cloth.Topology.Triangles);
             _vertexToWelded = _cloth.Topology.VertexToWelded;
             CurrentWorldVertices = (Vector3[])_baseWorld.Clone();
             timer.Stop();
@@ -186,7 +189,30 @@ namespace GP02.EditorTools
             }
         }
 
+        /// <summary>
+        /// SkinnedMeshRenderer が1頂点あたりに使うボーンの本数の上限。
+        /// quality が Auto なら、プロジェクトの設定（QualitySettings.skinWeights）に従う。
+        /// </summary>
+        public static int GetBoneWeightLimit(SkinnedMeshRenderer skinned)
+        {
+            if (skinned == null) throw new ArgumentNullException(nameof(skinned));
+            switch (skinned.quality)
+            {
+                case SkinQuality.Bone1: return 1;
+                case SkinQuality.Bone2: return 2;
+                case SkinQuality.Bone4: return 4;
+            }
+            switch (QualitySettings.skinWeights)
+            {
+                case SkinWeights.OneBone: return 1;
+                case SkinWeights.TwoBones: return 2;
+                case SkinWeights.FourBones: return 4;
+                default: return int.MaxValue;   // Unlimited
+            }
+        }
+
         // 線形ブレンドスキニング：M_v = Σ w_i * (bone_i.localToWorld * bindpose_i)
+        // ウェイトは GetAllBoneWeights の順（頂点ごとに大きい順）で、Unity が実際に使う本数までを使う
         static Matrix4x4[] ComputeVertexMatrices(Renderer renderer, Mesh mesh)
         {
             int vertexCount = mesh.vertexCount;
@@ -195,6 +221,7 @@ namespace GP02.EditorTools
 
             var skinned = renderer as SkinnedMeshRenderer;
             Transform[] bones = skinned != null ? skinned.bones : null;
+            int weightLimit = skinned != null ? GetBoneWeightLimit(skinned) : int.MaxValue;
             var bonesPerVertex = mesh.GetBonesPerVertex();
             var boneWeights = mesh.GetAllBoneWeights();
             if (bones == null || bones.Length == 0 || bonesPerVertex.Length != vertexCount)
@@ -214,7 +241,9 @@ namespace GP02.EditorTools
             int offset = 0;
             for (int v = 0; v < vertexCount; v++)
             {
-                int count = bonesPerVertex[v];
+                int stored = bonesPerVertex[v];
+                // Unity は、ウェイトの大きい順に上位 weightLimit 本だけを使い、合計が 1 になるよう正規化する
+                int count = Math.Min(stored, weightLimit);
                 float total = 0f;
                 for (int i = 0; i < count; i++) total += boneWeights[offset + i].weight;
                 if (count == 0 || total <= 0f)
@@ -233,7 +262,7 @@ namespace GP02.EditorTools
                     }
                     result[v] = sum;
                 }
-                offset += count;
+                offset += stored;
             }
             return result;
         }
@@ -272,64 +301,104 @@ namespace GP02.EditorTools
                 CurrentWorldVertices[v] = new Vector3(b.x + delta.X, b.y + delta.Y, b.z + delta.Z);
             }
             _previewDirty = true;
+            _bvhDirty = true;
         }
 
-        /// <summary>現在の形に対するレイキャスト（Möller–Trumbore、両面）。一番近い交差を返す。</summary>
+        /// <summary>現在の形に対するレイキャスト（両面）。一番近い交差を返す。</summary>
         public bool Raycast(Ray ray, out Vector3 hitPoint, out Vector3 hitNormal)
         {
-            Vector3 origin = ray.origin, direction = ray.direction;
-            Vector3[] vertices = CurrentWorldVertices;
-            float bestT = float.MaxValue;
-            int bestTriangle = -1;
+            return Raycast(ray, out hitPoint, out hitNormal, out _);
+        }
 
-            for (int t = 0; t < _triangles.Length; t += 3)
+        /// <summary>
+        /// 現在の形に対するレイキャスト（両面）。一番近い交差を返す。
+        /// 面積のない三角形（頂点が同じ位置に潰れたもの）には当たらない。
+        /// </summary>
+        /// <param name="hitTriangle">
+        /// 当たった三角形の番号。元メッシュの <c>mesh.triangles</c> の3つ組の番号（全サブメッシュを順に並べたもの）。
+        /// BeginGrab・PaintPins に渡すと、同じ部品（島）の粒子だけを対象にできる。当たらなかったときは -1。
+        /// </param>
+        public bool Raycast(Ray ray, out Vector3 hitPoint, out Vector3 hitNormal, out int hitTriangle)
+        {
+            if (_bvhDirty)
             {
-                Vector3 p0 = vertices[_triangles[t]];
-                Vector3 edge1 = vertices[_triangles[t + 1]] - p0;
-                Vector3 edge2 = vertices[_triangles[t + 2]] - p0;
-                Vector3 pvec = Vector3.Cross(direction, edge2);
-                float det = Vector3.Dot(edge1, pvec);
-                if (Mathf.Abs(det) < 1e-12f) continue;
-
-                float invDet = 1f / det;
-                Vector3 tvec = origin - p0;
-                float u = Vector3.Dot(tvec, pvec) * invDet;
-                if (u < 0f || u > 1f) continue;
-                Vector3 qvec = Vector3.Cross(tvec, edge1);
-                float v = Vector3.Dot(direction, qvec) * invDet;
-                if (v < 0f || u + v > 1f) continue;
-                float distance = Vector3.Dot(edge2, qvec) * invDet;
-                if (distance > 0f && distance < bestT)
-                {
-                    bestT = distance;
-                    bestTriangle = t;
-                }
+                _bvh.Refit(_welded);
+                _bvhDirty = false;
             }
 
-            if (bestTriangle < 0)
+            var origin = new NVector3(ray.origin.x, ray.origin.y, ray.origin.z);
+            var direction = new NVector3(ray.direction.x, ray.direction.y, ray.direction.z);
+            if (!_bvh.Raycast(origin, direction, _welded, out float distance, out int triangle))
             {
                 hitPoint = Vector3.zero;
                 hitNormal = Vector3.up;
+                hitTriangle = -1;
                 return false;
             }
 
-            hitPoint = origin + direction * bestT;
-            Vector3 a = vertices[_triangles[bestTriangle]];
-            Vector3 normal = Vector3.Cross(vertices[_triangles[bestTriangle + 1]] - a, vertices[_triangles[bestTriangle + 2]] - a).normalized;
-            hitNormal = Vector3.Dot(normal, direction) > 0f ? -normal : normal;
+            GP02.Core.MeshTopology topology = _cloth.Topology;
+            hitPoint = ray.origin + ray.direction * distance;
+            NVector3 a = _welded[topology.Triangles[3 * triangle]];
+            NVector3 n = NVector3.Cross(_welded[topology.Triangles[3 * triangle + 1]] - a, _welded[topology.Triangles[3 * triangle + 2]] - a);
+            float length = n.Length();
+            Vector3 normal = length > 0f ? new Vector3(n.X, n.Y, n.Z) / length : Vector3.up;
+            hitNormal = Vector3.Dot(normal, ray.direction) > 0f ? -normal : normal;
+            hitTriangle = topology.TriangleToSource[triangle];
             return true;
+        }
+
+        // 元メッシュの三角形が乗っている島。三角形が無い・潰れて計算から外れている・範囲外なら -1（絞り込まない）
+        int IslandOfMeshTriangle(int meshTriangle)
+        {
+            GP02.Core.MeshTopology topology = _cloth.Topology;
+            if ((uint)meshTriangle >= (uint)topology.SourceToTriangle.Length) return -1;
+            int triangle = topology.SourceToTriangle[meshTriangle];
+            return triangle < 0 ? -1 : topology.TriangleIsland[triangle];
+        }
+
+        // island が負なら全粒子から、そうでなければその島の粒子だけから、一番近いものを選ぶ
+        int FindNearestParticle(NVector3 point, int island)
+        {
+            if (island < 0) return _solver.FindNearestParticle(point);
+
+            int[] particleIsland = _cloth.ParticleIsland;
+            ReadOnlySpan<NVector3> positions = _solver.Positions;
+            int best = -1;
+            float bestSq = float.MaxValue;
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (particleIsland[i] != island) continue;
+                float sq = NVector3.DistanceSquared(positions[i], point);
+                if (sq < bestSq)
+                {
+                    bestSq = sq;
+                    best = i;
+                }
+            }
+            return best;
         }
 
         /// <summary>
         /// 指定点の近くの粒子をつまむ。元に戻す用の記録は、呼び出し側（ウィンドウ）が Unity の Undo で取る。
+        /// 重ね着では、近くにある別の布の粒子をつまむことがあるので、レイキャストで当たった三角形を渡す版を使うこと。
         /// </summary>
         /// <param name="brushRadius">つまむ範囲（メッシュに沿った距離、メートル）</param>
         public bool BeginGrab(Vector3 worldPoint, float brushRadius)
         {
+            return BeginGrab(worldPoint, brushRadius, -1);
+        }
+
+        /// <summary>
+        /// 指定点の近くの粒子をつまむ。粒子は、当たった三角形と同じ部品（島）に乗っているものの中から選ぶ
+        /// （重ね着で、外側の布をクリックしたのに内側の布の粒子のほうが近い、ということを防ぐ）。
+        /// </summary>
+        /// <param name="hitTriangle">Raycast が返した三角形の番号。負の値や範囲外なら、すべての粒子から選ぶ</param>
+        public bool BeginGrab(Vector3 worldPoint, float brushRadius, int hitTriangle)
+        {
             if (_solver.GrabbedParticle >= 0) Release();
 
             var point = new NVector3(worldPoint.x, worldPoint.y, worldPoint.z);
-            int particle = _solver.FindNearestParticle(point);
+            int particle = FindNearestParticle(point, IslandOfMeshTriangle(hitTriangle));
             if (particle < 0) return false;
 
             _grabParticle = particle;
@@ -429,12 +498,25 @@ namespace GP02.EditorTools
         /// <summary>現在位置がワールド座標で radius 以内の粒子を、ピン留め（または解除）する。変えた粒子の数を返す。</summary>
         public int PaintPins(Vector3 worldPoint, float radius, bool pinned)
         {
+            return PaintPins(worldPoint, radius, pinned, -1);
+        }
+
+        /// <summary>
+        /// 現在位置がワールド座標で radius 以内で、かつ当たった三角形と同じ部品（島）の粒子を、ピン留め（または解除）する。
+        /// 重ね着で、近くにある内側の布まで巻き込まないための版。変えた粒子の数を返す。
+        /// </summary>
+        /// <param name="hitTriangle">Raycast が返した三角形の番号。負の値や範囲外なら、島で絞り込まない</param>
+        public int PaintPins(Vector3 worldPoint, float radius, bool pinned, int hitTriangle)
+        {
+            int island = IslandOfMeshTriangle(hitTriangle);
+            int[] particleIsland = _cloth.ParticleIsland;
             var point = new NVector3(worldPoint.x, worldPoint.y, worldPoint.z);
             float radiusSq = radius * radius;
             ReadOnlySpan<NVector3> positions = _solver.Positions;
             int changed = 0;
             for (int i = 0; i < positions.Length; i++)
             {
+                if (island >= 0 && particleIsland[i] != island) continue;
                 if (NVector3.DistanceSquared(positions[i], point) > radiusSq) continue;
                 if (_solver.IsPinned(i) == pinned) continue;
                 _solver.SetPinned(i, pinned);
@@ -447,15 +529,28 @@ namespace GP02.EditorTools
         /// <summary>ピン留めされた粒子の位置（ワールド）を result に入れる。maxCount を超えるときは間引く。</summary>
         public void GetPinnedPositions(List<Vector3> result, int maxCount = int.MaxValue)
         {
+            GetPinnedPositions(result, null, maxCount);
+        }
+
+        /// <summary>
+        /// ピン留めされた粒子の位置（ワールド）を result に、乗っている部品（島）の番号を islands に入れる（同じ順）。
+        /// islands を <see cref="PinNear(IReadOnlyList{Vector3}, float, IReadOnlyList{int})"/> に渡すと、重ね着でも元の層だけを留められる。
+        /// </summary>
+        public void GetPinnedPositions(List<Vector3> result, List<int> islands, int maxCount = int.MaxValue)
+        {
             result.Clear();
+            islands?.Clear();
             if (_pinnedCount == 0 || maxCount <= 0) return;
             int stride = Mathf.Max(1, (_pinnedCount + maxCount - 1) / maxCount);
             ReadOnlySpan<NVector3> positions = _solver.Positions;
+            int[] particleIsland = _cloth.ParticleIsland;
             int seen = 0;
             for (int i = 0; i < positions.Length; i++)
             {
                 if (!_solver.IsPinned(i)) continue;
-                if (seen++ % stride == 0) result.Add(new Vector3(positions[i].X, positions[i].Y, positions[i].Z));
+                if (seen++ % stride != 0) continue;
+                result.Add(new Vector3(positions[i].X, positions[i].Y, positions[i].Z));
+                islands?.Add(particleIsland[i]);
             }
         }
 
@@ -465,6 +560,15 @@ namespace GP02.EditorTools
         /// </summary>
         public int PinNear(IReadOnlyList<Vector3> worldPositions, float radius)
         {
+            return PinNear(worldPositions, radius, null);
+        }
+
+        /// <summary>
+        /// PinNear の、部品（島）の番号つき版。islands[k] が worldPositions[k] の島で、同じ島の粒子だけをピン留めする
+        /// （重ね着で、近くにある別の層まで留めないため）。islands が null や、番号がこのメッシュの島の数以上のものは、島で絞り込まない。
+        /// </summary>
+        public int PinNear(IReadOnlyList<Vector3> worldPositions, float radius, IReadOnlyList<int> islands)
+        {
             if (worldPositions == null || worldPositions.Count == 0 || radius <= 0f) return 0;
 
             ReadOnlySpan<NVector3> positions = _solver.Positions;
@@ -473,9 +577,13 @@ namespace GP02.EditorTools
 
             float radiusSq = radius * radius;
             var candidates = new List<int>();
+            int[] particleIsland = _cloth.ParticleIsland;
+            int islandCount = _cloth.Topology.IslandCount;
             int added = 0;
             for (int k = 0; k < worldPositions.Count; k++)
             {
+                int island = islands != null && k < islands.Count ? islands[k] : -1;
+                if (island >= islandCount) island = -1;
                 Vector3 w = worldPositions[k];
                 var point = new NVector3(w.x, w.y, w.z);
                 grid.Query(point, radius, candidates);
@@ -483,6 +591,7 @@ namespace GP02.EditorTools
                 {
                     int i = candidates[c];
                     if (_solver.IsPinned(i) || NVector3.DistanceSquared(positions[i], point) > radiusSq) continue;
+                    if (island >= 0 && particleIsland[i] != island) continue;
                     _solver.SetPinned(i, true);
                     _pinnedCount++;
                     added++;

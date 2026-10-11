@@ -41,6 +41,7 @@ namespace GP02.EditorTools
         bool _hasHover;
         Vector3 _hoverPoint;
         Vector3 _hoverNormal;
+        int _hoverTriangle = -1;   // カーソルの下の三角形（重ね着で、どの布をつまむか・ピン留めするかを決める）
         readonly List<Vector3> _pinDots = new List<Vector3>();
 
         [MenuItem("Tools/GP02/布の編集")]
@@ -99,7 +100,8 @@ namespace GP02.EditorTools
         }
 
         /// <param name="carriedPins">引き継ぐピンのワールド位置（保存後や Undo による作り直しのとき）</param>
-        void StartEdit(IReadOnlyList<Vector3> carriedPins = null)
+        /// <param name="carriedPinIslands">引き継ぐピンごとの部品（島）の番号。重ね着で元の層だけを留めるため</param>
+        void StartEdit(IReadOnlyList<Vector3> carriedPins = null, IReadOnlyList<int> carriedPinIslands = null)
         {
             EndEdit();
             try
@@ -122,7 +124,7 @@ namespace GP02.EditorTools
             _session.Solver.InfluenceRadius = _influenceCentimeters * 0.01f;
             if (carriedPins != null && carriedPins.Count > 0)
             {
-                int pinned = _session.PinNear(carriedPins, _session.Cloth.Spacing * 0.75f);
+                int pinned = _session.PinNear(carriedPins, _session.Cloth.Spacing * 0.75f, carriedPinIslands);
                 Debug.Log($"[GP02] ピン {carriedPins.Count} 点から {pinned} 粒子を引き継ぎました。");
             }
             // 作り直した直後の形が、Undo の戻り先の基準になる
@@ -221,8 +223,9 @@ namespace GP02.EditorTools
                 return;
             }
             var pins = new List<Vector3>();
-            _session.GetPinnedPositions(pins);
-            StartEdit(pins);
+            var pinIslands = new List<int>();
+            _session.GetPinnedPositions(pins, pinIslands);
+            StartEdit(pins, pinIslands);
         }
 
         void OnGUI()
@@ -348,8 +351,9 @@ namespace GP02.EditorTools
             Undo.IncrementCurrentGroup();
             // シェイプキー込みの形が新しい基準になるので、作り直す。ピンは位置で引き継ぐ
             var pins = new List<Vector3>();
-            _session.GetPinnedPositions(pins);
-            StartEdit(pins);
+            var pinIslands = new List<int>();
+            _session.GetPinnedPositions(pins, pinIslands);
+            StartEdit(pins, pinIslands);
         }
 
         void OnUpdate()
@@ -425,7 +429,8 @@ namespace GP02.EditorTools
 
                 case EventType.MouseDrag:
                     if (e.button != 0 || GUIUtility.hotControl != controlId) break;
-                    UpdateHover(e);
+                    // つまんで動かしている間は、カーソルの下の点を使わない（形が変わるたびに境界箱を更新する手間を省く）
+                    if (!(_mode == Mode.Grab && _dragging)) UpdateHover(e);
                     OnDrag(e);
                     e.Use();
                     break;
@@ -442,7 +447,7 @@ namespace GP02.EditorTools
         bool UpdateHover(Event e)
         {
             Ray ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
-            _hasHover = _session.Raycast(ray, out _hoverPoint, out _hoverNormal);
+            _hasHover = _session.Raycast(ray, out _hoverPoint, out _hoverNormal, out _hoverTriangle);
             return _hasHover;
         }
 
@@ -454,7 +459,7 @@ namespace GP02.EditorTools
                 case Mode.Grab:
                     // 前のストロークの仕上げ中なら、そこで確定する
                     FinishStroke();
-                    if (_session.BeginGrab(_hoverPoint, radius))
+                    if (_session.BeginGrab(_hoverPoint, radius, _hoverTriangle))
                     {
                         BeginOperation("GP02 つまむ");
                         // ドラッグ平面は、ヒット点を通りカメラの向きに垂直な面
@@ -502,7 +507,7 @@ namespace GP02.EditorTools
         void PaintPins(float radius)
         {
             if (!_hasHover) return;
-            if (_session.PaintPins(_hoverPoint, radius, _mode == Mode.Pin) > 0) Repaint();
+            if (_session.PaintPins(_hoverPoint, radius, _mode == Mode.Pin, _hoverTriangle) > 0) Repaint();
             SceneView.RepaintAll();
         }
 

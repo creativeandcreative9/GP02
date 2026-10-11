@@ -24,6 +24,15 @@ namespace GP02.Core
 
         public int TriangleCount => Triangles.Length / 3;
 
+        /// <summary>
+        /// 元メッシュの三角形（Build に渡した triangles の3つ組の番号）ごとの、<see cref="Triangles"/> での番号。
+        /// 潰れて除かれた三角形は -1。Unity の Mesh.triangles は全サブメッシュを順に並べたものなので、その番号がそのまま使える。
+        /// </summary>
+        public int[] SourceToTriangle { get; }
+
+        /// <summary><see cref="Triangles"/> の三角形ごとの、元メッシュでの番号（<see cref="SourceToTriangle"/> の逆）。</summary>
+        public int[] TriangleToSource { get; }
+
         /// <summary>三角形ごとの島の番号。辺を共有する三角形は同じ島になる。</summary>
         public int[] TriangleIsland { get; }
 
@@ -40,8 +49,11 @@ namespace GP02.Core
         internal Vector3[] TriangleCenters { get; }
         internal float[] TriangleRadii { get; }
 
-        MeshTopology(Vector3[] positions, int[] vertexToWelded, int[] triangles, int[] adjacencyOffsets, int[] adjacency)
+        MeshTopology(Vector3[] positions, int[] vertexToWelded, int[] triangles, int[] sourceToTriangle, int[] triangleToSource,
+            int[] adjacencyOffsets, int[] adjacency)
         {
+            SourceToTriangle = sourceToTriangle;
+            TriangleToSource = triangleToSource;
             Positions = positions;
             VertexToWelded = vertexToWelded;
             Triangles = triangles;
@@ -80,12 +92,20 @@ namespace GP02.Core
             int[] vertexToWelded = VertexWelder.Weld(vertices, weldTolerance, out var positions);
 
             var welded = new List<int>(triangles.Length);
+            var sourceToTriangle = new int[triangles.Length / 3];
+            var triangleToSourceList = new List<int>(triangles.Length / 3);
             for (int t = 0; t < triangles.Length; t += 3)
             {
                 int a = vertexToWelded[triangles[t]];
                 int b = vertexToWelded[triangles[t + 1]];
                 int c = vertexToWelded[triangles[t + 2]];
-                if (a == b || b == c || c == a) continue;
+                if (a == b || b == c || c == a)
+                {
+                    sourceToTriangle[t / 3] = -1;
+                    continue;
+                }
+                sourceToTriangle[t / 3] = welded.Count / 3;
+                triangleToSourceList.Add(t / 3);
                 welded.Add(a);
                 welded.Add(b);
                 welded.Add(c);
@@ -126,7 +146,7 @@ namespace GP02.Core
             var adjacency = new int[offsets[triangleCount]];
             for (int t = 0; t < triangleCount; t++) neighbors[t].CopyTo(adjacency, offsets[t]);
 
-            return new MeshTopology(positions, vertexToWelded, weldedTriangles, offsets, adjacency);
+            return new MeshTopology(positions, vertexToWelded, weldedTriangles, sourceToTriangle, triangleToSourceList.ToArray(), offsets, adjacency);
         }
 
         static int[] FindIslands(int triangleCount, int[] offsets, int[] adjacency, out int islandCount)
