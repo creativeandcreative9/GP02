@@ -46,10 +46,10 @@ namespace GP02.Tests
             {
                 Assert.Ignore("画面が無い環境（-nographics）では描画できません。GP02_GUI=1 で仮想画面の上で動かしてください。");
             }
-            // Docker の Unity には日本語のフォントが無く、日本語の文字が空白になる。画像で読めるように英語で描く
+            // 既定は英語で描く。GP02_GUI_LANG=ja なら日本語（run-tests.sh が日本語のフォントをコンテナに入れる）
             _savedLanguage = L10n.Language;
             _languageChanged = true;
-            L10n.Language = UiLanguage.English;
+            L10n.Language = System.Environment.GetEnvironmentVariable("GP02_GUI_LANG") == "ja" ? UiLanguage.Japanese : UiLanguage.English;
             // 表示のしかたは、既定（かんたん）から始める。くわしく表示を見るテストは、自分で切り替える
             _savedViewMode = ClothEditView.Mode;
             ClothEditView.Mode = ClothEditViewMode.Simple;

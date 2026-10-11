@@ -14,6 +14,7 @@
 #
 # 画面の描画を確かめるテスト（ShapeKeyGuiSmokeTests）は、通常の実行（-nographics）では飛ばす。次のように仮想画面の上で動かす:
 #   GP02_GUI=1 GP02_UNITY_ARGS="-testFilter GP02.Tests.ShapeKeyGuiSmokeTests" tools/unity/run-tests.sh
+#   GP02_GUI_LANG=ja を付けると、画面の画像を日本語で撮る（日本語のフォントを tools/unity/fetch-jp-font.sh で取得してコンテナに入れる）
 #   画像は tools/unity/out/gui/ に出る
 #
 # 出力（Gitには含めない）:
@@ -71,6 +72,13 @@ CA_BUNDLE="${GP02_CA_BUNDLE:-/root/.ccr/ca-bundle.crt}"
 if [ -s "$CA_BUNDLE" ]; then
   DOCKER_ARGS+=(-v "$CA_BUNDLE:/gp02-ca.crt:ro")
 fi
+# 画面の画像を日本語で撮るとき（GP02_GUI_LANG=ja）は、日本語のフォントを用意してコンテナに入れる（Git には入れない）
+if [ "${GP02_GUI_LANG:-en}" = ja ]; then
+  "$REPO/tools/unity/fetch-jp-font.sh"
+fi
+if [ -d "$OUT/fonts" ]; then
+  DOCKER_ARGS+=(-v "$OUT/fonts:/usr/share/fonts/truetype/gp02:ro")
+fi
 
 status=0
 docker run --rm \
@@ -79,6 +87,7 @@ docker run --rm \
   -e GP02_USE_LOGIN="$USE_LOGIN" \
   -e GP02_UNITY_ARGS="${GP02_UNITY_ARGS:-}" \
   -e GP02_GUI="${GP02_GUI:-0}" \
+  -e GP02_GUI_LANG="${GP02_GUI_LANG:-en}" \
   -e UNITY_EMAIL -e UNITY_PASSWORD \
   -v "$REPO:/repo" \
   "$IMAGE" \
@@ -95,6 +104,9 @@ docker run --rm \
     LC=/opt/unity/Editor/Data/Resources/Licensing/Client/Unity.Licensing.Client
     if [ "$GP02_USE_LOGIN" = 1 ]; then
       $LC --activate-ulf --username "$UNITY_EMAIL" --password "$UNITY_PASSWORD" | grep -v "$UNITY_PASSWORD"
+    fi
+    if [ -d /usr/share/fonts/truetype/gp02 ]; then
+      fc-cache -f >/dev/null 2>&1 || true
     fi
     if [ "$GP02_GUI" = 1 ]; then
       # 画面（ウィンドウ・インスペクター）の描画を確かめるときは、-nographics を付けず、仮想画面の上で OpenGL（Mesa のソフトウェア描画）を使う
