@@ -731,7 +731,7 @@ namespace GP02.EditorTools
             {
                 int unmatched = _controller.UnmatchedMirrorCount;
                 float ratio = _controller.UnmatchedMirrorRatio;
-                EditorGUILayout.LabelField(L10n.Tr("相手のいない点", "Points Without a Partner"), L10n.Tr($"{unmatched:N0} 個（{ratio * 100f:F1}%）", $"{unmatched:N0} ({ratio * 100f:F1}%)"));
+                EditorGUILayout.LabelField(L10n.Tr("相手のいない点", "Unmatched Points"), L10n.Tr($"{unmatched:N0} 個（{ratio * 100f:F1}%）", $"{unmatched:N0} ({ratio * 100f:F1}%)"));
                 if (ratio > ClothEditSettings.UnmatchedMirrorWarnRatio)
                 {
                     EditorGUILayout.HelpBox(L10n.Tr("相手のいない点が多いです。その点をつまんでも、反対側は動きません。「鏡の面を自動で合わせる」か、許容距離を広げてください。",
@@ -740,10 +740,10 @@ namespace GP02.EditorTools
             }
 
             EditorGUI.BeginChangeCheck();
-            _settings.ShowUnmatchedMirror = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("相手のいない点を表示", "Show Points Without a Partner"),
+            _settings.ShowUnmatchedMirror = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("相手のいない点を表示", "Show Unmatched"),
                 L10n.Tr("対称がオンのとき、鏡像の相手が見つからない点を赤紫の点で見せます。そこをつまんでも反対側は動きません", "While symmetry is on, shows points with no mirror partner as magenta dots. Grabbing them does not move the opposite side")),
                 _settings.ShowUnmatchedMirror);
-            _settings.ShowMirrorDifference = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("左右差を色分け", "Show Left / Right Difference"),
+            _settings.ShowMirrorDifference = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("左右差を色分け", "Show L/R Difference"),
                 L10n.Tr("点ごとに、反対側の相手との変形の差（鏡に映した動きとの差）を緑→黄→赤で見せます（0 → 0.5cm → 2cm）", "Shows, per point, how much its deformation differs from its mirrored partner's, from green to yellow to red (0 / 0.5 cm / 2 cm)")),
                 _settings.ShowMirrorDifference);
             if (EditorGUI.EndChangeCheck())
