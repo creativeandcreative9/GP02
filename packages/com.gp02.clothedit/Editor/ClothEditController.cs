@@ -564,6 +564,40 @@ namespace GP02.EditorTools
         public Vector3 MirrorHoverPoint { get; private set; }
         public Vector3 MirrorHoverNormal { get; private set; } = Vector3.up;
 
+        /// <summary>ブラシの円を描く中心。つまんで動かしている間は、つまんだ点の今の動かし先に付いていく。</summary>
+        public Vector3 BrushRingCenter => _dragging && _strokeMode == ClothEditMode.Grab ? _dragTarget : HoverPoint;
+
+        // つまんだ瞬間に、実際に範囲に入った粒子と重み（ClothSolver.BrushWeight）を表示用に控える。
+        // 対称のときは鏡像の側も含まれる。ドラッグ中は範囲が変わらないので、一度だけ集めて使い回す（毎コマの確保をしない）
+        void CaptureGrabRange()
+        {
+            _previewCount = 0;
+            _previewShown = false;
+            HasMirrorHover = false;
+            if (!_settings.ShowBrushPreview) return;
+
+            ClothSolver solver = _session.Solver;
+            int total = solver.BrushParticleCount;
+            if (total <= 0) return;
+            int stride = (total + MaxPreviewParticles - 1) / MaxPreviewParticles;
+            int particleCount = solver.Positions.Length;
+            int seen = 0;
+            for (int i = 0; i < particleCount && _previewCount < MaxPreviewParticles; i++)
+            {
+                if (!solver.IsGrabbed(i)) continue;
+                float weight = solver.BrushWeight(i);
+                if (!(weight > 0f)) continue;
+                // 中心（鏡像の中心も）は必ず含め、残りは間引く
+                bool center = i == solver.GrabbedParticle || i == solver.MirrorParticle;
+                if (!center && seen++ % stride != 0) continue;
+                _previewIndices[_previewCount] = i;
+                _previewWeights[_previewCount] = weight;
+                _previewCount++;
+            }
+            _previewShown = true;
+            _previewKeyValid = false;
+        }
+
         // 重みをつけて範囲を決める道具か（ピン留めは重みなしで、円の内側すべて）
         static bool UsesWeights(ClothEditMode mode)
         {
@@ -678,6 +712,7 @@ namespace GP02.EditorTools
                         _dragRawLast = HoverPoint;
                         _dragTarget = HoverPoint;
                         _dragging = true;
+                        CaptureGrabRange();
                         if (_strokeMode == ClothEditMode.Grab) ChooseDragLine();
                         else _rotateAxis = _settings.RotateAxis == RotateAxisMode.SurfaceNormal ? HoverNormal : -cameraForward;
                     }
@@ -869,6 +904,58 @@ namespace GP02.EditorTools
             if (!HasHover) return;
             MirrorPlane? mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null;
             _session.PaintPins(HoverPoint, _brushRadius, _strokeMode == ClothEditMode.Pin, _hoverTriangle, mirror);
+        }
+
+        // ---- 範囲を指定したピン留め（Shift＋ドラッグの矩形、Ctrl＋クリックで部品全体、すべて外す、反転） ----
+        // どれも Unity の Undo の1段になる。変えた粒子の数を返す
+
+        /// <summary>
+        /// 画面上の矩形に入る粒子をピン留め（または解除）する。カメラ側を向いた粒子だけにするかは、設定の <see cref="ClothEditSettings.PinRectFrontOnly"/>。
+        /// 対称がオンなら、鏡像の粒子も同じようにする。
+        /// </summary>
+        /// <param name="viewportRect">矩形（ビューポート座標。0〜1、左下が原点）</param>
+        public int PinInRect(Matrix4x4 viewProjection, Vector3 cameraPosition, Vector3 cameraForward, bool orthographic, Rect viewportRect, bool pinned)
+        {
+            if (!EnsureAlive()) return 0;
+            MirrorPlane? mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null;
+            return ChangePins(pinned ? L10n.Tr("GP02 範囲でピン留め", "GP02 Pin Area") : L10n.Tr("GP02 範囲でピン解除", "GP02 Unpin Area"),
+                () => _session.PinInViewport(viewProjection, cameraPosition, cameraForward, orthographic, viewportRect, pinned, _settings.PinRectFrontOnly, mirror));
+        }
+
+        /// <summary>レイが当たった布の部品（島）全体をピン留め（または解除）する。当たらなければ 0。</summary>
+        public int PinIslandAt(Ray ray, bool pinned)
+        {
+            if (!EnsureAlive() || !UpdateHover(ray)) return 0;
+            int triangle = _hoverTriangle;
+            MirrorPlane? mirror = TryGetMirrorPlane(out MirrorPlane plane) ? plane : (MirrorPlane?)null;
+            return ChangePins(pinned ? L10n.Tr("GP02 部品全体をピン留め", "GP02 Pin Part") : L10n.Tr("GP02 部品全体をピン解除", "GP02 Unpin Part"),
+                () => _session.PinIsland(triangle, pinned, mirror));
+        }
+
+        /// <summary>ピンをすべて外す。</summary>
+        public int ClearPins()
+        {
+            if (!EnsureAlive()) return 0;
+            return ChangePins(L10n.Tr("GP02 ピンをすべて外す", "GP02 Clear Pins"), () => _session.ClearPins());
+        }
+
+        /// <summary>ピン留めの粒子とそうでない粒子を入れ替える。</summary>
+        public int InvertPins()
+        {
+            if (!EnsureAlive()) return 0;
+            return ChangePins(L10n.Tr("GP02 ピンを反転", "GP02 Invert Pins"), () => _session.InvertPins());
+        }
+
+        // ピンを変える操作を、Undo の1段にまとめる。何も変わらなければ記録を残さない
+        int ChangePins(string undoName, Func<int> change)
+        {
+            FinishStroke();
+            BeginOperation(undoName);
+            int changed = change();
+            CommitOperation();
+            InvalidatePreview();
+            Notify();
+            return changed;
         }
 
         void RelaxHere()

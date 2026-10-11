@@ -22,6 +22,14 @@ namespace GP02.EditorTools
         GUIStyle _helpStyle;
         double _radiusChangedAt = double.NegativeInfinity;
 
+        // Shift＋ドラッグの矩形で、ピン留め・解除をまとめて行う
+        bool _rectDragging;
+        bool _rectPinned;
+        Vector2 _rectStart;
+        Vector2 _rectEnd;
+
+        static bool IsPinTool(ClothEditMode mode) => mode == ClothEditMode.Pin || mode == ClothEditMode.Unpin;
+
         // Graphics.DrawMesh は、シーンのカメラが描く前に呼ばないと次のコマまで表示されない。
         // ショートカットは、シーンビュー自身のキー処理より先に読む必要があるので、ここで受ける
         void OnBeforeSceneGUI(SceneView sceneView)
@@ -147,6 +155,14 @@ namespace GP02.EditorTools
             // Esc：ドラッグ中・仕上げ中の操作を取り消して、押す前の形に戻す
             if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
             {
+                if (_rectDragging)
+                {
+                    _rectDragging = false;
+                    GUIUtility.hotControl = 0;
+                    e.Use();
+                    sceneView.Repaint();
+                    return;
+                }
                 if (_controller.Cancel())
                 {
                     GUIUtility.hotControl = 0;
@@ -167,6 +183,24 @@ namespace GP02.EditorTools
 
                 case EventType.MouseDown:
                     if (e.button != 0 || HandleUtility.nearestControl != controlId) break;
+                    if (IsPinTool(_controller.Mode) && (e.shift || e.control))
+                    {
+                        // ピン留め・解除の範囲指定。Shift＋ドラッグ: 矩形、Ctrl＋クリック: 部品（島）全体
+                        bool pinned = _controller.Mode == ClothEditMode.Pin;
+                        if (e.shift)
+                        {
+                            _rectDragging = true;
+                            _rectPinned = pinned;
+                            _rectStart = _rectEnd = e.mousePosition;
+                            GUIUtility.hotControl = controlId;
+                        }
+                        else
+                        {
+                            _controller.PinIslandAt(HandleUtility.GUIPointToWorldRay(e.mousePosition), pinned);
+                        }
+                        e.Use();
+                        break;
+                    }
                     if (!_controller.PointerDown(HandleUtility.GUIPointToWorldRay(e.mousePosition), sceneView.camera.transform.forward, e.mousePosition.x)) break;
                     GUIUtility.hotControl = controlId;
                     e.Use();
@@ -174,6 +208,13 @@ namespace GP02.EditorTools
 
                 case EventType.MouseDrag:
                     if (e.button != 0 || GUIUtility.hotControl != controlId) break;
+                    if (_rectDragging)
+                    {
+                        _rectEnd = e.mousePosition;
+                        sceneView.Repaint();
+                        e.Use();
+                        break;
+                    }
                     // Shift：精密操作（動きを 1/5 に）。Ctrl：回転を 15° 刻みに
                     _controller.PointerDrag(HandleUtility.GUIPointToWorldRay(e.mousePosition), e.mousePosition.x, e.shift, e.control);
                     e.Use();
@@ -182,10 +223,35 @@ namespace GP02.EditorTools
                 case EventType.MouseUp:
                     if (e.button != 0 || GUIUtility.hotControl != controlId) break;
                     GUIUtility.hotControl = 0;
+                    if (_rectDragging)
+                    {
+                        _rectDragging = false;
+                        ApplyPinRect(sceneView);
+                        sceneView.Repaint();
+                        e.Use();
+                        break;
+                    }
                     _controller.PointerUp();
                     e.Use();
                     break;
             }
+        }
+
+        // 矩形の中の粒子をピン留め（解除）する
+        void ApplyPinRect(SceneView sceneView)
+        {
+            Rect guiRect = ClothEditPinRange.FromCorners(_rectStart, _rectEnd);
+            float ppp = EditorGUIUtility.pixelsPerPoint;
+            if (!ClothEditPinRange.IsBigEnough(guiRect, ppp)) return;
+
+            Camera camera = sceneView.camera;
+            Rect viewport = ClothEditPinRange.GuiRectToViewport(guiRect, camera.pixelWidth, camera.pixelHeight, ppp);
+            Transform cameraTransform = camera.transform;
+            int changed = _controller.PinInRect(camera.projectionMatrix * camera.worldToCameraMatrix, cameraTransform.position, cameraTransform.forward,
+                camera.orthographic, viewport, _rectPinned);
+            sceneView.ShowNotification(new GUIContent(_rectPinned
+                ? L10n.Tr($"{changed} 粒子をピン留めしました", $"Pinned {changed} particles")
+                : L10n.Tr($"{changed} 粒子のピンを外しました", $"Unpinned {changed} particles")), 1.0);
         }
 
         // ---- 重ね描き ----
@@ -252,7 +318,7 @@ namespace GP02.EditorTools
             }
 
             Handles.color = ToolColor(_controller.Mode);
-            Handles.DrawWireDisc(_controller.HoverPoint, _controller.HoverNormal, _controller.BrushRadius);
+            Handles.DrawWireDisc(_controller.BrushRingCenter, _controller.HoverNormal, _controller.BrushRadius);
             if (_controller.HasMirrorHover)
             {
                 Color mirrorColor = Handles.color;
@@ -284,6 +350,19 @@ namespace GP02.EditorTools
             Handles.DrawSolidRectangleWithOutline(corners, new Color(0.3f, 0.7f, 1f, 0.08f), new Color(0.3f, 0.7f, 1f, 0.5f));
         }
 
+        // Shift＋ドラッグで選んでいる矩形（GUI 座標。Handles.BeginGUI の中で呼ぶ）
+        void DrawRectSelection()
+        {
+            Rect rect = ClothEditPinRange.FromCorners(_rectStart, _rectEnd);
+            Color color = _rectPinned ? new Color(1f, 0.3f, 0.2f) : new Color(0.9f, 0.9f, 0.2f);
+            EditorGUI.DrawRect(rect, new Color(color.r, color.g, color.b, 0.12f));
+            const float Edge = 1f;
+            EditorGUI.DrawRect(new Rect(rect.xMin, rect.yMin, rect.width, Edge), color);
+            EditorGUI.DrawRect(new Rect(rect.xMin, rect.yMax - Edge, rect.width, Edge), color);
+            EditorGUI.DrawRect(new Rect(rect.xMin, rect.yMin, Edge, rect.height), color);
+            EditorGUI.DrawRect(new Rect(rect.xMax - Edge, rect.yMin, Edge, rect.height), color);
+        }
+
         // シーンビューの左上に出す案内と、ショートカット一覧
         void DrawHint()
         {
@@ -311,6 +390,7 @@ namespace GP02.EditorTools
             var content = new GUIContent(text);
             Vector2 size = _hintStyle.CalcSize(content);
             Handles.BeginGUI();
+            if (_rectDragging) DrawRectSelection();
             GUI.Label(new Rect(10f, 10f, size.x, size.y + 4f), content, _hintStyle);
 
             if (_showShortcuts)

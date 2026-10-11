@@ -39,6 +39,7 @@ namespace GP02.EditorTools
         [SerializeField] bool _foldDisplay = true;
         [SerializeField] bool _foldSave = true;
         [SerializeField] bool _foldAdvanced;
+        [SerializeField] bool _foldGuide;
 
         ClothEditController _controller;
         ClothEditSettings _settings;
@@ -46,6 +47,14 @@ namespace GP02.EditorTools
         readonly List<TargetWarning> _warnings = new List<TargetWarning>();
         Renderer _warningsTarget;
         bool _warningsDirty = true;
+
+        // 手順の案内（編集を始めるたびに最初からやり直す）
+        bool _guideWasEditing;
+        bool _guideEdited;
+        bool _guideSaved;
+        int _guideEditedVersion = -1;
+        Mesh _guideSavedBaseline;
+        readonly GuideStepState[] _guideStates = new GuideStepState[ClothEditGuide.StepCount];
 
         [MenuItem("Tools/GP02/布の編集")]
         static void Open()
@@ -68,10 +77,12 @@ namespace GP02.EditorTools
             EditorApplication.update += OnUpdate;
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             _warningsDirty = true;
+            _overlayOwner = this;
         }
 
         void OnDisable()
         {
+            if (_overlayOwner == this) _overlayOwner = null;
             SceneView.beforeSceneGui -= OnBeforeSceneGUI;
             SceneView.duringSceneGui -= OnSceneGUI;
             EditorApplication.update -= OnUpdate;
@@ -115,7 +126,7 @@ namespace GP02.EditorTools
 
         void OnUpdate()
         {
-            _controller.Tick(EditorApplication.timeSinceStartup);
+            _controller?.Tick(EditorApplication.timeSinceStartup);
         }
 
         void OnGUI()
@@ -126,6 +137,7 @@ namespace GP02.EditorTools
 
             DrawTopBar();
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
+            DrawGuide();
             DrawTargetSection();
             DrawToolSection();
             DrawBrushSection();
@@ -158,7 +170,12 @@ namespace GP02.EditorTools
             using (new EditorGUILayout.HorizontalScope(EditorStyles.toolbar))
             {
                 GUILayout.Label(L10n.Tr("言語", "Language"), EditorStyles.miniLabel, GUILayout.Width(50f));
-                int language = GUILayout.Toolbar((int)L10n.Language, new[] { "日本語", "English" }, EditorStyles.toolbarButton, GUILayout.Width(150f));
+                var languageLabels = new[]
+                {
+                    new GUIContent("日本語", L10n.Tr("画面の言葉を日本語にします", "Show the interface in Japanese")),
+                    new GUIContent("English", L10n.Tr("画面の言葉を英語にします", "Show the interface in English")),
+                };
+                int language = GUILayout.Toolbar((int)L10n.Language, languageLabels, EditorStyles.toolbarButton, GUILayout.Width(150f));
                 if (language != (int)L10n.Language)
                 {
                     L10n.Language = (UiLanguage)language;
@@ -166,6 +183,11 @@ namespace GP02.EditorTools
                     SceneView.RepaintAll();
                 }
                 GUILayout.FlexibleSpace();
+                if (GUILayout.Button(new GUIContent(L10n.Tr("説明書", "Manual"), L10n.Tr("使い方の説明書を開きます（Documentation~ フォルダの文書）", "Opens the manual (a document in the Documentation~ folder)")),
+                    EditorStyles.toolbarButton, GUILayout.Width(56f)))
+                {
+                    OpenManual();
+                }
                 bool show = GUILayout.Toggle(_showShortcuts,
                     new GUIContent("?", L10n.Tr("ショートカット一覧を出す・隠す（F1）", "Show / hide the shortcut list (F1)")),
                     EditorStyles.toolbarButton, GUILayout.Width(26f));
@@ -175,6 +197,79 @@ namespace GP02.EditorTools
                     SceneView.RepaintAll();
                 }
             }
+        }
+
+        void OpenManual()
+        {
+            if (!ClothEditDocs.TryOpen(out string message)) EditorUtility.DisplayDialog("GP02", message, "OK");
+        }
+
+        // ---- 手順の案内 ----
+
+        // 編集を始め直したら、「引いた」「保存した」の記録を最初からにする
+        void UpdateGuideProgress(bool editing)
+        {
+            ClothEditSession session = _controller.Session;
+            if (editing && !_guideWasEditing)
+            {
+                _guideEdited = false;
+                _guideSaved = false;
+                _guideEditedVersion = -1;
+                _guideSavedBaseline = _controller.LastSavedMesh;
+            }
+            _guideWasEditing = editing;
+            if (!editing || session == null) return;
+
+            if (!_guideSaved && _controller.LastSavedMesh != null && _controller.LastSavedMesh != _guideSavedBaseline) _guideSaved = true;
+            // 形が変わったときだけ調べ直す（毎回の描画で全粒子を見ない）
+            if (!_guideEdited && _guideEditedVersion != session.ShapeVersion)
+            {
+                _guideEditedVersion = session.ShapeVersion;
+                _guideEdited = session.IsShapeEdited();
+            }
+        }
+
+        void DrawGuide()
+        {
+            bool editing = _controller.IsEditing;
+            UpdateGuideProgress(editing);
+            ClothEditSession session = _controller.Session;
+            ClothEditGuide.Evaluate(_target != null, editing, session != null && session.PinnedCount > 0, editing && _guideEdited, editing && _guideSaved, _guideStates);
+
+            if (editing)
+            {
+                _foldGuide = Section(_foldGuide, L10n.Tr("手順（今どこまで済んだか）", "Steps (where you are)"));
+                if (!_foldGuide) return;
+            }
+            else
+            {
+                EditorGUILayout.LabelField(L10n.Tr("はじめての方へ: 5つの手順", "New here? Five steps"), EditorStyles.boldLabel);
+            }
+
+            for (int i = 0; i < ClothEditGuide.StepCount; i++)
+            {
+                GuideStepState state = _guideStates[i];
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Label(GuideMarker(state), GUILayout.Width(20f), GUILayout.Height(18f));
+                    GUIStyle style = state == GuideStepState.Current ? EditorStyles.boldLabel : EditorStyles.label;
+                    Color previous = GUI.contentColor;
+                    if (state == GuideStepState.Done || state == GuideStepState.Skipped) GUI.contentColor = new Color(previous.r, previous.g, previous.b, 0.55f);
+                    GUILayout.Label(ClothEditGuide.Title(i), style);
+                    GUI.contentColor = previous;
+                }
+                if (state == GuideStepState.Current) EditorGUILayout.HelpBox(ClothEditGuide.Detail(i), MessageType.Info);
+            }
+            EditorGUILayout.Space();
+        }
+
+        static GUIContent GuideMarker(GuideStepState state)
+        {
+            // 組み込みのアイコンが無い環境でも、文字で分かるようにする
+            string iconName = state == GuideStepState.Done ? "TestPassed" : state == GuideStepState.Current ? "tab_next" : "TestNormal";
+            GUIContent icon = EditorGUIUtility.IconContent(iconName);
+            if (icon != null && icon.image != null) return new GUIContent(icon.image);
+            return new GUIContent(state == GuideStepState.Done ? "x" : state == GuideStepState.Current ? ">" : "-");
         }
 
         // ---- 対象 ----
@@ -298,7 +393,7 @@ namespace GP02.EditorTools
             for (int i = 0; i < labels.Length; i++)
             {
                 ClothEditMode mode = ToolOrder[i];
-                labels[i] = new GUIContent(ClothEditHelp.ToolName(mode) + " (" + ClothEditHelp.ToolKey(mode) + ")");
+                labels[i] = new GUIContent(ClothEditHelp.ToolName(mode) + " (" + ClothEditHelp.ToolKey(mode) + ")", ClothEditHelp.ToolTip(mode));
             }
             int current = System.Array.IndexOf(ToolOrder, _settings.Tool);
             int selected = GUILayout.SelectionGrid(Mathf.Max(0, current), labels, 3);
@@ -324,13 +419,24 @@ namespace GP02.EditorTools
                         });
                     if (_settings.MoveDirection >= MoveDirection.AxisX)
                     {
-                        _settings.DirectionSpace = (AxisSpace)EditorGUILayout.Popup(L10n.Tr("軸の基準", "Axis Space"), (int)_settings.DirectionSpace,
+                        _settings.DirectionSpace = (AxisSpace)EditorGUILayout.Popup(new GUIContent(L10n.Tr("軸の基準", "Axis Space"),
+                            L10n.Tr("X/Y/Z 軸を、シーンのワールド座標で見るか、アバターの向きに合わせたローカル座標で見るか。", "Whether the X/Y/Z axes are in world space or in the avatar's local space.")),
+                            (int)_settings.DirectionSpace,
                             new[] { L10n.Tr("ワールド", "World"), L10n.Tr("アバターのローカル", "Avatar local") });
                     }
                     break;
                 case ClothEditMode.Rotate:
-                    _settings.RotateAxis = (RotateAxisMode)EditorGUILayout.Popup(L10n.Tr("回転軸", "Rotation Axis"), (int)_settings.RotateAxis,
+                    _settings.RotateAxis = (RotateAxisMode)EditorGUILayout.Popup(new GUIContent(L10n.Tr("回転軸", "Rotation Axis"),
+                        L10n.Tr("視線の向き: 画面に向かって回る。面の法線: つまんだ所の面に垂直な軸のまわりに回る。", "View direction: rotates facing the screen. Surface normal: rotates around the axis perpendicular to the grabbed surface.")),
+                        (int)_settings.RotateAxis,
                         new[] { L10n.Tr("視線の向き", "View direction"), L10n.Tr("面の法線", "Surface normal") });
+                    break;
+                case ClothEditMode.Pin:
+                case ClothEditMode.Unpin:
+                    _settings.PinRectFrontOnly = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("矩形は表側だけ", "Rectangle: front only"),
+                        L10n.Tr("Shift+ドラッグの矩形で、カメラ側を向いた粒子だけを対象にします。オフにすると、裏側（裏の面）の粒子も入ります。", "In a Shift+Drag rectangle, only particles facing the camera are used. Turn off to include the back side as well.")),
+                        _settings.PinRectFrontOnly);
+                    EditorGUILayout.LabelField(L10n.Tr("Shift+ドラッグ: 矩形で一度に / Ctrl+クリック: 部品（島）ごと", "Shift+Drag: rectangle / Ctrl+Click: whole part (island)"), EditorStyles.miniLabel);
                     break;
                 case ClothEditMode.Relax:
                     _settings.RelaxStrength = EditorGUILayout.Slider(new GUIContent(L10n.Tr("強さ", "Strength"),
@@ -344,18 +450,33 @@ namespace GP02.EditorTools
             EditorGUILayout.Space();
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button(L10n.Tr("1つ戻す", "Undo")))
+                if (GUILayout.Button(new GUIContent(L10n.Tr("1つ戻す", "Undo"), L10n.Tr("直前の操作を1つ戻します（Ctrl+Z と同じ）", "Undoes the last operation (same as Ctrl+Z)"))))
                 {
                     _controller.UndoLast();
                     GUIUtility.ExitGUI();   // Undo の結果でセッションが作り直されることがあるので、この描画は打ち切る
                 }
-                if (GUILayout.Button(L10n.Tr("やり直す", "Redo")))
+                if (GUILayout.Button(new GUIContent(L10n.Tr("やり直す", "Redo"), L10n.Tr("戻した操作をやり直します（Ctrl+Y と同じ）", "Redoes the undone operation (same as Ctrl+Y)"))))
                 {
                     _controller.RedoLast();
                     GUIUtility.ExitGUI();
                 }
             }
-            if (GUILayout.Button(L10n.Tr("すべて元に戻す", "Reset All"))) _controller.ResetAll();
+            if (GUILayout.Button(new GUIContent(L10n.Tr("すべて元に戻す", "Reset All"), L10n.Tr("引いた形をすべて元の形に戻します（ピンは残ります）。Ctrl+Z で取り消せます", "Returns all pulled shapes to the original (pins stay). Ctrl+Z undoes this"))))
+            {
+                _controller.ResetAll();
+            }
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                if (GUILayout.Button(new GUIContent(L10n.Tr("ピンをすべて外す", "Clear All Pins"), L10n.Tr("ピン留めをすべて外します。Ctrl+Z で取り消せます", "Removes every pin. Ctrl+Z undoes this"))))
+                {
+                    _controller.ClearPins();
+                }
+                if (GUILayout.Button(new GUIContent(L10n.Tr("ピンを反転", "Invert Pins"), L10n.Tr("ピン留めした所を外し、留めていなかった所を留めます（「この辺りだけ動かす」をしたいときに便利）。Ctrl+Z で取り消せます",
+                    "Unpins what was pinned and pins what was not (handy to move only one area). Ctrl+Z undoes this"))))
+                {
+                    _controller.InvertPins();
+                }
+            }
             EditorGUILayout.LabelField(L10n.Tr("Ctrl+Z / Ctrl+Y で戻す・やり直す。ドラッグ中は Esc で取り消し", "Ctrl+Z / Ctrl+Y to undo / redo. Esc cancels while dragging"), EditorStyles.miniLabel);
             EditorGUILayout.Space();
         }
@@ -508,15 +629,16 @@ namespace GP02.EditorTools
                     $"Editing the shape key \"{ShapeKeyClothEdit.ActiveEntryName}\" with cloth. Saving stores it in the data. Export to the mesh from the shape key list."), MessageType.Info);
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (GUILayout.Button(L10n.Tr("同じ名前で上書き保存", "Save (overwrite)"))) SaveEntry(true);
-                    if (GUILayout.Button(L10n.Tr("別名で追加", "Save as new"))) SaveEntry(false);
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("同じ名前で上書き保存", "Save (overwrite)"), L10n.Tr("編集したシェイプキーを、同じ名前で上書きします。Ctrl+Z で取り消せます", "Overwrites the shape key being edited, under the same name. Ctrl+Z undoes this")))) SaveEntry(true);
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("別名で追加", "Save as new"), L10n.Tr("今の形を、新しいシェイプキーとして一覧に加えます", "Adds the current shape to the list as a new shape key")))) SaveEntry(false);
                 }
-                if (GUILayout.Button(L10n.Tr("シェイプキーの一覧を開く", "Open the shape key list"))) EditorApplication.ExecuteMenuItem("Tools/GP02/シェイプキーの一覧");
+                if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーの一覧を開く", "Open the shape key list"), L10n.Tr("保存したシェイプキーの再編集・分割・反転・書き出しをする一覧を開きます", "Opens the list for re-editing, splitting, flipping and exporting saved shape keys")))) EditorApplication.ExecuteMenuItem("Tools/GP02/シェイプキーの一覧");
                 EditorGUILayout.Space();
                 return;
             }
 
-            _shapeName = EditorGUILayout.TextField(L10n.Tr("シェイプキーの名前", "Shape Key Name"), _shapeName);
+            _shapeName = EditorGUILayout.TextField(new GUIContent(L10n.Tr("シェイプキーの名前", "Shape Key Name"),
+                L10n.Tr("保存するシェイプキー（BlendShape）の名前。メッシュに同じ名前があると保存できません", "Name of the shape key (BlendShape) to save. Saving fails if the mesh already has one with this name")), _shapeName);
             if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーとして保存", "Save as Shape Key"),
                 L10n.Tr("メッシュの複製にシェイプキーとして入れ、編集の内容をデータにも記録します（あとでシェイプキーの一覧から再編集・分割・反転できます）",
                     "Adds it to a copy of the mesh as a shape key and records the edit in the data (you can re-edit, split, or flip it later from the shape key list)")))) Save();
@@ -531,6 +653,7 @@ namespace GP02.EditorTools
                 EditorUtility.DisplayDialog("GP02", string.IsNullOrEmpty(_controller.LastError) ? L10n.Tr("保存できませんでした。", "Could not save.") : _controller.LastError, "OK");
                 return;
             }
+            _guideSaved = true;
             ShowNotification(new GUIContent(L10n.Tr($"「{saved.Name}」を保存しました", $"Saved \"{saved.Name}\"")));
         }
 
