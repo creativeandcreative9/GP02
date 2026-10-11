@@ -523,6 +523,7 @@ namespace GP02.EditorTools
             KeepLayersApart = true;
             ResetPenetrationDefaults();
             ResetPoseCheckDefaults();
+            ResetWeightFixDefaults();
         }
 
         /// <summary>負の値や、計算を壊す値を直す。</summary>
@@ -569,6 +570,7 @@ namespace GP02.EditorTools
             else if (CompareBlend > 1f) CompareBlend = 1f;
             SanitizePenetration();
             SanitizePoseCheck();
+            SanitizeWeightFix();
         }
 
         /// <summary>
@@ -642,6 +644,7 @@ namespace GP02.EditorTools
             };
             settings.LoadPenetration(keyPrefix);
             settings.LoadPoseCheck(keyPrefix);
+            settings.LoadWeightFix(keyPrefix);
             settings.Sanitize();
             return settings;
         }
@@ -692,6 +695,7 @@ namespace GP02.EditorTools
             EditorPrefs.SetBool(keyPrefix + "SelectionMovesAsCloth", SelectionMovesAsCloth);
             SavePenetration(keyPrefix);
             SavePoseCheck(keyPrefix);
+            SaveWeightFix(keyPrefix);
         }
 
         /// <summary>保存した値を消す（次の Load で既定値に戻る）。</summary>
@@ -714,6 +718,7 @@ namespace GP02.EditorTools
             }
             DeletePenetration(keyPrefix);
             DeletePoseCheck(keyPrefix);
+            DeleteWeightFix(keyPrefix);
         }
     }
 }

@@ -41,6 +41,24 @@ namespace GP02.Core
         /// <summary>表示用の点（<see cref="PosePenetration.Points"/>）の上限。</summary>
         public int MaxPoints = 1500;
 
+        /// <summary>体どうしの重なりを調べるレイの長さ（メートル）の既定値。太ももの太さより長くする（ふくらはぎが太ももに入った所で、太ももを抜けるまで届くように）。</summary>
+        public const float DefaultOverlapRayLength = 0.3f;
+
+        /// <summary>
+        /// 体どうしの重なりを調べるレイの長さ（メートル）。布の頂点が体にぴったり付いていった位置から外向きに飛ばし、
+        /// 最初に当たった面を中から抜けたら、そこはほかの体の部品の中（<see cref="BodySurface.IsInsideAlongRay"/>）。
+        /// </summary>
+        public float OverlapRayLength = DefaultOverlapRayLength;
+
+        /// <summary>体にぴったり付いていった位置を、体の面から少なくともこれだけ外に置く（メートル。面の上だと内外が決まらないため）。</summary>
+        public float FollowOffset = 0.001f;
+
+        /// <summary>
+        /// 編集の姿勢で、体の頂点が布に覆われているとみなす、布までの距離の上限（メートル。<see cref="PoseCheckEvaluator.MeasureCoveredBodyVertices"/>）。
+        /// 広がったスカートの裾と脚のあいだより大きく取る（覆われているかは、布の内側にあることと、一番近い布の点が縁でないことで決まる）。
+        /// </summary>
+        public float CoverDistance = 0.3f;
+
         public PoseCheckOptions Clone() => (PoseCheckOptions)MemberwiseClone();
     }
 
@@ -90,6 +108,36 @@ namespace GP02.Core
         /// <summary>調べるのにかかった時間（ミリ秒）。</summary>
         public double Milliseconds;
 
+        /// <summary>
+        /// 体どうしの重なりのために突き抜けている頂点（まとめた後の番号、小さい順）。<see cref="Vertices"/> には入れず、数えない。
+        /// 布が体にぴったり付いていっても（ウェイトを体と同じにしても）、そのポーズでほかの体の部品の中に入る所
+        /// （腕を下ろすと腕が腰に入る、深くしゃがむとふくらはぎが太ももに入る、など）。服では直せない。
+        /// アンカー（<see cref="BodyAnchors"/>）を渡して調べたときだけ入る。
+        /// </summary>
+        public readonly List<int> OverlapVertices = new List<int>();
+
+        /// <summary><see cref="OverlapVertices"/> と同じ順の、深さ（メートル）。</summary>
+        public readonly List<float> OverlapDepths = new List<float>();
+
+        /// <summary>体どうしの重なりの所の数（<see cref="OverlapVertices"/> の、三角形の辺でつながったまとまりの数）。</summary>
+        public int OverlapRegionCount;
+
+        /// <summary><see cref="OverlapVertices"/> のうち、一番深いものの深さ（メートル）。</summary>
+        public float OverlapMaxDepth;
+
+        /// <summary>体どうしの重なりの表示用の点（そのポーズでのワールド座標）。</summary>
+        public readonly List<Vector3> OverlapPoints = new List<Vector3>();
+
+        /// <summary>
+        /// このポーズでの布の伸び（辺の長さの、編集の姿勢に対する比 - 1）の、一番大きいものと、大きいほうから 1% の所（たまたま伸びた辺に左右されない目安）。
+        /// 測っていなければ 0。測る辺は呼び出し側が選ぶ（動作チェックでは、編集の姿勢で体から離れている所だけ。体にぴったりの所は体と一緒に伸びてよいため）。
+        /// ウェイトを体に寄せすぎると、スカートなどが脚に貼り付いて伸びる（<see cref="PoseCheckEvaluator.MeasureStretch(ReadOnlySpan{Vector3}, ReadOnlySpan{Vector3}, bool[], out float)"/>）。
+        /// </summary>
+        public float MaxStretch, HighStretch;
+
+        /// <summary>体どうしの重なりが見つかったか。</summary>
+        public bool HasOverlap => OverlapVertices.Count > 0;
+
         /// <summary>貫通として数えた頂点の数。</summary>
         public int PenetratingCount => Vertices.Count;
 
@@ -109,12 +157,22 @@ namespace GP02.Core
             MaxDepth = 0f;
             BodyVertexCount = 0;
             Milliseconds = 0.0;
+            OverlapVertices.Clear();
+            OverlapDepths.Clear();
+            OverlapPoints.Clear();
+            OverlapRegionCount = 0;
+            OverlapMaxDepth = 0f;
+            MaxStretch = 0f;
+            HighStretch = 0f;
         }
 
         public override string ToString()
         {
             if (!HasBody) return "体が無いので調べていません";
-            return $"貫通 {RegionCount} か所（頂点 {PenetratingCount}、最大 {MaxDepth * 1000f:F1} mm、布の外に出た体の頂点 {BodyVertexCount}）（{Milliseconds:F0} ms）";
+            return $"貫通 {RegionCount} か所（頂点 {PenetratingCount}、最大 {MaxDepth * 1000f:F1} mm、布の外に出た体の頂点 {BodyVertexCount}）" +
+                (HasOverlap ? $" / 体どうしの重なり {OverlapRegionCount} か所（頂点 {OverlapVertices.Count}、最大 {OverlapMaxDepth * 1000f:F1} mm）" : "") +
+                (MaxStretch > 0f ? $" / 伸び 最大 {MaxStretch * 100f:F1}%・上位1% {HighStretch * 100f:F1}%" : "") +
+                $"（{Milliseconds:F0} ms）";
         }
     }
 
@@ -138,10 +196,20 @@ namespace GP02.Core
         readonly bool[] _boundaryEdge;      // 三角形ごとの3辺（0: a-b、1: b-c、2: c-a）が、布の縁（1枚の三角形だけが使う辺）か
         readonly bool[] _boundaryVertex;    // 布の縁の辺の端の頂点
         readonly Vector3[] _positions;      // 調べている形（まとめた後の頂点）
-        readonly float[] _depth;            // 頂点ごとの深さ（作業用）
+        readonly float[] _depth;            // 頂点ごとの深さ（作業用。下の3つの一番大きいもの）
+        readonly float[] _insideDepth;      // (a) 布の頂点が体の中にある深さ
+        readonly float[] _pokeDepth;        // (b) 体の頂点が布の外へ出ている深さ（その体の頂点が、ほかの体の部品の中にないもの）
+        readonly float[] _pokeOverlapDepth; // (b) のうち、その体の頂点がほかの体の部品の中にあるもの（体どうしの重なり）
+        readonly float[] _classDepth;       // 分けたあとの、頂点ごとの深さ（作業用）
         readonly int[] _parent;             // まとまりを数える作業用
+        readonly byte[] _class;             // 頂点ごとの分け方（作業用。0: 数えない、1: 貫通、2: 体どうしの重なり）
+        readonly byte[] _classWork;
+        readonly int[] _edges;              // 布の辺（頂点番号の組。重ねない）。伸びを測る
+        int[] _neighborStart, _neighbors;   // 辺でつながった頂点（分け方をならすのに使う。最初に使うときに作る）
+        float[] _stretchWork;
         readonly List<Vector3> _pokePoints = new List<Vector3>();
         readonly List<int> _pokeTriangles = new List<int>();
+        readonly List<bool> _pokeOverlap = new List<bool>();
         Vector3[] _normalWork;
         ClosestTriangleTree _tree;          // 布の三角形（体の頂点から一番近い布の点を探す）。最初の形で作り、あとは箱だけ更新する
 
@@ -169,7 +237,13 @@ namespace GP02.Core
             _triangleSign = triangleSign ?? new sbyte[triangles.Length / 3];
             _positions = new Vector3[vertexCount];
             _depth = new float[vertexCount];
+            _insideDepth = new float[vertexCount];
+            _pokeDepth = new float[vertexCount];
+            _pokeOverlapDepth = new float[vertexCount];
+            _classDepth = new float[vertexCount];
             _parent = new int[vertexCount];
+            _class = new byte[vertexCount];
+            _classWork = new byte[vertexCount];
 
             var edgeUse = new Dictionary<long, int>(PairKeys.Comparer);
             for (int k = 0; k < triangles.Length; k += 3)
@@ -181,6 +255,14 @@ namespace GP02.Core
                     edgeUse[key] = count + 1;
                 }
             }
+            var edges = new List<int>(2 * edgeUse.Count);
+            foreach (long key in edgeUse.Keys)
+            {
+                PairKeys.Split(key, out int a, out int b);
+                edges.Add(a);
+                edges.Add(b);
+            }
+            _edges = edges.ToArray();
             _boundaryEdge = new bool[triangles.Length];
             _boundaryVertex = new bool[vertexCount];
             for (int k = 0; k < triangles.Length; k += 3)
@@ -219,19 +301,25 @@ namespace GP02.Core
         public bool MeasureDepth(ReadOnlySpan<Vector3> clothVertices, BodySurface body, PoseCheckOptions options, float[] depth)
         {
             if (depth == null || depth.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(depth));
-            bool hasBody = Measure(clothVertices, body, options);
+            bool hasBody = Measure(clothVertices, body, options, false, null);
             Array.Copy(_depth, depth, _vertexCount);
             return hasBody;
         }
 
-        // 深さを _depth に、布の外へ出た体の頂点を _pokePoints・_pokeTriangles に入れる
-        bool Measure(ReadOnlySpan<Vector3> clothVertices, BodySurface body, PoseCheckOptions options)
+        // 深さを _depth（と、どこから来たかごとの _insideDepth・_pokeDepth・_pokeOverlapDepth）に、布の外へ出た体の頂点を _pokePoints・_pokeTriangles に入れる。
+        // classifyPokes なら、布の外へ出た体の頂点が、ほかの体の部品の中にある（体どうしの重なりのため）かも調べて分ける。
+        // covered（体の頂点ごとの MeasureCoveredBodyVertices の結果。null なら見ない）で false の体の頂点は数えない
+        bool Measure(ReadOnlySpan<Vector3> clothVertices, BodySurface body, PoseCheckOptions options, bool classifyPokes, bool[] covered)
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
             if (clothVertices.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(clothVertices));
             Array.Clear(_depth, 0, _vertexCount);
+            Array.Clear(_insideDepth, 0, _vertexCount);
+            Array.Clear(_pokeDepth, 0, _vertexCount);
+            Array.Clear(_pokeOverlapDepth, 0, _vertexCount);
             _pokePoints.Clear();
             _pokeTriangles.Clear();
+            _pokeOverlap.Clear();
             if (body == null || body.EnabledIslandCount == 0) return false;
 
             clothVertices.CopyTo(_positions);
@@ -241,7 +329,7 @@ namespace GP02.Core
             for (int i = 0; i < _vertexCount; i++)
             {
                 if (!body.TryQuery(_positions[i], maxDistance, out BodyHit hit)) continue;
-                if (hit.SignedDistance < 0f) _depth[i] = -hit.SignedDistance;
+                if (hit.SignedDistance < 0f) _insideDepth[i] = -hit.SignedDistance;
             }
 
             // (b) 体の頂点が、布の面の外へ出ている
@@ -255,6 +343,9 @@ namespace GP02.Core
                 for (int v = 0; v < body.VertexCount; v++)
                 {
                     if (!body.IsVertexEnabled(v)) continue;
+                    // 編集の姿勢で布に覆われていなかった体の頂点（下ろした手・お辞儀で下りてくる胸など）は、布を通り抜けて出たのではない。
+                    // 布の外に並んだだけか、体の部品どうしが重なっていて、後者は布の頂点が体の中に入るほう（a）で分かる
+                    if (covered != null && !covered[v]) continue;
                     Vector3 p = body.GetVertex(v);
                     if (_tree.RootDistanceSquared(p.X, p.Y, p.Z) > limitSq) continue;
                     if (!_tree.FindClosest(_positions, p.X, p.Y, p.Z, pokeDistance, out int t, out float qx, out float qy, out float qz,
@@ -271,15 +362,20 @@ namespace GP02.Core
                     if (along <= PenetrationReport.CountTolerance) continue;
                     // 一番近い布の点が布の縁にあり、体の頂点が縁の向こう（面に沿った向き）にあるものは除く（裾の下の脚・袖口の先の手など）
                     if (distanceSquared - along * along > 0.25f * distanceSquared) continue;
+                    // 体の頂点が、ほかの体の部品の中にある（腕が腰に入った所の腕の頂点など）なら、体どうしの重なりのために布の外へ出ている
+                    bool overlap = classifyPokes && body.IsInsideAlongRay(p, bodyNormal, options.OverlapRayLength, options.FollowOffset);
+                    float[] target = overlap ? _pokeOverlapDepth : _pokeDepth;
                     for (int corner = 0; corner < 3; corner++)
                     {
                         int w = _triangles[3 * t + corner];
-                        if (along > _depth[w]) _depth[w] = along;
+                        if (along > target[w]) target[w] = along;
                     }
                     _pokePoints.Add(p);
                     _pokeTriangles.Add(t);
+                    _pokeOverlap.Add(overlap);
                 }
             }
+            for (int i = 0; i < _vertexCount; i++) _depth[i] = Math.Max(_insideDepth[i], Math.Max(_pokeDepth[i], _pokeOverlapDepth[i]));
             return true;
         }
 
@@ -290,15 +386,34 @@ namespace GP02.Core
         /// </summary>
         public void Evaluate(ReadOnlySpan<Vector3> clothVertices, BodySurface body, PoseCheckOptions options, float[] baselineDepth, PosePenetration result)
         {
+            Evaluate(clothVertices, body, options, baselineDepth, result, null, null, null);
+        }
+
+        /// <summary>
+        /// <see cref="Evaluate(ReadOnlySpan{Vector3}, BodySurface, PoseCheckOptions, float[], PosePenetration)"/> に、体どうしの重なりの判定を加えたもの。
+        /// 数えた頂点のうち、布が体にぴったり付いていっても（アンカーの点に付いていっても）このポーズで体の中に入るもの（<see cref="IsFollowInsideBody"/>）は、
+        /// <see cref="PosePenetration.OverlapVertices"/> に分け、貫通としては数えない（体どうしが重なっているので、服では直せない）。
+        /// restOverlap（基準の姿勢の <see cref="MeasureFollowOverlap"/> の結果。null なら無し）で true の頂点は分けない（基準の姿勢から体の中と出るのは、
+        /// 体の穴などによる取り違えのため）。anchors が null なら分けない。
+        /// coveredBodyVertices（体の頂点ごとの <see cref="MeasureCoveredBodyVertices"/> の結果。null なら見ない）で false の体の頂点は、布の外へ出ても数えない
+        /// （布に覆われていなかった部品なので、布を通り抜けたのではない）。
+        /// </summary>
+        public void Evaluate(ReadOnlySpan<Vector3> clothVertices, BodySurface body, PoseCheckOptions options, float[] baselineDepth, PosePenetration result,
+            BodyAnchors anchors, bool[] restOverlap, bool[] coveredBodyVertices = null)
+        {
             if (result == null) throw new ArgumentNullException(nameof(result));
             if (baselineDepth != null && baselineDepth.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(baselineDepth));
+            if (anchors != null && anchors.VertexCount != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(anchors));
+            if (restOverlap != null && restOverlap.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(restOverlap));
+            if (coveredBodyVertices != null && body != null && coveredBodyVertices.Length != body.VertexCount) throw new ArgumentException("体の頂点の数と合いません。", nameof(coveredBodyVertices));
             var timer = Stopwatch.StartNew();
             int group = result.Group;
             float stage = result.Stage;
             result.Clear();
             result.Group = group;
             result.Stage = stage;
-            result.HasBody = Measure(clothVertices, body, options);
+            bool classify = anchors != null;
+            result.HasBody = Measure(clothVertices, body, options, classify, coveredBodyVertices);
             if (!result.HasBody)
             {
                 result.Milliseconds = timer.Elapsed.TotalMilliseconds;
@@ -308,26 +423,213 @@ namespace GP02.Core
             float tolerance = Math.Max(0f, options.Tolerance);
             for (int i = 0; i < _vertexCount; i++)
             {
+                _class[i] = 0;
                 float baseline = baselineDepth != null ? baselineDepth[i] : 0f;
-                if (!(_depth[i] > baseline + tolerance)) continue;
-                result.Vertices.Add(i);
-                result.Depths.Add(_depth[i]);
-                if (_depth[i] > result.MaxDepth) result.MaxDepth = _depth[i];
+                float limit = baseline + tolerance;
+                if (!(_depth[i] > limit)) continue;
+                if (!classify)
+                {
+                    _class[i] = 1;
+                    _classDepth[i] = _depth[i];
+                    continue;
+                }
+                // 布が体にぴったり付いていっても体の中に入るなら、全部が体どうしの重なり。
+                // そうでなければ、布の外へ出た体の頂点のうち、ほかの体の部品の中にあるもの（体どうしの重なり）の分を除いて数える
+                bool followInside = (restOverlap == null || !restOverlap[i]) && IsFollowInsideBody(i, body, anchors, options);
+                float plain = followInside ? 0f : Math.Max(_pokeDepth[i], _insideDepth[i]);
+                if (plain > limit)
+                {
+                    _class[i] = 1;
+                    _classDepth[i] = plain;
+                }
+                else
+                {
+                    _class[i] = 2;
+                    _classDepth[i] = _depth[i];
+                }
             }
-            result.RegionCount = CountRegions(baselineDepth, tolerance);
+            if (classify) SmoothClasses();
+            for (int i = 0; i < _vertexCount; i++)
+            {
+                if (_class[i] == 0) continue;
+                float d = _classDepth[i];
+                if (_class[i] == 2)
+                {
+                    result.OverlapVertices.Add(i);
+                    result.OverlapDepths.Add(d);
+                    if (d > result.OverlapMaxDepth) result.OverlapMaxDepth = d;
+                    continue;
+                }
+                result.Vertices.Add(i);
+                result.Depths.Add(d);
+                if (d > result.MaxDepth) result.MaxDepth = d;
+            }
+            result.RegionCount = CountRegions(1);
             LabelRegions(result);
-            CollectPoints(result, baselineDepth, tolerance, Math.Max(0, options.MaxPoints));
+            result.OverlapRegionCount = CountRegions(2);
+            CollectPoints(result, Math.Max(0, options.MaxPoints));
             result.Milliseconds = timer.Elapsed.TotalMilliseconds;
         }
 
-        bool IsCounted(int vertex, float[] baselineDepth, float tolerance)
+        /// <summary>
+        /// 頂点 vertex が、ポーズを付けた体（アンカーを測った体を動かしたもの）にぴったり付いていったとき（<see cref="BodyAnchors.TryFollow"/>）に、
+        /// 体のどこかの部品の中に入るか。一番近い面で内外を決める検索（ほかの島の中）と、外向きのレイ（つながった部品が自分と重なっている所）の両方で見る。
+        /// アンカーが無ければ false。
+        /// </summary>
+        public bool IsFollowInsideBody(int vertex, BodySurface body, BodyAnchors anchors, PoseCheckOptions options)
         {
-            float baseline = baselineDepth != null ? baselineDepth[vertex] : 0f;
-            return _depth[vertex] > baseline + tolerance;
+            if (body == null || anchors == null || options == null || !anchors.Has(vertex)) return false;
+            if (!anchors.TryFollow(vertex, body, Math.Max(1e-5f, options.FollowOffset), out Vector3 position, out Vector3 normal)) return false;
+            if (body.TryQuery(position, options.MaxDistance, out BodyHit hit) && hit.SignedDistance < -Math.Max(1e-5f, options.Tolerance)) return true;
+            return body.IsInsideAlongRay(position, normal, options.OverlapRayLength);
         }
 
-        // 数えた頂点の、三角形の辺でつながったまとまりの数
-        int CountRegions(float[] baselineDepth, float tolerance)
+        // 分け方をならす: 数えた頂点のうち、数えた隣の大半（2つ以上、反対の分け方の隣が同じ分け方の隣の2倍より多い）が反対の分け方なら、それに合わせる
+        // （体どうしの重なりの境目で、1頂点ずつ分け方が入れ替わって、小さな「か所」が多数できないように）。入れ替えた頂点の深さは、全部の深さにする
+        void SmoothClasses()
+        {
+            if (_neighborStart == null) BuildNeighbors();
+            for (int pass = 0; pass < 2; pass++)
+            {
+                bool changed = false;
+                for (int i = 0; i < _vertexCount; i++)
+                {
+                    byte cls = _class[i];
+                    _classWork[i] = cls;
+                    if (cls == 0) continue;
+                    int same = 0, other = 0;
+                    for (int e = _neighborStart[i]; e < _neighborStart[i + 1]; e++)
+                    {
+                        byte n = _class[_neighbors[e]];
+                        if (n == 0) continue;
+                        if (n == cls) same++;
+                        else other++;
+                    }
+                    if (other >= 2 && other > 2 * same)
+                    {
+                        _classWork[i] = cls == 1 ? (byte)2 : (byte)1;
+                        changed = true;
+                    }
+                }
+                if (!changed) break;
+                for (int i = 0; i < _vertexCount; i++)
+                {
+                    if (_classWork[i] == _class[i]) continue;
+                    _class[i] = _classWork[i];
+                    _classDepth[i] = _depth[i];
+                }
+            }
+        }
+
+        void BuildNeighbors()
+        {
+            var start = new int[_vertexCount + 1];
+            for (int k = 0; k < _edges.Length; k++) start[_edges[k] + 1]++;
+            for (int i = 0; i < _vertexCount; i++) start[i + 1] += start[i];
+            var neighbors = new int[_edges.Length];
+            var fill = (int[])start.Clone();
+            for (int k = 0; k < _edges.Length; k += 2)
+            {
+                int a = _edges[k], b = _edges[k + 1];
+                neighbors[fill[a]++] = b;
+                neighbors[fill[b]++] = a;
+            }
+            _neighborStart = start;
+            _neighbors = neighbors;
+        }
+
+        /// <summary>
+        /// すべての頂点について <see cref="IsFollowInsideBody"/> を調べ、overlap に入れる。基準の姿勢で呼び、その結果を
+        /// <see cref="Evaluate(ReadOnlySpan{Vector3}, BodySurface, PoseCheckOptions, float[], PosePenetration, BodyAnchors, bool[], bool[])"/> の restOverlap に渡す。
+        /// </summary>
+        public void MeasureFollowOverlap(BodySurface body, BodyAnchors anchors, PoseCheckOptions options, bool[] overlap)
+        {
+            if (overlap == null || overlap.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(overlap));
+            for (int i = 0; i < _vertexCount; i++) overlap[i] = IsFollowInsideBody(i, body, anchors, options);
+        }
+
+        /// <summary>
+        /// 編集の姿勢の布（clothVertices）と体で、体の頂点ごとに、この布に覆われているか（布の内側にあり、一番近い布の点が縁でなく、
+        /// <see cref="PoseCheckOptions.CoverDistance"/> 以内）を covered（長さは body.VertexCount）に入れる。
+        /// ポーズで布の外へ出た体の頂点のうち、覆われていなかったもの（下ろした手・お辞儀で下りてくる胸など、もともと布の外にあった部品）は、
+        /// 布を通り抜けて出たのではないので、<see cref="Evaluate(ReadOnlySpan{Vector3}, BodySurface, PoseCheckOptions, float[], PosePenetration, BodyAnchors, bool[], bool[])"/> で数えない。
+        /// </summary>
+        public void MeasureCoveredBodyVertices(ReadOnlySpan<Vector3> clothVertices, BodySurface body, PoseCheckOptions options, bool[] covered)
+        {
+            if (body == null) throw new ArgumentNullException(nameof(body));
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            if (clothVertices.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(clothVertices));
+            if (covered == null || covered.Length != body.VertexCount) throw new ArgumentException("体の頂点の数と合いません。", nameof(covered));
+            Array.Clear(covered, 0, covered.Length);
+            if (_triangles.Length == 0) return;
+            clothVertices.CopyTo(_positions);
+            if (_tree == null) _tree = new ClosestTriangleTree(_positions, _triangles);
+            else _tree.Refit(_positions);
+            float distance = Math.Max(0f, options.CoverDistance);
+            float limitSq = distance * distance;
+            for (int v = 0; v < body.VertexCount; v++)
+            {
+                Vector3 p = body.GetVertex(v);
+                if (_tree.RootDistanceSquared(p.X, p.Y, p.Z) > limitSq) continue;
+                if (!_tree.FindClosest(_positions, p.X, p.Y, p.Z, distance, out int t, out float qx, out float qy, out float qz,
+                    out float bu, out float bv, out float bw, out _)) continue;
+                // 一番近い布の点が縁なら、体の頂点は布の外（スカートの上のおなか・袖口の先の手など）
+                if (IsOnBoundary(t, bu, bv, bw)) continue;
+                FaceNormal(t, out float nx, out float ny, out float nz);
+                int sign = _triangleSign[t];
+                if (sign == 0)
+                {
+                    Vector3 bodyNormal = body.GetVertexNormal(v);
+                    float alignment = nx * bodyNormal.X + ny * bodyNormal.Y + nz * bodyNormal.Z;
+                    if (Math.Abs(alignment) < 1e-3f) continue;
+                    sign = alignment > 0f ? 1 : -1;
+                }
+                float along = ((p.X - qx) * nx + (p.Y - qy) * ny + (p.Z - qz) * nz) * sign;
+                covered[v] = along <= PenetrationReport.CountTolerance;
+            }
+        }
+
+        /// <summary>
+        /// rest（編集の姿勢）から posed（ポーズ）への、布の辺の伸び（長さの比 - 1。縮みは 0）の一番大きいものを返し、大きいほうから 1% の所を high に入れる。
+        /// 元の長さが 1mm より短い辺は見ない。
+        /// </summary>
+        public float MeasureStretch(ReadOnlySpan<Vector3> rest, ReadOnlySpan<Vector3> posed, out float high) => MeasureStretch(rest, posed, null, out high);
+
+        /// <summary>
+        /// <see cref="MeasureStretch(ReadOnlySpan{Vector3}, ReadOnlySpan{Vector3}, out float)"/> を、両端の頂点が include で true の辺だけで測る（null なら全部）。
+        /// </summary>
+        public float MeasureStretch(ReadOnlySpan<Vector3> rest, ReadOnlySpan<Vector3> posed, bool[] include, out float high)
+        {
+            if (rest.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(rest));
+            if (posed.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(posed));
+            if (include != null && include.Length != _vertexCount) throw new ArgumentException("頂点の数と合いません。", nameof(include));
+            int edgeCount = _edges.Length / 2;
+            if (_stretchWork == null || _stretchWork.Length < edgeCount) _stretchWork = new float[edgeCount];
+            int count = 0;
+            float max = 0f;
+            for (int k = 0; k < edgeCount; k++)
+            {
+                int a = _edges[2 * k], b = _edges[2 * k + 1];
+                if (include != null && (!include[a] || !include[b])) continue;
+                float rx = rest[a].X - rest[b].X, ry = rest[a].Y - rest[b].Y, rz = rest[a].Z - rest[b].Z;
+                float restLength = MathF.Sqrt(rx * rx + ry * ry + rz * rz);
+                if (!(restLength > 1e-3f)) continue;
+                float px = posed[a].X - posed[b].X, py = posed[a].Y - posed[b].Y, pz = posed[a].Z - posed[b].Z;
+                float stretch = Math.Max(0f, MathF.Sqrt(px * px + py * py + pz * pz) / restLength - 1f);
+                _stretchWork[count++] = stretch;
+                if (stretch > max) max = stretch;
+            }
+            high = 0f;
+            if (count == 0) return 0f;
+            Array.Sort(_stretchWork, 0, count);
+            high = _stretchWork[Math.Min(count - 1, (int)(0.99f * count))];
+            return max;
+        }
+
+        bool IsCounted(int vertex) => _class[vertex] != 0;
+
+        // 分け方 cls の頂点の、三角形の辺でつながったまとまりの数
+        int CountRegions(byte cls)
         {
             int[] parent = _parent;
             for (int i = 0; i < _vertexCount; i++) parent[i] = i;
@@ -336,18 +638,18 @@ namespace GP02.Core
                 for (int e = 0; e < 3; e++)
                 {
                     int a = _triangles[t + e], b = _triangles[t + (e + 1) % 3];
-                    if (IsCounted(a, baselineDepth, tolerance) && IsCounted(b, baselineDepth, tolerance)) Union(parent, a, b);
+                    if (_class[a] == cls && _class[b] == cls) Union(parent, a, b);
                 }
             }
             int regions = 0;
             for (int i = 0; i < _vertexCount; i++)
             {
-                if (IsCounted(i, baselineDepth, tolerance) && Find(parent, i) == i) regions++;
+                if (_class[i] == cls && Find(parent, i) == i) regions++;
             }
             return regions;
         }
 
-        // 数えた頂点に「か所」の番号を振り、か所ごとの一番深い深さを出す（CountRegions のあとに呼ぶ。根の番号の小さい順に 0, 1, …）
+        // 数えた頂点に「か所」の番号を振り、か所ごとの一番深い深さを出す（CountRegions(1) のあとに呼ぶ。根の番号の小さい順に 0, 1, …）
         void LabelRegions(PosePenetration result)
         {
             var labelOfRoot = new Dictionary<int, int>();
@@ -422,23 +724,23 @@ namespace GP02.Core
             }
         }
 
-        // 表示用の点: 数えた布の頂点（4分の3まで）と、数えた所に関わる体の頂点
-        void CollectPoints(PosePenetration result, float[] baselineDepth, float tolerance, int maxPoints)
+        // 表示用の点: 数えた布の頂点（4分の3まで）と、数えた所に関わる体の頂点（体どうしの重なりのものは除く）。体どうしの重なりの頂点は、別に間引いて入れる
+        void CollectPoints(PosePenetration result, int maxPoints)
         {
             var related = _pokePoints;
             int pokeKept = 0;
             for (int k = 0; k < related.Count; k++)
             {
                 int t = _pokeTriangles[k];
-                bool counted = IsCounted(_triangles[3 * t], baselineDepth, tolerance) || IsCounted(_triangles[3 * t + 1], baselineDepth, tolerance)
-                    || IsCounted(_triangles[3 * t + 2], baselineDepth, tolerance);
-                if (!counted) continue;
+                bool counted = _class[_triangles[3 * t]] == 1 || _class[_triangles[3 * t + 1]] == 1 || _class[_triangles[3 * t + 2]] == 1;
+                if (!counted || _pokeOverlap[k]) continue;
                 related[pokeKept] = related[k];
                 _pokeTriangles[pokeKept] = t;
                 pokeKept++;
             }
             related.RemoveRange(pokeKept, related.Count - pokeKept);
             _pokeTriangles.RemoveRange(pokeKept, _pokeTriangles.Count - pokeKept);
+            _pokeOverlap.Clear();
             result.BodyVertexCount = pokeKept;
             if (maxPoints == 0) return;
 
@@ -446,6 +748,9 @@ namespace GP02.Core
             int count = result.Vertices.Count;
             int stride = count <= vertexBudget ? 1 : (count + vertexBudget - 1) / Math.Max(1, vertexBudget);
             for (int k = 0; k < count && result.Points.Count < vertexBudget; k += stride) result.Points.Add(_positions[result.Vertices[k]]);
+            int overlapCount = result.OverlapVertices.Count;
+            int overlapStride = overlapCount <= maxPoints ? 1 : (overlapCount + maxPoints - 1) / maxPoints;
+            for (int k = 0; k < overlapCount && result.OverlapPoints.Count < maxPoints; k += overlapStride) result.OverlapPoints.Add(_positions[result.OverlapVertices[k]]);
             int pokeBudget = maxPoints - result.Points.Count;
             if (pokeBudget <= 0 || pokeKept == 0) return;
             int pokeStride = pokeKept <= pokeBudget ? 1 : (pokeKept + pokeBudget - 1) / pokeBudget;
@@ -586,6 +891,52 @@ namespace GP02.Core
             }
         }
 
+        /// <summary>全結果の、体どうしの重なりの所の数の合計（貫通の数には入れていない）。</summary>
+        public int TotalOverlapRegionCount
+        {
+            get
+            {
+                int count = 0;
+                foreach (PosePenetration entry in _entries) count += entry.OverlapRegionCount;
+                return count;
+            }
+        }
+
+        /// <summary>体どうしの重なりが見つかったポーズの数（<see cref="PosePenetration.Group"/> が同じ結果は1つと数える）。</summary>
+        public int OverlapGroupCount
+        {
+            get
+            {
+                var groups = new HashSet<int>();
+                foreach (PosePenetration entry in _entries)
+                {
+                    if (entry.HasOverlap) groups.Add(entry.Group);
+                }
+                return groups.Count;
+            }
+        }
+
+        /// <summary>全結果の布の伸びの、一番大きいものと、大きいほうから 1% の所の一番大きいもの（<see cref="PosePenetration.MaxStretch"/>）。</summary>
+        public float MaxStretch
+        {
+            get
+            {
+                float max = 0f;
+                foreach (PosePenetration entry in _entries) max = Math.Max(max, entry.MaxStretch);
+                return max;
+            }
+        }
+
+        public float HighStretch
+        {
+            get
+            {
+                float max = 0f;
+                foreach (PosePenetration entry in _entries) max = Math.Max(max, entry.HighStretch);
+                return max;
+            }
+        }
+
         /// <summary>どれかのポーズで貫通として数えられた頂点の数。</summary>
         public int PenetratingVertexCount
         {
@@ -659,8 +1010,16 @@ namespace GP02.Core
         /// 量が maxPush を超える（深すぎる）か所は、か所ごと逃がさない（一部だけ動かすと、深い所の周りに輪のような凹凸が残るため）。
         /// 頂点ごとに、逃がすか所の量のうち一番大きいものを返す。割合を測っていない結果は、割合 1 とみなす。
         /// </summary>
-        public PoseEscapePlan PlanEscape(float extra, float maxPush, float minGain)
+        public PoseEscapePlan PlanEscape(float extra, float maxPush, float minGain) => PlanEscape(extra, maxPush, minGain, null, 0f);
+
+        /// <summary>
+        /// <see cref="PlanEscape(float, float, float)"/> に、体にぴったりの所を逃がさないことを加えたもの。か所の頂点の半分以上で、一番近い体の点（anchors）までが
+        /// tightDistance 以下なら、外へ逃がす布の余裕が無い（逃がすと周りが引かれて上下にずれ、別のポーズでかえって深くなることがある）ので逃がさず、
+        /// ウェイトを体に寄せる対象にする（<see cref="PlanWeightFix(float, float, float, BodyAnchors, float)"/> と同じ決め方）。
+        /// </summary>
+        public PoseEscapePlan PlanEscape(float extra, float maxPush, float minGain, BodyAnchors anchors, float tightDistance)
         {
+            if (anchors != null && anchors.VertexCount != _worstDepth.Length) throw new ArgumentException("頂点の数が、集計と合いません。", nameof(anchors));
             var plan = new PoseEscapePlan { WeldedPush = new float[_worstDepth.Length], AllowedRegions = new bool[_entries.Count][] };
             extra = Math.Max(0f, extra);
             for (int e = 0; e < _entries.Count; e++)
@@ -668,26 +1027,16 @@ namespace GP02.Core
                 PosePenetration entry = _entries[e];
                 int regions = entry.RegionDepths.Count;
                 if (regions == 0) continue;
-                var required = new float[regions];
-                var lowGain = new bool[regions];
+                ClassifyRegions(entry, extra, minGain, out float[] required, out bool[] lowGain);
+                bool[] tight = TightRegions(entry, anchors, tightDistance);
                 bool measured = entry.Gains.Count == entry.Vertices.Count;
-                for (int k = 0; k < entry.Vertices.Count; k++)
-                {
-                    int r = entry.VertexRegions[k];
-                    float gain = measured ? entry.Gains[k] : 1f;
-                    if (!(gain >= minGain))
-                    {
-                        lowGain[r] = true;
-                        continue;
-                    }
-                    required[r] = Math.Max(required[r], (entry.Depths[k] + extra) / gain);
-                }
                 var allowed = new bool[regions];
                 plan.AllowedRegions[e] = allowed;
                 for (int r = 0; r < regions; r++)
                 {
                     if (lowGain[r]) plan.LowGainRegions++;
                     else if (required[r] > maxPush) plan.TooFarRegions++;
+                    else if (tight != null && tight[r]) plan.TightRegions++;
                     else
                     {
                         allowed[r] = true;
@@ -706,6 +1055,195 @@ namespace GP02.Core
             }
             return plan;
         }
+
+        // か所ごとの、体にぴったりか（か所の頂点の半分以上で、一番近い体の点までが tightDistance 以下）。anchors が null なら null
+        static bool[] TightRegions(PosePenetration entry, BodyAnchors anchors, float tightDistance)
+        {
+            if (anchors == null) return null;
+            int regions = entry.RegionDepths.Count;
+            var votes = new int[regions];
+            var counts = new int[regions];
+            for (int k = 0; k < entry.Vertices.Count; k++)
+            {
+                int r = entry.VertexRegions[k];
+                counts[r]++;
+                int v = entry.Vertices[k];
+                if ((uint)v < (uint)anchors.VertexCount && anchors.Has(v) && anchors.GetDistance(v) <= tightDistance) votes[r]++;
+            }
+            var tight = new bool[regions];
+            for (int r = 0; r < regions; r++) tight[r] = counts[r] > 0 && 2 * votes[r] >= counts[r];
+            return tight;
+        }
+
+        // か所ごとの「外へ逃がすのに要る量」（深さ＋余白を、ポーズで動く割合で割ったものの一番大きいもの）と、
+        // 動く割合が minGain より小さい頂点があるか（ウェイトが原因）。割合を測っていない結果は、割合 1 とみなす
+        static void ClassifyRegions(PosePenetration entry, float extra, float minGain, out float[] required, out bool[] lowGain)
+        {
+            int regions = entry.RegionDepths.Count;
+            required = new float[regions];
+            lowGain = new bool[regions];
+            bool measured = entry.Gains.Count == entry.Vertices.Count;
+            for (int k = 0; k < entry.Vertices.Count; k++)
+            {
+                int r = entry.VertexRegions[k];
+                float gain = measured ? entry.Gains[k] : 1f;
+                if (!(gain >= minGain))
+                {
+                    lowGain[r] = true;
+                    continue;
+                }
+                required[r] = Math.Max(required[r], (entry.Depths[k] + extra) / gain);
+            }
+        }
+
+        /// <summary>
+        /// 「ウェイトを体に寄せる」の対象を決める。ポーズ・段階ごとの「か所」のうち、外へ逃がしても直らないもの
+        /// （<see cref="PlanEscape(float, float, float)"/> で逃がさないか所: ポーズで動く割合が minGain より小さい頂点がある＝ウェイトの混ざり方の違い、
+        /// または maxPush を超えて動かさないと足りない＝服が体に付いていかない）の頂点を、対象（度合い 1）にする。
+        /// 外へ逃がせるか所の頂点も、ポーズで動く割合が小さいものは、その分だけ対象にする（<see cref="WeightFixPlan.WeldedSeed"/>）。
+        /// 体どうしの重なり（<see cref="PosePenetration.OverlapVertices"/>）は、もともと「か所」に入っていないので対象にならない。
+        /// </summary>
+        public WeightFixPlan PlanWeightFix(float extra, float maxPush, float minGain) => PlanWeightFix(extra, maxPush, minGain, null, 0f);
+
+        /// <summary>
+        /// <see cref="PlanWeightFix(float, float, float)"/> に、ぴったりの服の所も対象に加えたもの。か所の頂点の半分以上で、一番近い体の点（anchors）までが
+        /// tightDistance 以下なら、外へ逃がす布の余裕が無い（逃がすと伸びる）ので、ウェイトで直す対象にする（体に沿った服は、体と同じウェイトにすれば付いていく）。
+        /// </summary>
+        public WeightFixPlan PlanWeightFix(float extra, float maxPush, float minGain, BodyAnchors anchors, float tightDistance)
+        {
+            if (anchors != null && anchors.VertexCount != _worstDepth.Length) throw new ArgumentException("頂点の数が、集計と合いません。", nameof(anchors));
+            var plan = new WeightFixPlan { WeldedSeed = new float[_worstDepth.Length], TargetRegions = new bool[_entries.Count][] };
+            extra = Math.Max(0f, extra);
+            for (int e = 0; e < _entries.Count; e++)
+            {
+                PosePenetration entry = _entries[e];
+                plan.OverlapRegions += entry.OverlapRegionCount;
+                int regions = entry.RegionDepths.Count;
+                if (regions == 0) continue;
+                ClassifyRegions(entry, extra, minGain, out float[] required, out bool[] lowGain);
+                bool[] tight = TightRegions(entry, anchors, tightDistance);
+                var target = new bool[regions];
+                plan.TargetRegions[e] = target;
+                for (int r = 0; r < regions; r++)
+                {
+                    if (lowGain[r]) plan.LowGainRegions++;
+                    else if (required[r] > maxPush) plan.TooFarRegions++;
+                    else if (tight != null && tight[r]) plan.TightRegions++;
+                    else continue;
+                    target[r] = true;
+                }
+                bool measured = entry.Gains.Count == entry.Vertices.Count;
+                for (int k = 0; k < entry.Vertices.Count; k++)
+                {
+                    int v = entry.Vertices[k];
+                    if ((uint)v >= (uint)plan.WeldedSeed.Length) continue;
+                    // ウェイトが原因のか所は全部。外へ逃がせるか所でも、ポーズで動く割合が小さい頂点ほど、ウェイトが原因の度合いが大きい
+                    // （割合 minGain 以下で 1、割合 1 で 0）。ぴったりの服のひざの浅い突き抜けは、外へ逃がす布の余裕も無いため
+                    float seed = target[entry.VertexRegions[k]] ? 1f : measured ? Math.Max(0f, Math.Min(1f, (1f - entry.Gains[k]) / Math.Max(1e-3f, 1f - minGain))) : 0f;
+                    if (seed > plan.WeldedSeed[v]) plan.WeldedSeed[v] = seed;
+                }
+            }
+            for (int v = 0; v < plan.WeldedSeed.Length; v++)
+            {
+                if (plan.WeldedSeed[v] > 0f) plan.SeedVertexCount++;
+            }
+            return plan;
+        }
+
+        /// <summary>
+        /// 直した所（regions: 結果の番号ごと・か所の番号ごとの印）が、直したあとに同じポーズ・段階を同じ順に調べ直した集計 after で、
+        /// どれだけ浅くなったかと、全ポーズの深さの合計（1つの深さは depthCap で頭打ち）の前後を測る。before は regions を作った集計。
+        /// </summary>
+        public static PoseFixEffect MeasureFixEffect(PoseCheckSummary before, PoseCheckSummary after, bool[][] regions, float depthCap)
+        {
+            if (before == null) throw new ArgumentNullException(nameof(before));
+            if (after == null) throw new ArgumentNullException(nameof(after));
+            var effect = new PoseFixEffect();
+            foreach (PosePenetration entry in before.Entries)
+            {
+                for (int k = 0; k < entry.Depths.Count; k++) effect.TotalDepthBefore += Math.Min(entry.Depths[k], depthCap);
+            }
+            foreach (PosePenetration entry in after.Entries)
+            {
+                for (int k = 0; k < entry.Depths.Count; k++) effect.TotalDepthAfter += Math.Min(entry.Depths[k], depthCap);
+            }
+            var depthAfter = new float[Math.Max(before.VertexCount, after.VertexCount)];
+            double sumBefore = 0.0, sumAfter = 0.0;
+            int count = Math.Min(before.Entries.Count, after.Entries.Count);
+            for (int e = 0; e < count && regions != null && e < regions.Length; e++)
+            {
+                bool[] marked = regions[e];
+                if (marked == null) continue;
+                PosePenetration was = before.Entries[e], now = after.Entries[e];
+                for (int k = 0; k < now.Vertices.Count; k++) depthAfter[now.Vertices[k]] = now.Depths[k];
+                for (int k = 0; k < was.Vertices.Count; k++)
+                {
+                    int r = was.VertexRegions[k];
+                    if (r < 0 || r >= marked.Length || !marked[r]) continue;
+                    float d = depthAfter[was.Vertices[k]];
+                    effect.TargetPairs++;
+                    sumBefore += was.Depths[k];
+                    sumAfter += d;
+                    if (!(d > 0f)) effect.ClearedPairs++;
+                }
+                for (int k = 0; k < now.Vertices.Count; k++) depthAfter[now.Vertices[k]] = 0f;
+            }
+            if (effect.TargetPairs > 0)
+            {
+                effect.TargetDepthBefore = (float)(sumBefore / effect.TargetPairs);
+                effect.TargetDepthAfter = (float)(sumAfter / effect.TargetPairs);
+            }
+            return effect;
+        }
+    }
+
+    /// <summary><see cref="PoseCheckSummary.PlanWeightFix"/> の結果: 「ウェイトを体に寄せる」の対象の頂点と、か所の数（ポーズ・段階ごとに数える）。</summary>
+    public sealed class WeightFixPlan
+    {
+        /// <summary>
+        /// まとめた後の頂点ごとの、対象の度合い（0〜1）。ウェイトが原因のか所の頂点は 1、外へ逃がせるか所の頂点は、ポーズで動く割合が小さいほど大きい、ほかは 0。
+        /// </summary>
+        public float[] WeldedSeed;
+
+        /// <summary>結果（<see cref="PoseCheckSummary.Entries"/> の番号）ごとの、対象のか所（か所の番号ごとに true）。か所の無い結果は null。</summary>
+        public bool[][] TargetRegions;
+
+        /// <summary>対象のか所のうち、ポーズで動く割合が小さい頂点のあるもの（ひざ・ひじを深く曲げた所など）と、外へ逃がすには深すぎるもの（座ったときの太ももなど）の数。</summary>
+        public int LowGainRegions, TooFarRegions;
+
+        /// <summary>対象のか所のうち、体に沿ったぴったりの服で、外へ逃がす余裕の無いもの（浅くても、体と同じウェイトにして直す）の数。</summary>
+        public int TightRegions;
+
+        /// <summary>体どうしの重なりの所の数（対象にしない。服では直せない）。</summary>
+        public int OverlapRegions;
+
+        /// <summary>対象の頂点の数。</summary>
+        public int SeedVertexCount;
+
+        /// <summary>対象のか所の数（ウェイトが原因の貫通）。</summary>
+        public int Regions => LowGainRegions + TooFarRegions + TightRegions;
+
+        /// <summary>直したあとに調べ直した集計 after で、対象のか所の前後を測る（<see cref="PoseCheckSummary.MeasureFixEffect"/>）。</summary>
+        public PoseFixEffect MeasureEffect(PoseCheckSummary before, PoseCheckSummary after, float depthCap) => PoseCheckSummary.MeasureFixEffect(before, after, TargetRegions, depthCap);
+    }
+
+    /// <summary><see cref="PoseCheckSummary.MeasureFixEffect"/> の結果。</summary>
+    public sealed class PoseFixEffect
+    {
+        /// <summary>直した所の（ポーズ・段階, 頂点）の組の数と、そのうち調べ直して貫通が無くなった数。</summary>
+        public int TargetPairs, ClearedPairs;
+
+        /// <summary>直した所の深さの平均（メートル）の前後。</summary>
+        public float TargetDepthBefore, TargetDepthAfter;
+
+        /// <summary>全ポーズ・全段階の、数えた頂点の深さ（頭打ちにしたもの）の合計（メートル）の前後。</summary>
+        public double TotalDepthBefore, TotalDepthAfter;
+
+        /// <summary>直した所のうち、貫通が無くなった割合（0〜1）。</summary>
+        public float ClearedRatio => TargetPairs > 0 ? (float)ClearedPairs / TargetPairs : 0f;
+
+        /// <summary>効いたか: 直した所の深さの平均が ratio 倍以下になり、全体の深さの合計も減った。</summary>
+        public bool Improved(float ratio) => TargetPairs > 0 && TargetDepthAfter <= TargetDepthBefore * ratio && TotalDepthAfter < TotalDepthBefore;
     }
 
     /// <summary><see cref="PoseCheckSummary.PlanEscape"/> の結果: 頂点ごとの外へ逃がす量と、か所の数（ポーズ・段階ごとに数える）。</summary>
@@ -726,8 +1264,11 @@ namespace GP02.Core
         /// <summary>動かす量が上限を超えるので逃がさないか所の数（深すぎる。たいていウェイトが原因）。</summary>
         public int TooFarRegions;
 
+        /// <summary>体にぴったりで、外へ逃がす布の余裕が無いので逃がさないか所の数（ウェイトを体に寄せて直す）。</summary>
+        public int TightRegions;
+
         /// <summary>逃がさないか所の数。</summary>
-        public int SkippedRegions => LowGainRegions + TooFarRegions;
+        public int SkippedRegions => LowGainRegions + TooFarRegions + TightRegions;
 
         /// <summary>
         /// 逃がしたあとに同じポーズ・段階を同じ順に調べ直した集計 after で、逃がしたか所（ポーズごとの頂点）がどれだけ浅くなったかと、

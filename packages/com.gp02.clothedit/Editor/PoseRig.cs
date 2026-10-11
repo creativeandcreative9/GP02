@@ -102,6 +102,9 @@ namespace GP02.EditorTools
         readonly Transform _clone;
         readonly Transform _originalRoot;
         readonly Transform[] _cloneTransforms;
+        readonly Transform[] _originalTransforms;   // _cloneTransforms と同じ並びの、元のアバターの Transform
+        readonly Dictionary<Transform, int> _originalIndex = new Dictionary<Transform, int>();
+        readonly Dictionary<Transform, int> _cloneIndex = new Dictionary<Transform, int>();
         readonly Vector3[] _baseLocalPosition;
         readonly Quaternion[] _baseLocalRotation;
         readonly Vector3[] _baseLocalScale;
@@ -121,7 +124,13 @@ namespace GP02.EditorTools
         readonly Vector3[] _followerBasePosition, _targetBasePosition;
         readonly Quaternion[] _followerBaseRotation, _targetBaseRotation;
 
+        // アバターのボーン（複製）ごとの、動きをうつしている服の別のアーマチュアのボーン（複製）
+        readonly Dictionary<Transform, List<Transform>> _followersOfTarget = new Dictionary<Transform, List<Transform>>();
+        readonly HashSet<Transform> _underHuman = new HashSet<Transform>();   // Humanoid のボーンとその下（複製）
+
         readonly Renderer[] _targets;          // 編集中の衣装の複製（Session のレンダラーの順）
+        readonly Transform[][] _targetBaseBones;   // 衣装の複製の、元のボーン（足したボーンを外すため）
+        readonly bool[] _targetUsesAvatarBones;    // 衣装がアバターのボーンにスキニングされているか（別のアーマチュアでないか）
         readonly Mesh[] _targetMeshes;         // 衣装の複製に付けた一時メッシュ（このクラスが消す）
         readonly SkinnedMeshRenderer[] _probes; // 試しの形を取り出すための、衣装の複製と同じボーンのレンダラー（非アクティブ・見せない）
         readonly Mesh[] _probeMeshes;          // 試しの形の一時メッシュ（このクラスが消す）
@@ -243,8 +252,13 @@ namespace GP02.EditorTools
             Transform[] originals = root.GetComponentsInChildren<Transform>(true);
             _cloneTransforms = clone.GetComponentsInChildren<Transform>(true);
             if (originals.Length != _cloneTransforms.Length) throw new InvalidOperationException("複製の階層が元と一致しません。");
-            var indexOf = new Dictionary<Transform, int>();
-            for (int i = 0; i < originals.Length; i++) indexOf[originals[i]] = i;
+            _originalTransforms = originals;
+            var indexOf = _originalIndex;
+            for (int i = 0; i < originals.Length; i++)
+            {
+                indexOf[originals[i]] = i;
+                _cloneIndex[_cloneTransforms[i]] = i;
+            }
 
             int count = _cloneTransforms.Length;
             _baseLocalPosition = new Vector3[count];
@@ -304,10 +318,17 @@ namespace GP02.EditorTools
             _targetMeshes = new Mesh[targets.Count];
             _probes = new SkinnedMeshRenderer[targets.Count];
             _probeMeshes = new Mesh[targets.Count];
+            _targetBaseBones = new Transform[targets.Count][];
+            _targetUsesAvatarBones = new bool[targets.Count];
             for (int k = 0; k < targets.Count; k++)
             {
                 if (!indexOf.TryGetValue(targets[k].transform, out int index)) throw new InvalidOperationException("衣装がアバターの中にありません。");
                 _targets[k] = _cloneTransforms[index].GetComponent<Renderer>();
+                _targetBaseBones[k] = _targets[k] is SkinnedMeshRenderer skinnedTarget ? skinnedTarget.bones : new Transform[0];
+                bool usesAvatar = false;
+                foreach (Transform bone in _targetBaseBones[k]) usesAvatar |= bone != null && _underHuman.Contains(bone);
+                // ボーンの無い衣装（MeshRenderer）は、アバターの Transform に付いているものとして扱う
+                _targetUsesAvatarBones[k] = usesAvatar || _targetBaseBones[k].Length == 0;
             }
 
             List<Renderer> body = SelectBody(root, targets, originalHuman, out bool fallback);
@@ -435,6 +456,10 @@ namespace GP02.EditorTools
                 underHuman[t] = result;
                 return result;
             }
+            foreach (Transform t in _cloneTransforms)
+            {
+                if (IsUnderHuman(t)) _underHuman.Add(t);
+            }
             var humanAncestors = new HashSet<Transform>();
             foreach (Transform bone in human)
             {
@@ -443,15 +468,29 @@ namespace GP02.EditorTools
 
             var candidates = new HashSet<Transform>();
             var skinnedBones = new HashSet<Transform>();
+            var armatureRoots = new HashSet<Transform>();
             foreach (SkinnedMeshRenderer skinned in _clone.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
                 foreach (Transform bone in skinned.bones)
                 {
                     if (bone != null) skinnedBones.Add(bone);
+                    Transform top = null;
                     for (Transform t = bone; t != null && t != _clone && !humanAncestors.Contains(t) && !IsUnderHuman(t); t = t.parent)
                     {
-                        if (!candidates.Add(t)) break;
+                        candidates.Add(t);
+                        top = t;
                     }
+                    if (top != null) armatureRoots.Add(top);
+                }
+            }
+            // 服のアーマチュアの、スキニングに使っていないボーン（スカートだけの服の背骨など）も対応付ける。
+            // ウェイトを体に寄せると、体の背骨のウェイトを、服の背骨に写すことがあるため
+            foreach (Transform top in armatureRoots)
+            {
+                foreach (Transform t in top.GetComponentsInChildren<Transform>(true))
+                {
+                    if (IsUnderHuman(t) || humanAncestors.Contains(t) || t.GetComponent<Renderer>() != null) continue;
+                    candidates.Add(t);
                 }
             }
 
@@ -503,6 +542,12 @@ namespace GP02.EditorTools
                 }
                 followerList.Add(clothList[i]);
                 targetList.Add(avatarList[match[i]]);
+                if (!_followersOfTarget.TryGetValue(avatarList[match[i]], out List<Transform> list))
+                {
+                    list = new List<Transform>();
+                    _followersOfTarget.Add(avatarList[match[i]], list);
+                }
+                list.Add(clothList[i]);
             }
             followers = followerList.ToArray();
             targets = targetList.ToArray();
@@ -581,6 +626,12 @@ namespace GP02.EditorTools
             }
             var pose = new HumanPose { bodyPosition = _bodyPosition, bodyRotation = _bodyRotation, muscles = (float[])muscles.Clone() };
             _handler.SetHumanPose(ref pose);
+            FinishPose();
+        }
+
+        // ポーズを付けたあと: 腰を基準の位置に戻し、一番低い足を床の高さにそろえ、服の別のアーマチュアのボーンに動きをうつす
+        void FinishPose()
+        {
             Vector3 up = _clone.up;
             if (!_hasAnchor)
             {
@@ -611,15 +662,320 @@ namespace GP02.EditorTools
             return lowest;
         }
 
-        /// <summary>複製の Transform（元のアバターと同じ並び）。テスト用。</summary>
+        /// <summary>元のアバターの Transform に対応する、複製の Transform。無ければ null。</summary>
         public Transform GetCloneTransform(Transform original)
         {
-            Transform[] originals = _originalRoot.GetComponentsInChildren<Transform>(true);
-            for (int i = 0; i < originals.Length && i < _cloneTransforms.Length; i++)
+            return original != null && _originalIndex.TryGetValue(original, out int index) ? _cloneTransforms[index] : null;
+        }
+
+        /// <summary>複製の Transform に対応する、元のアバターの Transform。無ければ null。</summary>
+        public Transform GetOriginalTransform(Transform clone)
+        {
+            return clone != null && _cloneIndex.TryGetValue(clone, out int index) ? _originalTransforms[index] : null;
+        }
+
+        // ---- 結果のポーズ（プリセットの筋肉の値、手持ちの AnimationClip） ----
+
+        /// <summary>
+        /// 結果のポーズを付ける。筋肉の値があればそれ（プリセットと Humanoid のクリップ）、無ければ Generic のクリップのその時刻。
+        /// </summary>
+        public void ApplyEntry(PoseCheckEntry entry)
+        {
+            if (entry == null) throw new ArgumentNullException(nameof(entry));
+            if (entry.Muscles != null) ApplyMuscles(entry.Muscles);
+            else if (entry.Clip != null) ApplyGenericClip(entry.Clip, entry.ClipTime);
+            else ApplyBase();
+        }
+
+        /// <summary>
+        /// Humanoid のクリップの、time 秒の筋肉の値（長さは <see cref="HumanTrait.MuscleCount"/>）。クリップに無い筋肉は baseMuscles のまま。
+        /// 筋肉のカーブが1つも無ければ null（Generic のクリップ）。腰の位置と向き（RootT・RootQ）は使わない（ポーズの貫通には関係しないため）。
+        /// </summary>
+        public static float[] SampleHumanoidMuscles(AnimationClip clip, float time, float[] baseMuscles)
+        {
+            if (clip == null) throw new ArgumentNullException(nameof(clip));
+            if (baseMuscles == null) throw new ArgumentNullException(nameof(baseMuscles));
+            List<(int Muscle, AnimationCurve Curve)> curves = HumanoidCurves(clip);
+            if (curves.Count == 0) return null;
+            var muscles = (float[])baseMuscles.Clone();
+            foreach ((int muscle, AnimationCurve curve) in curves)
             {
-                if (originals[i] == original) return _cloneTransforms[i];
+                if (muscle < muscles.Length) muscles[muscle] = curve.Evaluate(time);
+            }
+            return muscles;
+        }
+
+        /// <summary>クリップの、筋肉のカーブ（筋肉の番号とカーブ）。Humanoid のクリップでなければ空。</summary>
+        public static List<(int Muscle, AnimationCurve Curve)> HumanoidCurves(AnimationClip clip)
+        {
+            var result = new List<(int, AnimationCurve)>();
+            if (clip == null) return result;
+            foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
+            {
+                if (binding.type != typeof(Animator) || !string.IsNullOrEmpty(binding.path)) continue;
+                int muscle = PoseLibrary.MuscleIndex(binding.propertyName);
+                if (muscle < 0) muscle = PoseLibrary.MuscleIndex(FingerMuscleName(binding.propertyName));
+                if (muscle < 0) continue;
+                AnimationCurve curve = AnimationUtility.GetEditorCurve(clip, binding);
+                if (curve != null) result.Add((muscle, curve));
+            }
+            return result;
+        }
+
+        // クリップの指の筋肉の名前（"LeftHand.Thumb.1 Stretched"）を、HumanTrait の名前（"Left Thumb 1 Stretched"）にする
+        static string FingerMuscleName(string property)
+        {
+            if (string.IsNullOrEmpty(property)) return property;
+            foreach (string side in new[] { "Left", "Right" })
+            {
+                string prefix = side + "Hand.";
+                if (property.StartsWith(prefix, StringComparison.Ordinal)) return side + " " + property.Substring(prefix.Length).Replace('.', ' ');
+            }
+            return property;
+        }
+
+        /// <summary>
+        /// Generic のクリップの、Transform のカーブのうち、パスがこのアバターの中に見つかる数と、全部の数。
+        /// パスが1つも合わなければ、そのクリップは使えない（別のアバター用のクリップ）。
+        /// </summary>
+        public void CountGenericPaths(AnimationClip clip, out int matched, out int total)
+        {
+            matched = 0;
+            total = 0;
+            if (clip == null) return;
+            var seen = new HashSet<string>();
+            foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
+            {
+                if (binding.type != typeof(Transform) || !seen.Add(binding.path)) continue;
+                total++;
+                if (_clone.Find(binding.path) != null) matched++;
+            }
+        }
+
+        /// <summary>
+        /// Generic のクリップの time 秒を、複製に当てる（基準の姿勢から、クリップの Transform のカーブだけを置き換える）。
+        /// そのあと、プリセットのポーズと同じく、腰を基準の位置に戻して足を床にそろえ、服の別のアーマチュアのボーンに動きをうつす。
+        /// </summary>
+        public void ApplyGenericClip(AnimationClip clip, float time)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(PoseRig));
+            if (clip == null) throw new ArgumentNullException(nameof(clip));
+            for (int i = 0; i < _cloneTransforms.Length; i++)
+            {
+                Transform t = _cloneTransforms[i];
+                t.localPosition = _baseLocalPosition[i];
+                t.localRotation = _baseLocalRotation[i];
+                t.localScale = _baseLocalScale[i];
+            }
+            // カーブを自分で読んで当てる（見えない入れ物の下の複製でも、Animator が無くても同じに動くように）
+            if (!_genericCurves.TryGetValue(clip, out List<GenericCurve> curves))
+            {
+                curves = new List<GenericCurve>();
+                foreach (EditorCurveBinding binding in AnimationUtility.GetCurveBindings(clip))
+                {
+                    if (binding.type != typeof(Transform)) continue;
+                    Transform target = _clone.Find(binding.path);
+                    AnimationCurve curve = target != null ? AnimationUtility.GetEditorCurve(clip, binding) : null;
+                    if (curve != null) curves.Add(new GenericCurve { Target = target, Property = binding.propertyName, Curve = curve });
+                }
+                _genericCurves.Add(clip, curves);
+            }
+            var positions = new Dictionary<Transform, Vector3>();
+            var rotations = new Dictionary<Transform, Vector4>();
+            var eulers = new Dictionary<Transform, Vector3>();
+            var scales = new Dictionary<Transform, Vector3>();
+            foreach (GenericCurve c in curves)
+            {
+                float value = c.Curve.Evaluate(time);
+                Transform t = c.Target;
+                int axis = c.Property.Length > 0 ? "xyzw".IndexOf(c.Property[c.Property.Length - 1]) : -1;
+                if (axis < 0) continue;
+                if (c.Property.StartsWith("m_LocalPosition", StringComparison.Ordinal))
+                {
+                    Vector3 p = positions.TryGetValue(t, out Vector3 old) ? old : t.localPosition;
+                    if (axis < 3) p[axis] = value;
+                    positions[t] = p;
+                }
+                else if (c.Property.StartsWith("m_LocalRotation", StringComparison.Ordinal))
+                {
+                    Quaternion q0 = t.localRotation;
+                    Vector4 q = rotations.TryGetValue(t, out Vector4 old) ? old : new Vector4(q0.x, q0.y, q0.z, q0.w);
+                    q[axis] = value;
+                    rotations[t] = q;
+                }
+                else if (c.Property.StartsWith("m_LocalScale", StringComparison.Ordinal))
+                {
+                    Vector3 sc = scales.TryGetValue(t, out Vector3 old) ? old : t.localScale;
+                    if (axis < 3) sc[axis] = value;
+                    scales[t] = sc;
+                }
+                else if (c.Property.StartsWith("localEulerAngles", StringComparison.Ordinal) || c.Property.StartsWith("m_LocalEuler", StringComparison.Ordinal))
+                {
+                    Vector3 e = eulers.TryGetValue(t, out Vector3 old) ? old : t.localEulerAngles;
+                    if (axis < 3) e[axis] = value;
+                    eulers[t] = e;
+                }
+            }
+            foreach (KeyValuePair<Transform, Vector3> pair in positions) pair.Key.localPosition = pair.Value;
+            foreach (KeyValuePair<Transform, Vector3> pair in eulers) pair.Key.localEulerAngles = pair.Value;
+            foreach (KeyValuePair<Transform, Vector4> pair in rotations)
+            {
+                Vector4 q = pair.Value;
+                float length = Mathf.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+                if (length > 1e-6f) pair.Key.localRotation = new Quaternion(q.x / length, q.y / length, q.z / length, q.w / length);
+            }
+            foreach (KeyValuePair<Transform, Vector3> pair in scales) pair.Key.localScale = pair.Value;
+            FinishPose();
+        }
+
+        sealed class GenericCurve
+        {
+            public Transform Target;
+            public string Property;
+            public AnimationCurve Curve;
+        }
+
+        readonly Dictionary<AnimationClip, List<GenericCurve>> _genericCurves = new Dictionary<AnimationClip, List<GenericCurve>>();
+
+        // ---- ウェイトを体に寄せるための情報 ----
+
+        /// <summary>
+        /// 衣装 k（Session のレンダラーの順）で、アバターのボーン avatarBone（元のアバターの Transform）と同じ働きのボーン（元の Transform）。
+        /// 衣装がアバターのボーンにスキニングされていれば、そのボーン自身（衣装のボーンに無ければ、あとで足す）。
+        /// 服だけの別のアーマチュアなら、名前と位置で対応付けたボーン（<see cref="BoneNameMatch"/>）のうち、衣装のアーマチュアのもの。見つからなければ null。
+        /// </summary>
+        public Transform FindClothBone(int k, Transform avatarBone)
+        {
+            if (avatarBone == null || (uint)k >= (uint)_targets.Length) return null;
+            Transform clone = GetCloneTransform(avatarBone);
+            if (clone == null) return null;
+            foreach (Transform bone in _targetBaseBones[k])
+            {
+                if (bone == clone) return avatarBone;
+            }
+            if (_targetUsesAvatarBones[k]) return avatarBone;
+            if (!_followersOfTarget.TryGetValue(clone, out List<Transform> followers)) return null;
+            // 衣装のボーンと同じアーマチュア（複製のルートの下の、同じ一番上の Transform）にあるもの
+            var tops = new HashSet<Transform>();
+            foreach (Transform bone in _targetBaseBones[k])
+            {
+                Transform top = TopUnderClone(bone);
+                if (top != null) tops.Add(top);
+            }
+            foreach (Transform follower in followers)
+            {
+                if (tops.Contains(TopUnderClone(follower))) return GetOriginalTransform(follower);
             }
             return null;
+        }
+
+        /// <summary>
+        /// 体のレンダラーのうち、bone（元のアバターの Transform）でスキニングしているものの、そのボーンのバインドポーズと、そのレンダラー（元の Transform）。
+        /// 無ければ false。衣装にボーンを足すとき、体と同じ姿勢を基準にするのに使う。
+        /// </summary>
+        public bool TryGetBodyBindpose(Transform bone, out Matrix4x4 bindpose, out Transform renderer)
+        {
+            bindpose = Matrix4x4.identity;
+            renderer = null;
+            Transform clone = GetCloneTransform(bone);
+            if (clone == null) return false;
+            foreach (Renderer body in _body)
+            {
+                if (!(body is SkinnedMeshRenderer skinned) || skinned.sharedMesh == null) continue;
+                Transform[] bones = skinned.bones;
+                int index = Array.IndexOf(bones, clone);
+                if (index < 0) continue;
+                Matrix4x4[] bindposes = skinned.sharedMesh.bindposes;
+                if (index >= bindposes.Length) continue;
+                bindpose = bindposes[index];
+                renderer = GetOriginalTransform(skinned.transform);
+                return renderer != null;
+            }
+            return false;
+        }
+
+        Transform TopUnderClone(Transform t)
+        {
+            if (t == null) return null;
+            Transform top = null;
+            for (Transform walk = t; walk != null && walk != _clone; walk = walk.parent) top = walk;
+            return top;
+        }
+
+        /// <summary>
+        /// 体の頂点ごとのボーンウェイトを、body（<see cref="BakeBody"/> の並びの頂点で作った体の表面）のまとめた後の頂点ごとにする。
+        /// bones は、ウェイトのボーンの番号ごとの元のアバターの Transform（ウェイトの無い祖先も、親をたどれるよう一覧に入れる）、parents はその親の番号（無ければ -1）。
+        /// スキニングの無い体の部品は、その部品の Transform に付いているものとする。
+        /// </summary>
+        public BoneWeightSets BuildBodyWeights(BodySurface body, out Transform[] bones, out int[] parents)
+        {
+            if (body == null) throw new ArgumentNullException(nameof(body));
+            if (body.SourceVertexCount != BodyVertexCount) throw new ArgumentException("体の頂点の数が合いません。", nameof(body));
+            var list = new List<Transform>();
+            var index = new Dictionary<Transform, int>();
+            int IndexOf(Transform original)
+            {
+                if (original == null) return -1;
+                if (index.TryGetValue(original, out int found)) return found;
+                int i = list.Count;
+                list.Add(original);
+                index.Add(original, i);
+                return i;
+            }
+
+            var offsets = new int[BodyVertexCount + 1];
+            var weightBones = new List<int>();
+            var weightValues = new List<float>();
+            int vertex = 0;
+            for (int k = 0; k < _body.Length; k++)
+            {
+                Renderer renderer = _body[k];
+                Mesh mesh = ClothEditController.GetMesh(renderer);
+                int count = mesh.vertexCount;
+                var skinned = renderer as SkinnedMeshRenderer;
+                Transform[] rendererBones = skinned != null ? skinned.bones : null;
+                BoneWeightSets sets = skinned != null && rendererBones.Length > 0 ? ShapeKeyWeights.Read(mesh) : null;
+                int own = IndexOf(GetOriginalTransform(renderer.transform));
+                for (int v = 0; v < count; v++)
+                {
+                    bool any = false;
+                    if (sets != null)
+                    {
+                        for (int e = sets.Offsets[v]; e < sets.Offsets[v + 1]; e++)
+                        {
+                            int b = sets.Bones[e];
+                            Transform bone = (uint)b < (uint)rendererBones.Length ? GetOriginalTransform(rendererBones[b]) : null;
+                            int i = IndexOf(bone);
+                            if (i < 0 || !(sets.Weights[e] > 0f)) continue;
+                            weightBones.Add(i);
+                            weightValues.Add(sets.Weights[e]);
+                            any = true;
+                        }
+                    }
+                    if (!any && own >= 0)
+                    {
+                        weightBones.Add(own);
+                        weightValues.Add(1f);
+                    }
+                    offsets[vertex + v + 1] = weightBones.Count;
+                }
+                vertex += count;
+            }
+
+            // 祖先も一覧に入れ（親をたどれるように）、親の番号を決める
+            for (int i = 0; i < list.Count; i++)
+            {
+                Transform parent = list[i].parent;
+                if (parent != null && parent != _originalRoot.parent && (parent == _originalRoot || parent.IsChildOf(_originalRoot))) IndexOf(parent);
+            }
+            parents = new int[list.Count];
+            for (int i = 0; i < list.Count; i++) parents[i] = list[i].parent != null && index.TryGetValue(list[i].parent, out int p) ? p : -1;
+            bones = list.ToArray();
+
+            var perSource = new BoneWeightSets(offsets, weightBones.ToArray(), weightValues.ToArray());
+            var sourceToWelded = new int[BodyVertexCount];
+            for (int v = 0; v < sourceToWelded.Length; v++) sourceToWelded[v] = body.GetWeldedVertex(v);
+            return WeightTransfer.AverageToWelded(perSource, sourceToWelded, body.VertexCount, list.Count);
         }
 
         // ---- 形の取り出し ----
@@ -627,10 +983,28 @@ namespace GP02.EditorTools
         /// <summary>k 番目の衣装の複製に、メッシュ（編集中の形を入れた一時メッシュ）を付ける。メッシュはこのクラスが消す。</summary>
         public void SetTargetMesh(int k, Mesh mesh)
         {
+            SetTargetMesh(k, mesh, null);
+        }
+
+        /// <summary>
+        /// <see cref="SetTargetMesh(int, Mesh)"/> の、衣装の複製のボーンの末尾に extraBones（元のアバターの Transform。ウェイトを体に寄せて足すボーン）を足す版。
+        /// メッシュのバインドポーズも、同じ数だけ足してあること。null なら元のボーンに戻す。
+        /// </summary>
+        public void SetTargetMesh(int k, Mesh mesh, IReadOnlyList<Transform> extraBones)
+        {
             if (_targetMeshes[k] != null && _targetMeshes[k] != mesh) Object.DestroyImmediate(_targetMeshes[k]);
             _targetMeshes[k] = mesh;
             Renderer renderer = _targets[k];
-            if (renderer is SkinnedMeshRenderer skinned) skinned.sharedMesh = mesh;
+            if (renderer is SkinnedMeshRenderer skinned)
+            {
+                var bones = new List<Transform>(_targetBaseBones[k]);
+                if (extraBones != null)
+                {
+                    foreach (Transform bone in extraBones) bones.Add(GetCloneTransform(bone));
+                }
+                skinned.bones = bones.ToArray();
+                skinned.sharedMesh = mesh;
+            }
             else if (renderer != null)
             {
                 var filter = renderer.GetComponent<MeshFilter>();
@@ -660,10 +1034,11 @@ namespace GP02.EditorTools
                 t.localScale = source.transform.localScale;
                 SkinnedMeshRenderer probe = go.AddComponent<SkinnedMeshRenderer>();
                 probe.hideFlags = HideFlags.HideAndDontSave;
-                probe.bones = source.bones;
                 probe.rootBone = source.rootBone;
                 _probes[k] = probe;
             }
+            // 衣装の複製にボーンを足したとき（ウェイトを体に寄せた候補）も、同じボーンにする
+            _probes[k].bones = source.bones;
             _probes[k].sharedMesh = mesh;
             for (int i = 0; i < mesh.blendShapeCount; i++) _probes[k].SetBlendShapeWeight(i, source.GetBlendShapeWeight(i));
         }

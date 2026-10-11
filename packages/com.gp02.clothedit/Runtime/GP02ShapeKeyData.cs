@@ -113,6 +113,45 @@ namespace GP02
     }
 
     /// <summary>
+    /// ボーンウェイトの変更（布の編集の「ウェイトを体に寄せる」）。変えた頂点ごとの、新しいボーンとウェイトを持つ。
+    /// ボーンはメッシュのボーンの番号ではなく、名前とアバターのルートからの道のりで持つ（メッシュを差し替えて、ボーンの並びが変わっても当てられるように）。
+    /// 「メッシュに書き出す」とビルド時の適用で、元のメッシュに当ててから BlendShape を足す。
+    /// </summary>
+    [Serializable]
+    public sealed class ShapeKeyWeightEdit
+    {
+        /// <summary>使うボーンの名前（<see cref="Bones"/> の番号で引く）。</summary>
+        public string[] BoneNames = new string[0];
+
+        /// <summary><see cref="BoneNames"/> と同じ順の、アバターのルートからの道のり（"Armature/Hips/Spine"）。同じ名前のボーンを区別するのに使う。</summary>
+        public string[] BonePaths = new string[0];
+
+        /// <summary>
+        /// <see cref="BoneNames"/> と同じ順の、そのボーンのバインドポーズ（記録したときのもの）。
+        /// レンダラーのボーンに無いボーン（スカートに無い背骨など）を足すときに使う。
+        /// </summary>
+        public Matrix4x4[] Bindposes = new Matrix4x4[0];
+
+        /// <summary>ウェイトを変えた頂点の番号（小さい順）。</summary>
+        public int[] Vertices = new int[0];
+
+        /// <summary>頂点ごとのボーンとウェイトの区切り（長さは <see cref="Vertices"/> + 1。頂点 k は Offsets[k] から Offsets[k + 1] の手前まで）。</summary>
+        public int[] Offsets = new int[0];
+
+        /// <summary>ボーン（<see cref="BoneNames"/> の番号）。</summary>
+        public int[] Bones = new int[0];
+
+        /// <summary>ウェイト（頂点ごとに合計 1）。</summary>
+        public float[] Weights = new float[0];
+
+        /// <summary>変えた頂点が無いか。</summary>
+        public bool IsEmpty => Vertices == null || Vertices.Length == 0;
+
+        /// <summary>変えた頂点の数。</summary>
+        public int VertexCount => Vertices != null ? Vertices.Length : 0;
+    }
+
+    /// <summary>
     /// 1つのメッシュに対する、シェイプキーの編集データ。アセット（Assets/GP02/Data/）として保存する。
     /// 大きな配列をシーンに埋め込まないよう、<see cref="GP02ShapeKeys"/> からはこのアセットを参照する。
     /// </summary>
@@ -129,6 +168,12 @@ namespace GP02
 
         /// <summary>グループ名の一覧（表示の順）。</summary>
         public List<string> Groups = new List<string>();
+
+        /// <summary>ボーンウェイトの変更（無ければ空）。書き出しとビルド時の適用で、BlendShape を足す前に元のメッシュに当てる。</summary>
+        public ShapeKeyWeightEdit WeightEdit = new ShapeKeyWeightEdit();
+
+        /// <summary>ボーンウェイトの変更があるか。</summary>
+        public bool HasWeightEdit => WeightEdit != null && !WeightEdit.IsEmpty;
 
         /// <summary>名前でエントリを探す。無ければ null。</summary>
         public ShapeKeyEntry FindEntry(string entryName)

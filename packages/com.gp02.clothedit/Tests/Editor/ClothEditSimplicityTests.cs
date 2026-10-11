@@ -230,8 +230,8 @@ namespace GP02.Tests
                 ClothEditUiItem.SymmetryToggle, ClothEditUiItem.SymmetryAutoFit,
                 ClothEditUiItem.SelectionHandleType, ClothEditUiItem.SelectionMoveStyle, ClothEditUiItem.SelectionSmoothness,
                 ClothEditUiItem.SaveButton, ClothEditUiItem.SavedKeyList, ClothEditUiItem.StatusLine, ClothEditUiItem.ReachWarning, ClothEditUiItem.PenetrationFix,
-                // 動作チェック（始める・結果の要約・順に見る・外へ逃がす）
-                ClothEditUiItem.PoseCheck,
+                // 動作チェック（始める・結果の要約・順に見る・外へ逃がす）と、ウェイトを体に寄せる（ウェイトが原因の貫通があるときだけ出す）
+                ClothEditUiItem.PoseCheck, ClothEditUiItem.WeightFix,
                 // シェイプキーの一覧: 有効・名前・重み・複製・削除・左右分割・反転・メッシュに書き出す
                 ClothEditUiItem.ShapeKeyEnabled, ClothEditUiItem.ShapeKeyName, ClothEditUiItem.ShapeKeyWeight, ClothEditUiItem.ShapeKeyDuplicate,
                 ClothEditUiItem.ShapeKeyDelete, ClothEditUiItem.ShapeKeySplit, ClothEditUiItem.ShapeKeyFlip, ClothEditUiItem.ShapeKeyExport,
@@ -241,7 +241,7 @@ namespace GP02.Tests
                 ClothEditUiItem.TargetAddLayers, ClothEditUiItem.DiagnosticsPanel, ClothEditUiItem.ToolRotate, ClothEditUiItem.ToolScale, ClothEditUiItem.ToolOptions,
                 ClothEditUiItem.HistoryExtras, ClothEditUiItem.BrushDetails, ClothEditUiItem.SymmetryDetails, ClothEditUiItem.DisplaySection,
                 ClothEditUiItem.SelectionDetails, ClothEditUiItem.AdvancedSettings, ClothEditUiItem.OverlayDisplayToggles, ClothEditUiItem.PenetrationMargin,
-                ClothEditUiItem.PoseCheckDetails,
+                ClothEditUiItem.PoseCheckDetails, ClothEditUiItem.WeightFixDetails, ClothEditUiItem.PoseCheckClips,
                 ClothEditUiItem.ShapeKeyDataField, ClothEditUiItem.ShapeKeySearchSort, ClothEditUiItem.ShapeKeyCopyPaste, ClothEditUiItem.ShapeKeyReorder,
                 ClothEditUiItem.ShapeKeyBulkEnable, ClothEditUiItem.ShapeKeyGroups, ClothEditUiItem.ShapeKeySolo, ClothEditUiItem.ShapeKeyDetails,
                 ClothEditUiItem.ShapeKeyMoreOperations, ClothEditUiItem.ShapeKeyOperationSettings, ClothEditUiItem.ShapeKeyImport,

@@ -78,12 +78,17 @@ namespace GP02.EditorTools
 
             PrepareRenderer(renderer);
             Mesh built = ShapeKeyLibrary.BuildMesh(source, component.Data, options, out _);
+            // ボーンウェイトの変更（ウェイトを体に寄せる）は、BlendShape と一緒に元のメッシュから毎回当て直す
+            var warnings = new List<string>();
+            Transform[] bones = ShapeKeyLibrary.ApplyWeightEdit(built, component.Data, renderer, warnings);
+            foreach (string warning in warnings) Debug.LogWarning("[GP02] " + warning);
             Undo.IncrementCurrentGroup();
 
             // 元のメッシュそのものを上書きしてしまわないよう、元と同じなら前回の書き出しとはみなさない
             Mesh previous = component.ExportedMesh != source ? component.ExportedMesh : null;
             Mesh result = SaveMeshAsset(built, previous, folder, "GP02 " + L10n.Tr("メッシュに書き出す", "Export to mesh"));
             AssignMesh(renderer, result, "GP02 " + L10n.Tr("メッシュを割り当て", "Assign mesh"));
+            if (bones != null) AssignBones(renderer, bones, "GP02 " + L10n.Tr("ボーンを合わせる", "Fit bones"));
             Undo.RecordObject(component, "GP02 " + L10n.Tr("書き出したメッシュの記録", "Record exported mesh"));
             component.ExportedMesh = result;
             EditorUtility.SetDirty(component);
@@ -299,6 +304,9 @@ namespace GP02.EditorTools
             PrepareRenderer(renderer);
             Undo.IncrementCurrentGroup();
             AssignMesh(renderer, source, "GP02 " + L10n.Tr("元のメッシュに戻す", "Restore the original mesh"));
+            // ウェイトを体に寄せたときに足したボーンは、元のメッシュには無いので外す
+            Transform[] fitted = renderer is SkinnedMeshRenderer skinned ? ShapeKeyWeights.FitBones(skinned, source) : null;
+            if (fitted != null) AssignBones(renderer, fitted, "GP02 " + L10n.Tr("元のメッシュに戻す", "Restore the original mesh"));
             Undo.IncrementCurrentGroup();
             return true;
         }
@@ -318,6 +326,14 @@ namespace GP02.EditorTools
         // ------------------------------------------------------------------
         // 共通
         // ------------------------------------------------------------------
+
+        static void AssignBones(Renderer renderer, Transform[] bones, string undoName)
+        {
+            if (!(renderer is SkinnedMeshRenderer skinned)) return;
+            Undo.RecordObject(skinned, undoName);
+            skinned.bones = bones;
+            EditorUtility.SetDirty(skinned);
+        }
 
         static void AssignMesh(Renderer renderer, Mesh mesh, string undoName)
         {

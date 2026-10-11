@@ -38,6 +38,7 @@ namespace GP02.EditorTools
             public int TriangleStart;             // まとめた三角形（mesh.triangles を並べたもの）での先頭の3つ組の番号
             public int TriangleCount;
             public float[] CreatedWeights;        // セッション作成時のシェイプキーの重み（保存の取り消しを見つけるため）
+            public long CreatedSkin;              // セッション作成時のボーンウェイトとボーンの印（ウェイトを体に寄せたのを戻したことを見つけるため）
             public Mesh PreviewMesh;
             public Material[] Materials;
         }
@@ -230,6 +231,7 @@ namespace GP02.EditorTools
                     TriangleStart = triangleTotal,
                     TriangleCount = triangles,
                     CreatedWeights = ReadBlendShapeWeights(renderer),
+                    CreatedSkin = SkinStamp(renderer, mesh),
                 };
                 _renderers[r] = renderer;
                 vertexTotal += mesh.vertexCount;
@@ -411,8 +413,35 @@ namespace GP02.EditorTools
                 {
                     if (now[k] != part.CreatedWeights[k]) return false;
                 }
+                // メッシュを書き換えてウェイトを寄せたもの（同じメッシュのまま）を Ctrl+Z で戻したときも、作り直す
+                if (SkinStamp(part.Renderer, part.SourceMesh) != part.CreatedSkin) return false;
             }
             return true;
+        }
+
+        // ボーンウェイト・バインドポーズの数・レンダラーのボーンから作る印（どれかが変わると、たいてい変わる）
+        static long SkinStamp(Renderer renderer, Mesh mesh)
+        {
+            if (!(renderer is SkinnedMeshRenderer skinned) || mesh == null) return 0;
+            ulong hash = 1469598103934665603UL;
+            void Mix(ulong value)
+            {
+                hash ^= value;
+                hash *= 1099511628211UL;
+            }
+            var perVertex = mesh.GetBonesPerVertex();
+            var weights = mesh.GetAllBoneWeights();
+            Mix((ulong)perVertex.Length);
+            for (int k = 0; k < weights.Length; k++)
+            {
+                Mix((ulong)weights[k].boneIndex);
+                Mix((ulong)(long)Math.Round(weights[k].weight * 1048576.0));
+            }
+            Mix((ulong)mesh.bindposes.Length);
+            Transform[] bones = skinned.bones;
+            Mix((ulong)bones.Length);
+            foreach (Transform bone in bones) Mix(bone != null ? (ulong)(uint)bone.GetInstanceID() : 0UL);
+            return (long)hash;
         }
 
         static Mesh GetMesh(Renderer renderer)

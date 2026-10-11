@@ -107,6 +107,26 @@ namespace GP02.EditorTools
 
         static string NameWithSuffix(string name) => name.EndsWith(MeshSuffix) ? name : name + MeshSuffix;
 
+        /// <summary>
+        /// <see cref="BuildMesh(Mesh, GP02ShapeKeyData, ShapeKeyBuildOptions, out List{ExportPlanItem})"/> で作ったメッシュに、データのボーンウェイトの変更
+        /// （<see cref="GP02ShapeKeyData.WeightEdit"/>）を当てる（メッシュを書き換える）。レンダラーのボーンを変える必要があれば、その配列を返す
+        /// （呼び出し側がレンダラーに入れる。変えなくてよければ null）。変更が無くても、レンダラーのボーンがメッシュのバインドポーズより多ければ（前に足したボーンが残っていれば）、
+        /// 合わせた配列を返す。
+        /// </summary>
+        public static Transform[] ApplyWeightEdit(Mesh built, GP02ShapeKeyData data, Renderer renderer, List<string> warnings)
+        {
+            if (built == null || data == null || !(renderer is SkinnedMeshRenderer skinned)) return null;
+            if (!data.HasWeightEdit) return ShapeKeyWeights.FitBones(skinned, built);
+            Transform[] bones = ShapeKeyWeights.Apply(built, data.WeightEdit, skinned, warnings);
+            Transform[] current = skinned.bones;
+            if (bones.Length != current.Length) return bones;
+            for (int i = 0; i < bones.Length; i++)
+            {
+                if (bones[i] != current[i]) return bones;
+            }
+            return null;
+        }
+
         static void ValidateEntry(ShapeKeyEntry entry, int vertexCount)
         {
             foreach (ShapeKeyFrame frame in entry.Frames)

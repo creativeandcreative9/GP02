@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using GP02.Core;
 using UnityEngine;
 using NVector3 = System.Numerics.Vector3;
@@ -15,6 +16,19 @@ namespace GP02.EditorTools
 
         /// <summary>まとめた後の頂点（<see cref="GP02.Core.MeshTopology.Positions"/>）の数。動作チェックはこの頂点で調べる。</summary>
         public int WeldedVertexCount => _toposRest.Length;
+
+        /// <summary>今の形の、まとめた後の頂点の位置（ワールド）。書き換えないこと。</summary>
+        public ReadOnlySpan<NVector3> WeldedPositions => _welded;
+
+        /// <summary>
+        /// GP02 が folder に作ったメッシュのアセットか（保存・ウェイトを体に寄せるで、複製を増やさずにそのまま書き換えてよいもの）。
+        /// </summary>
+        public static bool IsOwnMeshAsset(Mesh mesh, string folder)
+        {
+            if (mesh == null || string.IsNullOrEmpty(folder)) return false;
+            string path = UnityEditor.AssetDatabase.GetAssetPath(mesh);
+            return !string.IsNullOrEmpty(path) && path.EndsWith(".asset") && path.StartsWith(folder.TrimEnd('/') + "/") && UnityEditor.AssetDatabase.IsMainAsset(mesh);
+        }
 
         /// <summary>動作チェックで、ポーズを付けた布と体の貫通を調べる部品（まとめた後の頂点と三角形）。最初に使うときに作る。</summary>
         public PoseCheckEvaluator PoseEvaluator => _poseEvaluator ?? (_poseEvaluator = PoseCheckEvaluator.FromCloth(_cloth));
@@ -38,7 +52,13 @@ namespace GP02.EditorTools
         /// <see cref="CreateEditedMesh(int)"/> に、まとめた後の頂点ごとに、編集の姿勢のワールド座標で weldedWorldOffset だけ動かした分を足したもの
         /// （null なら足さない）。ポーズで動く割合を測るための「試しの形」に使う。
         /// </summary>
-        public Mesh CreateEditedMesh(int rendererIndex, NVector3[] weldedWorldOffset)
+        public Mesh CreateEditedMesh(int rendererIndex, NVector3[] weldedWorldOffset) => CreateEditedMesh(rendererIndex, weldedWorldOffset, null);
+
+        /// <summary>
+        /// <see cref="CreateEditedMesh(int, NVector3[])"/> に、候補のボーンウェイト（ウェイトを体に寄せる前の確認。null なら今のまま）を入れたもの。
+        /// 候補で足すボーンの分、バインドポーズも足すので、付けるレンダラーのボーンも同じように足すこと（<see cref="PoseRig.SetTargetMesh(int, Mesh, IReadOnlyList{Transform})"/>）。
+        /// </summary>
+        public Mesh CreateEditedMesh(int rendererIndex, NVector3[] weldedWorldOffset, WeightFixCandidate candidate)
         {
             if (weldedWorldOffset != null && weldedWorldOffset.Length != _toposRest.Length) throw new ArgumentException("まとめた後の頂点数が一致しません。", nameof(weldedWorldOffset));
             Part part = _parts[rendererIndex];
@@ -74,6 +94,7 @@ namespace GP02.EditorTools
                 }
                 mesh.normals = normals;
             }
+            if (candidate != null) candidate.ApplyTo(mesh);
             mesh.RecalculateBounds();
             return mesh;
         }

@@ -31,10 +31,14 @@ public static class RenderScenes
             PenetrationScenes();
             ClearScene();
             PoseCheckScenes();
+            ClearScene();
+            WeightFitScenes();
         });
     }
 
     public static void PoseCheck() => Run(PoseCheckScenes);
+
+    public static void WeightFit() => Run(WeightFitScenes);
 
     public static void Symmetry() => Run(SymmetryScenes);
 
@@ -732,6 +736,88 @@ public static class RenderScenes
         camera.transform.SetPositionAndRotation(farPosition, farRotation);
     }
 
+    // weight_fit.png: 「ウェイトを体に寄せる」の前後。左から 寄せる前・強さ 100%（既定）・強さ 50%。赤い点は貫通、紫の点は体どうしの重なり（服では直せない所）
+    //   1段目 タイツのしゃがむ（ひざ）、2段目 タイツの座る、3段目 袖の腕を体の前で曲げる（ひじ）、4段目 スカートの座る、5段目 スカートのしゃがむ、
+    //   6段目 スカートのしゃがむを前の低い所から（脚のあいだの布）
+    //   スカートを強く寄せると、体から離れた布が脚に貼り付いて伸びることがあるので、目で確かめる（ログには伸びの目安を出す）
+    static void WeightFitScenes()
+    {
+        const string folder = "Assets/GP02_RenderWeightFit";
+        Camera camera = SetUpCamera(new Vector3(1.1f, 1.05f, 1.9f), new Vector3(0f, 0.72f, 0f));
+        camera.aspect = 1f;
+        camera.fieldOfView = 45f;
+        Light light = Object.FindObjectOfType<Light>();
+        light.transform.rotation = Quaternion.Euler(35f, 200f, 0f);
+        var garments = new[]
+        {
+            (TestAvatarMenu.TightsName, new[]
+            {
+                ("squat", new Vector3(0.8f, 0.7f, 1.0f), new Vector3(0f, 0.38f, 0.15f)),
+                ("sit", new Vector3(0.75f, 0.75f, 1.05f), new Vector3(0f, 0.45f, 0.1f)),
+            }),
+            (TestAvatarMenu.SleevesName, new[] { ("arms_bent", new Vector3(-0.15f, 1.25f, 1.0f), new Vector3(0f, 1.0f, 0.1f)) }),
+            (TestAvatarMenu.SkirtName, new[]
+            {
+                ("sit", new Vector3(0.95f, 0.9f, 1.35f), new Vector3(0f, 0.5f, 0.1f)),
+                ("squat", new Vector3(0.95f, 0.85f, 1.35f), new Vector3(0f, 0.42f, 0.1f)),
+                ("squat", new Vector3(0.1f, 0.12f, 1.1f), new Vector3(0f, 0.42f, 0.1f)),
+            }),
+        };
+        var rows = new List<Texture2D[]>();
+        foreach (var (garment, views) in garments)
+        {
+            var shots = new Texture2D[views.Length][];
+            for (int k = 0; k < views.Length; k++) shots[k] = new Texture2D[3];
+            // 1つ目のアバターで寄せる前と強さ 100% を、2つ目のアバターで強さ 50% を描く
+            foreach (float strength in new[] { 1f, 0.5f })
+            {
+                GameObject root = TestAvatarMenu.CreateInScene(null);
+                var controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f, RecordToData = false, SaveFolder = folder };
+                try
+                {
+                    if (!controller.TryStart(FindSkinned(root, garment), out string error)) throw new InvalidOperationException(error);
+                    PoseCheckResult before = RunAndLog(controller, garment + "（ウェイトを寄せる前）");
+                    if (strength >= 1f)
+                    {
+                        for (int k = 0; k < views.Length; k++)
+                        {
+                            var (id, position, target) = views[k];
+                            camera.transform.position = position;
+                            camera.transform.LookAt(target);
+                            shots[k][0] = ShotPose(camera, $"weightfit_{garment}_{k}_{id}_before", controller, FindEntry(before, id), true);
+                        }
+                    }
+                    controller.Settings.WeightFixStrength = strength;
+                    var timer = System.Diagnostics.Stopwatch.StartNew();
+                    WeightFixPreview preview = controller.PreviewWeightFix();
+                    if (preview == null) throw new InvalidOperationException(controller.LastWeightFixError);
+                    Debug.Log($"[GP02描画] ウェイトを体に寄せる（{garment}、強さ {strength * 100f:F0}%、{timer.ElapsedMilliseconds} ms）: {preview}");
+                    if (controller.ApplyWeightFix() == null) throw new InvalidOperationException(controller.LastWeightFixError);
+                    PoseCheckResult after = controller.LastPoseCheck;
+                    for (int k = 0; k < views.Length; k++)
+                    {
+                        var (id, position, target) = views[k];
+                        camera.transform.position = position;
+                        camera.transform.LookAt(target);
+                        PoseCheckEntry entry = FindEntry(after, id);
+                        Debug.Log($"[GP02描画]   {garment} {entry.Name}（強さ {strength * 100f:F0}%）: {FindEntry(before, id).Result} → {entry.Result}");
+                        shots[k][strength >= 1f ? 1 : 2] = ShotPose(camera, $"weightfit_{garment}_{k}_{id}_{strength * 100f:F0}", controller, entry, true);
+                    }
+                }
+                finally
+                {
+                    controller.Dispose();
+                    Object.DestroyImmediate(root);
+                }
+            }
+            rows.AddRange(shots);
+        }
+        var grid = new List<Texture2D>();
+        foreach (Texture2D[] row in rows) grid.AddRange(row);
+        SaveGrid(grid, 3, "weight_fit");
+        if (AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
+    }
+
     static SkinnedMeshRenderer FindSkinned(GameObject root, string name)
     {
         foreach (SkinnedMeshRenderer renderer in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
@@ -763,8 +849,9 @@ public static class RenderScenes
         return result;
     }
 
-    // entry のポーズを付けたアバターの複製を、BakeMesh で取り出して描き、突き抜けた所に赤い点を描く（entry が null なら編集の姿勢）
-    static Texture2D ShotPose(Camera camera, string name, ClothEditController controller, PoseCheckEntry entry)
+    // entry のポーズを付けたアバターの複製を、BakeMesh で取り出して描き、突き抜けた所に赤い点を描く（entry が null なら編集の姿勢）。
+    // overlapDots なら、体どうしの重なりの所に紫の点も描く
+    static Texture2D ShotPose(Camera camera, string name, ClothEditController controller, PoseCheckEntry entry, bool overlapDots = false)
     {
         PoseRig rig = controller.PoseCheckRig;
         if (entry != null) rig.ApplyMuscles(entry.Muscles);
@@ -782,11 +869,20 @@ public static class RenderScenes
             renderer.forceRenderingOff = true;
         }
         var points = new List<Vector3>();
+        var overlaps = new List<Vector3>();
         if (entry != null)
         {
             foreach (System.Numerics.Vector3 p in entry.Result.Points) points.Add(new Vector3(p.X, p.Y, p.Z));
+            if (overlapDots)
+            {
+                foreach (System.Numerics.Vector3 p in entry.Result.OverlapPoints) overlaps.Add(new Vector3(p.X, p.Y, p.Z));
+            }
         }
-        Texture2D texture = Shot(camera, name, (c, t) => PaintDots(c, t, points, new Color(1f, 0.12f, 0.1f)));
+        Texture2D texture = Shot(camera, name, (c, t) =>
+        {
+            PaintDots(c, t, overlaps, ClothEditWindow.PoseOverlapColor);
+            PaintDots(c, t, points, new Color(1f, 0.12f, 0.1f));
+        });
         foreach ((Renderer renderer, bool previous) in hidden) renderer.forceRenderingOff = previous;
         foreach (GameObject view in views)
         {

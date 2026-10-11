@@ -126,6 +126,15 @@ namespace GP02.EditorTools
         /// <summary>動作チェック: 試すポーズの一覧・2段階の切り替え・許容の深さ・ポーズごとの結果の一覧・体として使ったもの。</summary>
         PoseCheckDetails,
 
+        /// <summary>動作チェック: 「ウェイトを体に寄せる」（ウェイトが原因の貫通があるときだけ。押すと確認してから適用）と、その前後の数。</summary>
+        WeightFix,
+
+        /// <summary>ウェイトを体に寄せる: 強さ・半径・確認・適用・候補を捨てる・データに記録した変更を外す。</summary>
+        WeightFixDetails,
+
+        /// <summary>動作チェック: 手持ちの AnimationClip の一覧と、取り出す間隔。</summary>
+        PoseCheckClips,
+
         // ---- シーンビューの道具バー ----
 
         /// <summary>道具バーの「伸びの表示」「元の形」。</summary>
@@ -226,6 +235,7 @@ namespace GP02.EditorTools
             ClothEditUiItem.ReachWarning,
             ClothEditUiItem.PenetrationFix,
             ClothEditUiItem.PoseCheck,
+            ClothEditUiItem.WeightFix,
             ClothEditUiItem.ShapeKeyEnabled,
             ClothEditUiItem.ShapeKeyName,
             ClothEditUiItem.ShapeKeyWeight,

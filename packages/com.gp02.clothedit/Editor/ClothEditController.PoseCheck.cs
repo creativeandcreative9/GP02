@@ -41,6 +41,11 @@ namespace GP02.EditorTools
             public PoseCheckOptions Options;
             public int[] Starts;
             public Stopwatch Timer;
+            public BodyAnchors Anchors;     // 基準の姿勢で測った、布の頂点ごとの一番近い体の点（体が無ければ null）
+            public bool[] RestOverlap;      // 基準の姿勢で、体にぴったり付いていっても体の中と出る頂点（取り違えなので、ポーズでも体どうしの重なりにしない）
+            public bool[] Covered;          // 基準の姿勢で、布に覆われていた体の頂点（覆われていなかった部品が布の外に来ても、布を通り抜けたのではないので数えない）
+            public bool[] Loose;            // 基準の姿勢で体から離れている、布の頂点（伸びの目安はここだけで測る。体にぴったりの所は体と一緒に伸びてよい）
+            public NVector3[] RestWelded;   // 基準の姿勢の、まとめた後の頂点の位置（伸びの基準）
 
             public bool Done => Next >= Steps.Count;
         }
@@ -103,7 +108,7 @@ namespace GP02.EditorTools
         /// </summary>
         public bool BeginPoseCheck(out string error) => BeginPoseCheck(out error, null);
 
-        // sameAs があれば、その結果と同じポーズ・段階・許容の深さで調べる（外へ逃がしたあとの調べ直しで、前後を結果の番号で比べるため）
+        // sameAs があれば、その結果と同じポーズ・段階・クリップのコマ・許容の深さで調べる（外へ逃がしたあとの調べ直しで、前後を結果の番号で比べるため）
         bool BeginPoseCheck(out string error, PoseCheckResult sameAs)
         {
             error = null;
@@ -116,7 +121,8 @@ namespace GP02.EditorTools
             FinishStroke();
             error = GetPoseCheckProblem();
             List<PosePreset> poses = sameAs != null ? sameAs.GetPoses() : _settings.GetEnabledPoses();
-            if (error == null && poses.Count == 0)
+            bool hasClips = sameAs != null ? sameAs.ClipSampleCount > 0 : _settings.GetPoseCheckClips().Count > 0;
+            if (error == null && poses.Count == 0 && !hasClips)
             {
                 error = L10n.Tr("試すポーズがありません。くわしく表示の「試すポーズ」で選んでください。", "There are no poses to try. Choose them under \"Poses to Try\" in the detailed view.");
             }
@@ -136,7 +142,7 @@ namespace GP02.EditorTools
             PoseCheckJob job;
             try
             {
-                job = PrepareJob(rig, poses, sameAs, timer);
+                job = PrepareJob(rig, poses, sameAs, timer, null);
             }
             catch (Exception ex)
             {
@@ -152,16 +158,22 @@ namespace GP02.EditorTools
             return true;
         }
 
-        PoseCheckJob PrepareJob(PoseRig rig, List<PosePreset> poses, PoseCheckResult sameAs, Stopwatch timer)
+        // candidate があれば、衣装の複製にその候補のウェイトを入れて調べる（ウェイトを体に寄せる前の確認）
+        PoseCheckJob PrepareJob(PoseRig rig, List<PosePreset> poses, PoseCheckResult sameAs, Stopwatch timer, WeightFixPreview candidate)
         {
             ClothEditSession session = _session;
-            for (int r = 0; r < session.RendererCount; r++) rig.SetTargetMesh(r, session.CreateEditedMesh(r));
+            WeightFixCandidate CandidateOf(int r) => candidate != null && r < candidate.Candidates.Count ? candidate.Candidates[r] : null;
+            for (int r = 0; r < session.RendererCount; r++)
+            {
+                WeightFixCandidate c = CandidateOf(r);
+                rig.SetTargetMesh(r, session.CreateEditedMesh(r, null, c), c != null ? c.AddedBones : null);
+            }
             // 試しの形: 編集の姿勢で、全頂点を外向きに少し動かしたもの。貫通したポーズで一緒に取り出し、外へ動かした分がポーズでどれだけ残るかを測る
             // （ひざ・ひじを大きく曲げると、ウェイトの混ざった所では元の姿勢で動かした分がほとんど残らない。そこは外へ逃がしても直らない）
             var offsets = new NVector3[session.WeldedVertexCount];
             session.ComputeEditOutwardNormals(offsets);
             for (int w = 0; w < offsets.Length; w++) offsets[w] *= PoseProbeDistance;
-            for (int r = 0; r < session.RendererCount; r++) rig.SetProbeMesh(r, session.CreateEditedMesh(r, offsets));
+            for (int r = 0; r < session.RendererCount; r++) rig.SetProbeMesh(r, session.CreateEditedMesh(r, offsets, CandidateOf(r)));
             float[] stages = sameAs != null ? sameAs.GetStages() : _settings.GetPoseStages();
             PoseCheckOptions options = _settings.BuildPoseCheckOptions();
             if (sameAs != null) options.Tolerance = sameAs.Tolerance;
@@ -240,8 +252,63 @@ namespace GP02.EditorTools
                     });
                 }
             }
+            AddClipSteps(job, rig, sameAs);
+            job.Result.PoseCount = poses.Count + job.Result.ClipSampleCount;
             job.Result.PrepareMilliseconds = timer.Elapsed.TotalMilliseconds;
             return job;
+        }
+
+        // 手持ちの AnimationClip のコマを足す。Humanoid のクリップは筋肉の値で、Generic のクリップはボーンのパスが合えば、そのコマを当てて試す。
+        // sameAs があれば、その結果と同じクリップ・同じ時刻
+        void AddClipSteps(PoseCheckJob job, PoseRig rig, PoseCheckResult sameAs)
+        {
+            var samples = new List<(AnimationClip Clip, float Time)>();
+            if (sameAs != null)
+            {
+                foreach (PoseCheckEntry entry in sameAs.Entries)
+                {
+                    if (entry.Clip != null) samples.Add((entry.Clip, entry.ClipTime));
+                }
+            }
+            else
+            {
+                foreach (AnimationClip clip in _settings.GetPoseCheckClips())
+                {
+                    bool humanoid = PoseRig.HumanoidCurves(clip).Count > 0;
+                    if (!humanoid)
+                    {
+                        rig.CountGenericPaths(clip, out int matched, out int total);
+                        if (matched == 0)
+                        {
+                            job.Result.ClipNotes.Add(L10n.Tr($"「{clip.name}」は、Humanoid のクリップでなく、ボーンのパスもこのアバターに合わないので使いません。",
+                                $"\"{clip.name}\" is not a Humanoid clip and its bone paths do not match this avatar, so it is not used."));
+                            continue;
+                        }
+                        if (matched < total)
+                        {
+                            job.Result.ClipNotes.Add(L10n.Tr($"「{clip.name}」（Generic）: ボーンのパス {total} 個のうち {matched} 個が合うので、その分だけ動かします。",
+                                $"\"{clip.name}\" (Generic): {matched} of {total} bone paths match, so only those move."));
+                        }
+                    }
+                    foreach (float time in ClothEditSettings.ClipSampleTimes(clip, _settings.PoseCheckClipInterval)) samples.Add((clip, time));
+                }
+            }
+            int group = PoseLibrary.All.Count;
+            foreach ((AnimationClip clip, float time) in samples)
+            {
+                float[] muscles = PoseRig.SampleHumanoidMuscles(clip, time, rig.BaseMuscles);
+                job.Steps.Add(new PoseCheckEntry
+                {
+                    Clip = clip,
+                    ClipTime = time,
+                    PoseIndex = -1,
+                    Stage = 1f,
+                    Muscles = muscles,
+                    Result = new PosePenetration { Group = group, Stage = 1f },
+                });
+                group++;
+            }
+            job.Result.ClipSampleCount = samples.Count;
         }
 
         // 1つ進める（最初は基準の姿勢）。終わったら true
@@ -255,12 +322,29 @@ namespace GP02.EditorTools
                 job.Session.ToWeldedPositions(job.Combined, job.Welded);
                 evaluator.MeasureDepth(job.Welded, job.Body, job.Options, job.Baseline);
                 evaluator.Evaluate(job.Welded, job.Body, job.Options, null, job.Result.Baseline);
+                job.RestWelded = (NVector3[])job.Welded.Clone();
+                if (job.Body != null)
+                {
+                    // 布の頂点ごとの、一番近い体の点（布の外側にある体の部品は使わない）。体どうしの重なりの判定と、ウェイトを体に寄せるのに使う
+                    var normals = new NVector3[job.Welded.Length];
+                    evaluator.ComputeOutwardNormals(job.Welded, normals);
+                    job.Anchors = BodyAnchors.Measure(job.Welded, job.Body, BodyAnchors.DefaultMaxDistance, normals);
+                    job.RestOverlap = new bool[job.Welded.Length];
+                    evaluator.MeasureFollowOverlap(job.Body, job.Anchors, job.Options, job.RestOverlap);
+                    job.Covered = new bool[job.Body.VertexCount];
+                    evaluator.MeasureCoveredBodyVertices(job.Welded, job.Body, job.Options, job.Covered);
+                    job.Loose = new bool[job.Welded.Length];
+                    for (int i = 0; i < job.Loose.Length; i++)
+                    {
+                        job.Loose[i] = !job.Anchors.Has(i) || job.Anchors.GetDistance(i) > WeightTransferOptions.DefaultFullDistance;
+                    }
+                }
                 job.Next = 0;
                 return job.Done;
             }
 
             PoseCheckEntry entry = job.Steps[job.Next];
-            job.Rig.ApplyMuscles(entry.Muscles);
+            job.Rig.ApplyEntry(entry);
             if (job.Body != null)
             {
                 job.Rig.BakeBody(job.BodyVertices);
@@ -268,7 +352,8 @@ namespace GP02.EditorTools
             }
             job.Rig.BakeTargets(job.Combined, job.Starts);
             job.Session.ToWeldedPositions(job.Combined, job.Welded);
-            evaluator.Evaluate(job.Welded, job.Body, job.Options, job.Baseline, entry.Result);
+            evaluator.Evaluate(job.Welded, job.Body, job.Options, job.Baseline, entry.Result, job.Anchors, job.RestOverlap, job.Covered);
+            entry.Result.MaxStretch = evaluator.MeasureStretch(job.RestWelded, job.Welded, job.Loose, out entry.Result.HighStretch);
             if (entry.Result.IsPenetrating && job.ProbeCombined != null)
             {
                 job.Rig.BakeProbes(job.ProbeCombined, job.Starts);
@@ -281,30 +366,74 @@ namespace GP02.EditorTools
             return job.Done;
         }
 
-        void FinishPoseCheck(PoseCheckJob job)
+        // 調べ終わった結果の仕上げ（粒子ごとの最悪の深さ、外へ逃がす量、ウェイトを体に寄せる対象）。結果を今の結果にはしない
+        static void FinalizePoseCheck(PoseCheckJob job)
         {
             job.Rig.ApplyBase();
             PoseCheckResult result = job.Result;
             ParticleCloth cloth = job.Session.Cloth;
             result.ParticleDepth = new float[cloth.Model.ParticleCount];
             result.Summary.ToParticleDepth(cloth, result.ParticleDepth);
+            result.Anchors = job.Anchors;
+            result.Body = job.Body;
+            result.RestWelded = job.RestWelded;
             if (result.HasBody)
             {
                 var defaults = new PoseEscapeOptions();
-                result.EscapePlan = result.Summary.PlanEscape(defaults.Extra, defaults.MaxPush, defaults.MinGain);
+                result.EscapePlan = result.Summary.PlanEscape(defaults.Extra, defaults.MaxPush, defaults.MinGain, job.Anchors, WeightTransferOptions.DefaultFullDistance);
+                result.WeightPlan = result.Summary.PlanWeightFix(defaults.Extra, defaults.MaxPush, defaults.MinGain, job.Anchors, WeightTransferOptions.DefaultFullDistance);
             }
             result.Milliseconds = job.Timer.Elapsed.TotalMilliseconds;
+        }
+
+        void FinishPoseCheck(PoseCheckJob job)
+        {
+            FinalizePoseCheck(job);
+            PoseCheckResult result = job.Result;
             _poseJob = null;
-            if (_poseRig != null && _poseRig != job.Rig) _poseRig.Dispose();
-            _poseRig = job.Rig;
-            _poseCheck = result;
+            InstallPoseCheck(result, job.Rig);
             int steps = Math.Max(1, result.Entries.Count);
-            Debug.Log($"[GP02] {job.Session.DescribeTargets()}: 動作チェック {result.DescribeSummary()} / ポーズ {result.PoseCount} × {result.StageCount} 段階" +
+            Debug.Log($"[GP02] {job.Session.DescribeTargets()}: 動作チェック {result.DescribeSummary()} / ポーズ {result.PoseCount} × {result.StageCount} 段階（うちクリップのコマ {result.ClipSampleCount}）" +
                 $" / 時間 合計 {result.Milliseconds:F0} ms（準備 {result.PrepareMilliseconds:F0} ms、1ポーズ平均 {(result.Milliseconds - result.PrepareMilliseconds) / steps:F0} ms）" +
                 $" / {result.BodyDescription} / 服のボーン: アバターの動きをうつす {result.FollowerCount}、親に付いていく {result.UnmatchedBoneCount}" +
-                (result.EscapePlan != null ? $" / 外へ逃がせるか所 {result.EscapePlan.PushedRegions}（ウェイトが原因 {result.EscapePlan.LowGainRegions}、深すぎる {result.EscapePlan.TooFarRegions}）" : "") +
-                $" / 基準の姿勢の貫通: {result.Baseline}");
+                (result.EscapePlan != null ? $" / 外へ逃がせるか所 {result.EscapePlan.PushedRegions}（ウェイトが原因 {result.EscapePlan.LowGainRegions}、深すぎる {result.EscapePlan.TooFarRegions}、体にぴったり {result.EscapePlan.TightRegions}）" : "") +
+                $" / 体どうしの重なり {result.OverlapRegionCount} か所（{result.OverlapPoseCount} ポーズ）/ 体から離れた所の伸び（上位1%）{result.HighStretch * 100f:F1}%（最大 {result.MaxStretch * 100f:F1}%）" +
+                (result.Anchors != null ? $" / 体の点が見つかった頂点 {result.Anchors.Count} / {result.Anchors.VertexCount}" : "") +
+                $" / 基準の姿勢の貫通: {result.Baseline}" + (result.ClipNotes.Count > 0 ? " / " + string.Join(" ", result.ClipNotes) : ""));
             Notify();
+        }
+
+        // 結果とアバターの複製を、今の結果にする（前の複製は消す）
+        void InstallPoseCheck(PoseCheckResult result, PoseRig rig)
+        {
+            if (_poseRig != null && _poseRig != rig) _poseRig.Dispose();
+            _poseRig = rig;
+            _poseCheck = result;
+        }
+
+        // 今の結果を変えずに、最後まで調べる（ウェイトを体に寄せる前の確認）。調べたアバターの複製は rig に返す（消すのは呼び出し側）。調べられなければ null
+        PoseCheckResult RunDetachedPoseCheck(PoseCheckResult sameAs, WeightFixPreview candidate, out PoseRig rig, out string error)
+        {
+            rig = PoseRig.Create(_session.Renderers, out error);
+            if (rig == null) return null;
+            try
+            {
+                var timer = Stopwatch.StartNew();
+                PoseCheckJob job = PrepareJob(rig, sameAs.GetPoses(), sameAs, timer, candidate);
+                while (!StepPoseCheck(job))
+                {
+                }
+                FinalizePoseCheck(job);
+                return job.Result;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+                rig.Dispose();
+                rig = null;
+                error = L10n.Tr("候補のウェイトで動作チェックをやり直せませんでした。Console のエラーを確認してください。\n", "Could not run the motion check with the candidate weights. Check the errors in the Console.\n") + ex.Message;
+                return null;
+            }
         }
 
         /// <summary>
@@ -378,6 +507,7 @@ namespace GP02.EditorTools
                 _poseRig.Dispose();
                 _poseRig = null;
             }
+            if (_weightPreview != null) _weightPreview.DisposeRig();
         }
 
         // 編集を始めたとき（作り直しを含む）に呼ぶ: 別の衣装の結果なら捨てる
@@ -390,6 +520,8 @@ namespace GP02.EditorTools
             if (same) return;
             _poseCheck = null;
             LastPoseEscape = null;
+            DiscardWeightFixPreview();
+            LastWeightFix = null;
         }
 
         // ---- ポーズを見せる ----
@@ -419,7 +551,7 @@ namespace GP02.EditorTools
         public bool ShowPoseEntry(int entry)
         {
             if (!CanPreviewPoses || (uint)entry >= (uint)_poseCheck.Entries.Count) return false;
-            _poseRig.ApplyMuscles(_poseCheck.Entries[entry].Muscles);
+            _poseRig.ApplyEntry(_poseCheck.Entries[entry]);
             _poseRig.Show();
             _posePreviewEntry = entry;
             Notify();
@@ -509,6 +641,7 @@ namespace GP02.EditorTools
             {
                 PushedRegions = plan.PushedRegions,
                 LowGainRegions = plan.LowGainRegions,
+                TightRegions = plan.TightRegions,
                 TooFarRegions = plan.TooFarRegions,
                 PosesBefore = _poseCheck.PenetratingPoseCount,
                 RegionsBefore = _poseCheck.TotalRegionCount,

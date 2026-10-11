@@ -17,6 +17,9 @@ namespace GP02.EditorTools
         public const float PoseDepthYellow = 0.001f;
         public const float PoseDepthRed = 0.01f;
 
+        /// <summary>ポーズを見せているときの、体どうしの重なり（服では直せない所）の点の色。</summary>
+        public static readonly Color PoseOverlapColor = new Color(0.62f, 0.38f, 0.95f, 1f);
+
         [SerializeField] bool _foldPoseCheck = true;
         [SerializeField] bool _foldPoseList;
         [SerializeField] bool _foldPoseEntries;
@@ -136,7 +139,8 @@ namespace GP02.EditorTools
             PoseCheckEntry shown = _controller.PosePreview;
             if (shown != null)
             {
-                EditorGUILayout.LabelField(L10n.Tr($"表示中: {shown.Name} — {shown.Describe()}（赤い点が突き抜けた所）", $"Showing: {shown.Name} — {shown.Describe()} (red dots mark the penetration)"), EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField(L10n.Tr($"表示中: {shown.Name} — {shown.Describe()}（赤い点が突き抜けた所" + (shown.Result.HasOverlap ? "、紫の点が体どうしの重なり" : "") + "）",
+                    $"Showing: {shown.Name} — {shown.Describe()} (red dots mark the penetration" + (shown.Result.HasOverlap ? ", purple dots the body overlaps" : "") + ")"), EditorStyles.wordWrappedMiniLabel);
             }
 
             EditorGUI.BeginChangeCheck();
@@ -162,8 +166,8 @@ namespace GP02.EditorTools
                 PoseEscapePlan plan = result.EscapePlan;
                 if (plan != null && !stale)
                 {
-                    EditorGUILayout.LabelField(L10n.Tr($"元のポーズで外へ逃がせる所: {plan.PushedRegions} か所 / 逃がせない所: {plan.SkippedRegions} か所（ウェイトが原因 {plan.LowGainRegions}、深すぎる {plan.TooFarRegions}）",
-                        $"Places that can be moved outward in the edit pose: {plan.PushedRegions} / cannot: {plan.SkippedRegions} (caused by weights {plan.LowGainRegions}, too deep {plan.TooFarRegions})"), EditorStyles.wordWrappedMiniLabel);
+                    EditorGUILayout.LabelField(L10n.Tr($"元のポーズで外へ逃がせる所: {plan.PushedRegions} か所 / 逃がせない所: {plan.SkippedRegions} か所（ウェイトが原因 {plan.LowGainRegions}、深すぎる {plan.TooFarRegions}、体にぴったりで余裕が無い {plan.TightRegions}）",
+                        $"Places that can be moved outward in the edit pose: {plan.PushedRegions} / cannot: {plan.SkippedRegions} (caused by weights {plan.LowGainRegions}, too deep {plan.TooFarRegions}, tight with no room {plan.TightRegions})"), EditorStyles.wordWrappedMiniLabel);
                 }
                 using (new EditorGUI.DisabledScope(!_controller.CanEscapePoseCheck || _controller.IsBusy))
                 {
@@ -175,14 +179,20 @@ namespace GP02.EditorTools
                         GUIUtility.ExitGUI();
                     }
                 }
-                EditorGUILayout.LabelField(L10n.Tr("ウェイト（服と体のボーンの割り振りの違い）が原因の貫通は、この修正では直りません。編集の姿勢で動かしてもポーズではほとんど離れない所（ひざ・ひじを深く曲げたときなど）と、深すぎる所（ゆったりしたスカートが座ったときに太ももに抜かれる、など）は、動かさずに残します。ウェイトの修正は次の段階で入ります。",
-                    "Penetration caused by weights (different bone influences on the outfit and the body) is not fixed by this. Places that barely move away in the pose even if moved in the edit pose (deeply bent knees and elbows, ...) and places that are too deep (thighs poking through a loose skirt when sitting, ...) are left as they are. A weight fix comes in the next stage."), EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField(L10n.Tr("ウェイト（服と体のボーンの割り振りの違い）が原因の貫通は、外へ逃がしても直りません。編集の姿勢で動かしてもポーズではほとんど離れない所（ひざ・ひじを深く曲げたときなど）、深すぎる所（ゆったりしたスカートが座ったときに太ももに抜かれる、など）、体にぴったりで布に余裕の無い所（タイツ・腰回りなど）は、動かさずに残します。それは下の「ウェイトを体に寄せる」で直します。",
+                    "Penetration caused by weights (different bone influences on the outfit and the body) is not fixed by moving outward. Places that barely move away in the pose even if moved in the edit pose (deeply bent knees and elbows, ...), places that are too deep (thighs poking through a loose skirt when sitting, ...) and tight places with no room in the cloth (tights, around the waist, ...) are left as they are. Fix those with \"Fit Weights to Body\" below."), EditorStyles.wordWrappedMiniLabel);
             }
+            if (result.OverlapRegionCount > 0 && !stale)
+            {
+                EditorGUILayout.HelpBox(L10n.Tr($"体どうしの重なり: {result.OverlapRegionCount} か所（{result.OverlapPoseCount} ポーズ）。体どうしの重なりで、服では直せません。腕が腰に入る・ふくらはぎが太ももに入るなど、体の部品どうしが重なる所で、服がぴったり付いていっても突き抜けます（貫通の数にも、直す対象にも入れていません。ポーズを見ると紫の点で出ます）。",
+                    $"Body overlaps: {result.OverlapRegionCount} place(s) in {result.OverlapPoseCount} pose(s). These are overlaps of the body itself and cannot be fixed in the outfit. Parts of the body overlap each other there (an arm going into the hip, a calf going into the thigh, ...), so the outfit pokes through even if it follows the body exactly (not counted as penetration and not fixed; purple dots when you show the pose)."), MessageType.None);
+            }
+            DrawWeightFixSection(result, stale);
             PoseEscapeReport escape = _controller.LastPoseEscape;
             if (escape != null && escape.Reverted)
             {
-                EditorGUILayout.HelpBox(L10n.Tr("前回の外へ逃がす: 逃がしても、ポーズでの貫通が減らなかったので、元に戻しました。布に余裕が無い（ぴったりの服）か、ウェイトが原因です。ウェイトの修正は次の段階で入ります。",
-                    "Last move outward: it did not reduce the penetration in the poses, so it was undone. The cloth has no room (a tight outfit), or the weights are the cause. A weight fix comes in the next stage."), MessageType.Info);
+                EditorGUILayout.HelpBox(L10n.Tr("前回の外へ逃がす: 逃がしても、ポーズでの貫通が減らなかったので、元に戻しました。布に余裕が無い（ぴったりの服）か、ウェイトが原因です。ウェイトが原因の所は「ウェイトを体に寄せる」で直せます。",
+                    "Last move outward: it did not reduce the penetration in the poses, so it was undone. The cloth has no room (a tight outfit), or the weights are the cause. Places caused by weights can be fixed with \"Fit Weights to Body\"."), MessageType.Info);
             }
             else if (escape != null && escape.Rechecked)
             {
@@ -238,6 +248,7 @@ namespace GP02.EditorTools
                 _settings.PoseCheckTolerance = toleranceMm * 0.001f;
             }
             if (EditorGUI.EndChangeCheck()) _settingsDirty = true;
+            if (Shows(ClothEditUiItem.PoseCheckClips)) DrawPoseCheckClips(result, running);
 
             if (result == null || running) return;
             _foldPoseEntries = EditorGUILayout.Foldout(_foldPoseEntries, L10n.Tr("ポーズごとの結果", "Result per Pose"), true);
@@ -298,14 +309,9 @@ namespace GP02.EditorTools
             PoseCheckEntry shown = _controller.PosePreview;
             if (shown != null)
             {
-                List<System.Numerics.Vector3> points = shown.Result.Points;
-                int stride = points.Count <= MaxPoseDots ? 1 : (points.Count + MaxPoseDots - 1) / MaxPoseDots;
-                _poseDots.Clear();
-                for (int k = 0; k < points.Count; k += stride) _poseDots.Add(new Vector3(points[k].X, points[k].Y, points[k].Z));
-                Handles.color = Color.white;
-                for (int i = 0; i < _poseDots.Count; i++) Dot(_poseDots[i], 0.022f);
-                Handles.color = PenetrationColor;
-                for (int i = 0; i < _poseDots.Count; i++) Dot(_poseDots[i], 0.015f);
+                // 体どうしの重なり（服では直せない所）は紫、突き抜けた所は赤（白い縁）
+                DrawPoseDots(shown.Result.OverlapPoints, PoseOverlapColor);
+                DrawPoseDots(shown.Result.Points, PenetrationColor);
                 return true;
             }
 
@@ -340,6 +346,18 @@ namespace GP02.EditorTools
             return false;
         }
 
+        void DrawPoseDots(List<System.Numerics.Vector3> points, Color color)
+        {
+            if (points == null || points.Count == 0) return;
+            int stride = points.Count <= MaxPoseDots ? 1 : (points.Count + MaxPoseDots - 1) / MaxPoseDots;
+            _poseDots.Clear();
+            for (int k = 0; k < points.Count; k += stride) _poseDots.Add(new Vector3(points[k].X, points[k].Y, points[k].Z));
+            Handles.color = Color.white;
+            for (int i = 0; i < _poseDots.Count; i++) Dot(_poseDots[i], 0.022f);
+            Handles.color = color;
+            for (int i = 0; i < _poseDots.Count; i++) Dot(_poseDots[i], 0.015f);
+        }
+
         // シーンビューでクリックしたとき（OnSceneGUI の MouseDown から呼ぶ）。ポーズを見せていれば元の姿勢に戻して、そのクリックは使う
         bool EndPosePreviewOnClick(Event e)
         {
@@ -370,8 +388,11 @@ namespace GP02.EditorTools
             }
             PoseCheckEntry shown = _controller.PosePreview;
             if (shown == null) return "";
-            return "\n" + L10n.Tr($"ポーズを表示中: {shown.Name}（{shown.Describe()}）。クリックか Esc で元の姿勢に戻ります",
-                $"Showing pose: {shown.Name} ({shown.Describe()}). Click or press Esc to return to the edit pose");
+            string overlap = shown.Result != null && shown.Result.HasOverlap
+                ? L10n.Tr("。紫の点は体どうしの重なり（服では直せない所）", ". Purple dots are body overlaps (cannot be fixed in the outfit)")
+                : "";
+            return "\n" + L10n.Tr($"ポーズを表示中: {shown.Name}（{shown.Describe()}）{overlap}。クリックか Esc で元の姿勢に戻ります",
+                $"Showing pose: {shown.Name} ({shown.Describe()}){overlap}. Click or press Esc to return to the edit pose");
         }
     }
 }

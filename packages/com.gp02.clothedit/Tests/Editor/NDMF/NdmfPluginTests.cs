@@ -103,6 +103,37 @@ namespace GP02.Tests
         }
 
         [Test]
+        public void NonDestructive_TheRecordedWeightChangeIsAppliedAtBuild_WithTheMissingBoneAdded()
+        {
+            // ウェイトを体に寄せた結果（データに記録したボーンウェイトの変更）も、ビルドの複製に入る。レンダラーに無いボーン C は複製の中から探して足す
+            WeightEditTestAvatar a = WeightEditTestAvatar.Create(CreateGridMesh("Skirt"), "TestAvatar");
+            Track(a.Root);
+            a.Root.AddComponent<NDMFAvatarRoot>();
+            GP02ShapeKeyData data = NewData(a.Source, Entry("Lift", Ramp(a.Source.vertexCount, 0.003f)));
+            data.WeightEdit = a.CreateEdit();
+            var component = a.Renderer.gameObject.AddComponent<GP02ShapeKeys>();
+            component.Data = data;
+            component.SourceMesh = a.Source;
+            component.ApplyMode = ShapeKeyApplyMode.NonDestructive;
+            GameObject clone = Track(Object.Instantiate(a.Root));
+
+            AvatarProcessor.ProcessAvatar(clone);
+
+            var renderer = clone.GetComponentInChildren<SkinnedMeshRenderer>();
+            Assert.That(renderer.sharedMesh, Is.Not.SameAs(a.Source));
+            Assert.That(renderer.sharedMesh.blendShapeCount, Is.EqualTo(1));
+            Assert.That(renderer.bones.Length, Is.EqualTo(3));
+            Assert.That(renderer.bones[2], Is.EqualTo(clone.transform.Find("Armature/BoneC")), "複製のボーン C を足す");
+            Assert.That(renderer.sharedMesh.bindposes.Length, Is.EqualTo(3));
+            Assert.That(WeightEditTestAvatar.WeightOf(renderer.sharedMesh, 0, 2), Is.EqualTo(0.75f).Within(1e-6f));
+            Assert.That(WeightEditTestAvatar.WeightOf(renderer.sharedMesh, 100, 0), Is.EqualTo(1f), "変えていない頂点はそのまま");
+            Assert.That(clone.GetComponentInChildren<GP02ShapeKeys>(true), Is.Null);
+
+            Assert.That(a.Renderer.sharedMesh, Is.SameAs(a.Source), "元のシーンのメッシュは変わらない");
+            Assert.That(a.Renderer.bones.Length, Is.EqualTo(2), "元のシーンのボーンも変わらない");
+        }
+
+        [Test]
         public void NonDestructive_PreviewWeightIsUsedWhenAsked()
         {
             Avatar a = MakeAvatar(ShapeKeyApplyMode.NonDestructive, ShapeKeyInitialWeight.PreviewWeight);

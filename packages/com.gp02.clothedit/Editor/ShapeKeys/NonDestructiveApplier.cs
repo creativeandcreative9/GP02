@@ -72,8 +72,11 @@ namespace GP02.EditorTools
             {
                 if (item.Action == ExportAction.SkipIncompatible) result.Warnings.Add($"{path}: シェイプキー「{item.Entry.Name}」は頂点数が合わないので飛ばしました。");
             }
+            // ボーンウェイトの変更（ウェイトを体に寄せる）も当てる。レンダラーに無いボーンは、複製のレンダラーのボーンに足す
+            Transform[] bones = ShapeKeyLibrary.ApplyWeightEdit(built, component.Data, renderer, result.Warnings);
             saveAsset?.Invoke(built);
             AssignMesh(renderer, built);
+            if (bones != null && renderer is SkinnedMeshRenderer skinned) skinned.bones = bones;
             SetWeights(renderer, built, component, plan);
             return true;
         }

@@ -12,6 +12,13 @@ namespace GP02.Core
             return a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
         }
 
+        /// <summary><see cref="Make"/> の逆（小さい番号が a）。</summary>
+        public static void Split(long key, out int a, out int b)
+        {
+            a = (int)(key >> 32);
+            b = (int)(uint)key;
+        }
+
         // long の標準のハッシュは上位と下位の XOR なので、(a, b) の組では衝突が多く、
         // 要素が増えると辞書が極端に遅くなる。値をかき混ぜてから使う。
         sealed class MixingComparer : IEqualityComparer<long>

@@ -24,6 +24,9 @@ namespace GP02.Core
 
         /// <summary>当たった三角形の島（つながった部品）。</summary>
         public int Island;
+
+        /// <summary><see cref="Point"/> の、<see cref="Triangle"/> の3頂点（<see cref="BodySurface.GetTriangle"/> の a, b, c）に対する重心座標（合計 1）。</summary>
+        public float U, V, W;
     }
 
     /// <summary>
@@ -77,6 +80,10 @@ namespace GP02.Core
         readonly int[] _vertexToWelded;     // 渡された頂点ごとの、まとめた後の番号（SetVertexPositions で使う）
         readonly int[] _weldedSourceCount;  // まとめた後の頂点ごとの、渡された頂点の数
         readonly bool[] _islandFlipped;     // 巻き順が内向きなので裏返して使う島
+        TriangleBvh _rayTree;               // レイを飛ばすための木（検索に使う島の三角形だけ）。最初に使うときに作る
+        int[] _rayTriangles;                // _rayTree に入れた三角形の頂点番号の3つ組
+        int[] _rayTriangleIndex;            // _rayTree の三角形の番号ごとの、まとめた後の三角形の番号
+        bool _rayDirty = true;              // 検索に使う島が変わったので、作り直す
 
         /// <summary>まとめた後の頂点の数。</summary>
         public int VertexCount => _positions.Length;
@@ -341,7 +348,11 @@ namespace GP02.Core
         public bool IsIslandEnabled(int island) => _islands[island].Enabled;
 
         /// <summary>島を検索に使うかを変える（「中」を持たない島は使えない）。</summary>
-        public void SetIslandEnabled(int island, bool enabled) => _islands[island].Enabled = enabled && _islands[island].Solid;
+        public void SetIslandEnabled(int island, bool enabled)
+        {
+            _islands[island].Enabled = enabled && _islands[island].Solid;
+            _rayDirty = true;
+        }
 
         /// <summary>島の三角形の数。</summary>
         public int GetIslandTriangleCount(int island) => _islands[island].TriangleCount;
@@ -484,6 +495,9 @@ namespace GP02.Core
             hit.Normal = smooth;
             hit.Triangle = t;
             hit.Island = island;
+            hit.U = u;
+            hit.V = v;
+            hit.W = w;
             return true;
         }
 
@@ -523,6 +537,7 @@ namespace GP02.Core
                 island.Enabled = island.Solid && total > 0 && island.OutsideVotes >= minOutsideRatio * total;
                 if (island.Enabled) enabled++;
             }
+            _rayDirty = true;
             return enabled;
         }
 
@@ -539,11 +554,15 @@ namespace GP02.Core
                 island.Enabled = island.Solid;
                 if (island.Enabled) enabled++;
             }
+            _rayDirty = true;
             return enabled;
         }
 
         /// <summary>作るときに渡した頂点の数（<see cref="SetVertexPositions"/> に渡す配列の長さ）。</summary>
         public int SourceVertexCount => _vertexToWelded.Length;
+
+        /// <summary>作るときに渡した頂点 sourceVertex の、まとめた後の頂点の番号。</summary>
+        public int GetWeldedVertex(int sourceVertex) => _vertexToWelded[sourceVertex];
 
         /// <summary>
         /// 頂点の位置だけを入れ替える（ポーズを変えた体）。つながり・島・島を使うかどうか・裏返しの島は、作ったときのまま。
@@ -602,6 +621,57 @@ namespace GP02.Core
             for (int e = 0; e < _edgeNormals.Length; e++) _edgeNormals[e] = SafeNormalize(_edgeNormals[e]);
 
             foreach (Island island in _islands) island.Tree.Refit(_positions);
+            if (_rayTree != null && !_rayDirty) _rayTree.Refit(_positions);
+        }
+
+        // ---- レイ ----
+
+        void EnsureRayTree()
+        {
+            if (_rayTree != null && !_rayDirty) return;
+            var kept = new List<int>();
+            var index = new List<int>();
+            for (int t = 0; t < _triangles.Length / 3; t++)
+            {
+                if (!_islands[_triangleIsland[t]].Enabled) continue;
+                kept.Add(_triangles[3 * t]);
+                kept.Add(_triangles[3 * t + 1]);
+                kept.Add(_triangles[3 * t + 2]);
+                index.Add(t);
+            }
+            _rayTriangles = kept.ToArray();
+            _rayTriangleIndex = index.ToArray();
+            _rayTree = new TriangleBvh(_positions, _rayTriangles);
+            _rayDirty = false;
+        }
+
+        /// <summary>
+        /// 検索に使う島の表面に、origin から direction（長さ1）へレイを飛ばし、maxDistance 以内で一番近い交点を探す（両面）。
+        /// triangle はまとめた後の三角形の番号。
+        /// </summary>
+        public bool Raycast(Vector3 origin, Vector3 direction, float maxDistance, out float distance, out int triangle)
+        {
+            distance = 0f;
+            triangle = -1;
+            EnsureRayTree();
+            if (!_rayTree.Raycast(origin, direction, _positions, out float d, out int hitIndex) || d > maxDistance) return false;
+            distance = d;
+            triangle = _rayTriangleIndex[hitIndex];
+            return true;
+        }
+
+        /// <summary>
+        /// origin が体のどこかの部品の中にあるかを、レイで調べる。direction（長さ1）へ飛ばしたレイが、maxDistance 以内で最初に当たった面の外向きが
+        /// レイと同じ向き（中から外へ抜ける）なら true。点に一番近い面で内外を決める <see cref="TryQuery"/> と違い、つながった1つの部品が
+        /// 自分と重なっている所（深く曲げたひざの裏で、ふくらはぎが太ももに入る、など）でも分かる。minDistance より近い当たりは無視する（自分の面の丸め誤差）。
+        /// </summary>
+        public bool IsInsideAlongRay(Vector3 origin, Vector3 direction, float maxDistance, float minDistance = 1e-4f)
+        {
+            EnsureRayTree();
+            Vector3 start = origin + direction * minDistance;
+            if (!_rayTree.Raycast(start, direction, _positions, out float d, out int hitIndex) || d > maxDistance) return false;
+            Vector3 normal = _faceNormals[_rayTriangleIndex[hitIndex]];
+            return normal.X * direction.X + normal.Y * direction.Y + normal.Z * direction.Z > 0f;
         }
     }
 }
