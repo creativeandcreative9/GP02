@@ -31,17 +31,17 @@ namespace GP02.Core
                 search.Run(pointTriangle[p], points[p], range);
                 grid.Query(points[p], range, nearby);
                 connected.Clear();
+                float rangeSq = range * range;
                 foreach (int q in nearby)
                 {
                     if (q == p || !search.Contains(pointTriangle[q])) continue;
-                    if (Vector3.Distance(points[p], points[q]) <= range) connected.Add(q);
+                    if (DistanceSquared(points[p], points[q]) <= rangeSq) connected.Add(q);
                 }
 
                 foreach (int q in connected)
                 {
                     if (q < p) continue;
-                    float distance = Vector3.Distance(points[p], points[q]);
-                    bool neighbor = distance <= stretchRange && IsGabrielEdge(points, p, q, connected);
+                    bool neighbor = DistanceSquared(points[p], points[q]) <= stretchRange * stretchRange && IsGabrielEdge(points, p, q, connected);
                     var pairs = neighbor ? stretchPairs : bendPairs;
                     if (pairs == null) continue;
                     pairs.Add(p);
@@ -78,12 +78,13 @@ namespace GP02.Core
                     search.Run(triangle, position, range);
                     grid.Query(position, range, nearby);
                     float total = 0f;
+                    float rangeSq = range * range;
                     foreach (int q in nearby)
                     {
-                        if (!search.Contains(pointTriangle[q])) continue;
-                        float t = Vector3.Distance(position, points[q]) / range;
-                        if (t >= 1f) continue;
-                        float s = 1f - t * t;
+                        // 距離の判定の方が安いので、表面でつながっているかより先に調べる
+                        float tSq = DistanceSquared(position, points[q]) / rangeSq;
+                        if (tSq >= 1f || !search.Contains(pointTriangle[q])) continue;
+                        float s = 1f - tSq;
                         idList.Add(q);
                         weightList.Add(s * s);
                         total += s * s;
@@ -102,7 +103,7 @@ namespace GP02.Core
                         foreach (int m in members)
                         {
                             if (topology.TriangleIsland[pointTriangle[m]] != island) continue;
-                            float sq = Vector3.DistanceSquared(points[m], position);
+                            float sq = DistanceSquared(points[m], position);
                             if (sq < bestSq)
                             {
                                 bestSq = sq;
@@ -143,7 +144,7 @@ namespace GP02.Core
                 foreach (int other in nearby)
                 {
                     if (island[pointTriangle[other]] != memberIsland) continue;
-                    if (Vector3.DistanceSquared(points[other], points[m]) < spacingSq)
+                    if (DistanceSquared(points[other], points[m]) < spacingSq)
                     {
                         tooClose = true;
                         break;
@@ -160,14 +161,21 @@ namespace GP02.Core
         // 球の中の点は p から |pq| 以内にあるので、p の周りの点（candidates）だけ調べれば足りる
         static bool IsGabrielEdge(Vector3[] points, int p, int q, List<int> candidates)
         {
-            Vector3 middle = (points[p] + points[q]) * 0.5f;
-            float radiusSq = Vector3.DistanceSquared(points[p], points[q]) * 0.25f;
+            var middle = new Vector3((points[p].X + points[q].X) * 0.5f, (points[p].Y + points[q].Y) * 0.5f, (points[p].Z + points[q].Z) * 0.5f);
+            float radiusSq = DistanceSquared(points[p], points[q]) * 0.25f;
             foreach (int r in candidates)
             {
                 if (r == q) continue;
-                if (Vector3.DistanceSquared(points[r], middle) < radiusSq) return false;
+                if (DistanceSquared(points[r], middle) < radiusSq) return false;
             }
             return true;
+        }
+
+        // Unity の Mono では Vector3.DistanceSquared などが遅いので、成分ごとに計算する
+        static float DistanceSquared(Vector3 a, Vector3 b)
+        {
+            float dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+            return dx * dx + dy * dy + dz * dz;
         }
     }
 }

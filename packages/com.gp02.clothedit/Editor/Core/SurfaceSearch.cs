@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Numerics;
 
 namespace GP02.Core
@@ -12,7 +11,7 @@ namespace GP02.Core
     {
         readonly MeshTopology _topology;
         readonly int[] _stamp;
-        readonly Stack<int> _stack = new Stack<int>();
+        int[] _stack = new int[64];
         int _generation;
 
         public SurfaceSearch(MeshTopology topology)
@@ -39,19 +38,32 @@ namespace GP02.Core
             int[] offsets = _topology.AdjacencyOffsets;
             int[] adjacency = _topology.Adjacency;
 
-            _stamp[startTriangle] = _generation;
-            _stack.Push(startTriangle);
-            while (_stack.Count > 0)
+            // 粒子化では数千万回たどるので、Unity の Mono で遅い Stack<int> と Vector3 の演算子は使わない
+            int[] stamp = _stamp;
+            int generation = _generation;
+            int[] stack = _stack;
+            int top = 0;
+            stamp[startTriangle] = generation;
+            stack[top++] = startTriangle;
+            while (top > 0)
             {
-                int t = _stack.Pop();
-                for (int k = offsets[t]; k < offsets[t + 1]; k++)
+                int t = stack[--top];
+                int end = offsets[t + 1];
+                for (int k = offsets[t]; k < end; k++)
                 {
                     int n = adjacency[k];
-                    if (_stamp[n] == _generation) continue;
+                    if (stamp[n] == generation) continue;
                     // 三角形を囲む球が、探索範囲にかからなければたどらない
-                    if (Vector3.Distance(point, centers[n]) - radii[n] > radius) continue;
-                    _stamp[n] = _generation;
-                    _stack.Push(n);
+                    float reach = radius + radii[n];
+                    float dx = centers[n].X - point.X, dy = centers[n].Y - point.Y, dz = centers[n].Z - point.Z;
+                    if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
+                    stamp[n] = generation;
+                    if (top == stack.Length)
+                    {
+                        Array.Resize(ref _stack, 2 * stack.Length);
+                        stack = _stack;
+                    }
+                    stack[top++] = n;
                 }
             }
         }

@@ -41,7 +41,8 @@ namespace GP02.Core
                     // 三角形の中に一様に置く
                     float r1 = MathF.Sqrt(random.NextFloat());
                     float r2 = random.NextFloat();
-                    candidates.Add(a * (1f - r1) + b * (r1 * (1f - r2)) + c * (r1 * r2));
+                    float wa = 1f - r1, wb = r1 * (1f - r2), wc = r1 * r2;
+                    candidates.Add(new Vector3(a.X * wa + b.X * wb + c.X * wc, a.Y * wa + b.Y * wb + c.Y * wc, a.Z * wa + b.Z * wb + c.Z * wc));
                     candidateTriangle.Add(t);
                 }
             }
@@ -72,7 +73,9 @@ namespace GP02.Core
                 foreach (int other in nearby)
                 {
                     if (island[acceptedTriangle[other]] != candidateIsland) continue;
-                    if (Vector3.DistanceSquared(accepted[other], p) < spacingSq)
+                    Vector3 o = accepted[other];
+                    float dx = o.X - p.X, dy = o.Y - p.Y, dz = o.Z - p.Z;
+                    if (dx * dx + dy * dy + dz * dz < spacingSq)
                     {
                         tooClose = true;
                         break;
