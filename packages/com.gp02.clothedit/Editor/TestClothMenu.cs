@@ -28,6 +28,23 @@ namespace GP02.EditorTools
         public const int SkirtRows = 32;
         public const int RibbonCount = 6;
 
+        /// <summary>
+        /// 体のテスト用のシェイプキー。100 にすると、腰回り（高さ 0.755m を中心に上下 数 cm）がなめらかに膨らみ、前と横は約 1.8cm、
+        /// 後ろ（お尻）は最大 6cm 張り出して、スカートとペチコートを突き抜ける（後ろで最大 約 1.3cm）。体のシェイプキーを変えたあとに服を合わせる「貫通を直す」を試すため。
+        /// </summary>
+        public const string HipBigShapeName = "Hip_Big";
+
+        /// <summary><see cref="HipBigShapeName"/> の、後ろ（+z）での張り出し（メートル）。</summary>
+        public const float HipBigBack = 0.06f;
+
+        // 前と横の太り方の、後ろに対する割合（約 1.8cm）
+        const float HipBigAround = 0.3f;
+
+        // 膨らみの中心の高さと、上下の広がり（ガウス形の標準偏差）。丸みの半径は、後ろの一番張り出した所で約 1cm
+        //（粒子の間隔 1cm より鋭い角にすると、布を押し付けたときに、角が粒子の間から布の外へ出やすい）
+        const float HipBigCenterY = 0.755f;
+        const float HipBigSpread = 0.025f;
+
         // ペチコートはスカートの丈の 90% まで。裾が少し短い（縦の分割の間隔はスカートと同じ）
         const float PetticoatLengthRatio = 0.9f;
         public const int PetticoatRows = (int)(SkirtRows * PetticoatLengthRatio);
@@ -177,14 +194,14 @@ namespace GP02.EditorTools
         {
             var builder = new MeshBuilder(1);
 
-            // 胴体（上から下へ）。頭は上端に丸めて付ける
-            Vector2[] torso =
-            {
-                new Vector2(0f, 1.20f), new Vector2(0.05f, 1.195f), new Vector2(0.11f, 1.17f),
-                new Vector2(0.115f, 1.10f), new Vector2(0.10f, 0.90f), new Vector2(0.105f, 0.72f),
-                new Vector2(0f, 0.72f),
-            };
-            builder.AddLathe(0, 0f, torso, 24, p => Single(HipsBone));
+            // 胴体（上から下へ）。頭は上端に丸めて付ける。
+            // 腰（0.90〜0.72m）は 1cm ごとの輪にする（形は同じ直線。Hip_Big のシェイプキーでなめらかに膨らませるため）
+            var torso = new List<Vector2> { new Vector2(0f, 1.20f), new Vector2(0.05f, 1.195f), new Vector2(0.11f, 1.17f), new Vector2(0.115f, 1.10f) };
+            for (int k = 0; k <= 18; k++) torso.Add(new Vector2(Mathf.Lerp(0.10f, 0.105f, k / 18f), 0.90f - 0.01f * k));
+            torso.Add(new Vector2(0f, 0.72f));
+            int torsoStart = builder.VertexCount;
+            builder.AddLathe(0, 0f, torso.ToArray(), 48, p => Single(HipsBone));
+            int torsoEnd = builder.VertexCount;
 
             Vector2[] head =
             {
@@ -205,7 +222,52 @@ namespace GP02.EditorTools
 
             Mesh mesh = builder.ToMesh("GP02_TestBody");
             mesh.bindposes = BindPoses();
+            AddHipBig(mesh, torsoStart, torsoEnd);
             return mesh;
+        }
+
+        /// <summary>
+        /// <see cref="HipBigShapeName"/> の、体の点 p（メッシュの座標。ルートと体のレンダラーは原点なので、バインドポーズのワールド座標と同じ）の動き。
+        /// 高さ 0.755m を中心に、上下になめらかに減る（ガウス形）。胴体の下端（0.72m）では約 4 割残る（下端の底が少し広がる）。前と横は約 1.8cm、後ろほど大きい。
+        /// </summary>
+        public static Vector3 HipBigDelta(Vector3 p)
+        {
+            float dy = p.y - HipBigCenterY;
+            float f = Mathf.Exp(-dy * dy / (2f * HipBigSpread * HipBigSpread));
+            var radial = new Vector3(p.x, 0f, p.z);
+            float r = radial.magnitude;
+            if (!(f > 0f) || r < 1e-6f) return Vector3.zero;
+            radial /= r;
+            float back = Mathf.Max(0f, radial.z);
+            return radial * (HipBigBack * (HipBigAround + (1f - HipBigAround) * back) * f);
+        }
+
+        // 胴体の頂点（start〜end）だけを動かすシェイプキーを足す。法線の差分は、膨らませた形で計算し直した法線との差
+        static void AddHipBig(Mesh mesh, int start, int end)
+        {
+            Vector3[] vertices = mesh.vertices;
+            var deltas = new Vector3[vertices.Length];
+            for (int v = start; v < end; v++) deltas[v] = HipBigDelta(vertices[v]);
+
+            Mesh before = UnityEngine.Object.Instantiate(mesh);
+            Mesh after = UnityEngine.Object.Instantiate(mesh);
+            try
+            {
+                var moved = (Vector3[])vertices.Clone();
+                for (int v = start; v < end; v++) moved[v] += deltas[v];
+                after.vertices = moved;
+                before.RecalculateNormals();
+                after.RecalculateNormals();
+                Vector3[] a = after.normals, b = before.normals;
+                var deltaNormals = new Vector3[vertices.Length];
+                for (int v = start; v < end; v++) deltaNormals[v] = a[v] - b[v];
+                mesh.AddBlendShapeFrame(HipBigShapeName, 100f, deltas, deltaNormals, null);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(before);
+                UnityEngine.Object.DestroyImmediate(after);
+            }
         }
 
         /// <summary>
@@ -321,6 +383,9 @@ namespace GP02.EditorTools
             readonly List<Vector2> _uvs = new List<Vector2>();
             readonly List<BoneWeight> _weights = new List<BoneWeight>();
             readonly List<int>[] _triangles;
+
+            /// <summary>今までに足した頂点の数（次に足す頂点の番号）。</summary>
+            public int VertexCount => _positions.Count;
 
             public MeshBuilder(int subMeshCount)
             {

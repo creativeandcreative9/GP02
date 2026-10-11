@@ -27,10 +27,14 @@ public static class RenderScenes
             SelectScenes();
             ClearScene();
             SymmetryScenes();
+            ClearScene();
+            PenetrationScenes();
         });
     }
 
     public static void Symmetry() => Run(SymmetryScenes);
+
+    public static void Penetration() => Run(PenetrationScenes);
 
     public static void Layers() => Run(LayerScenes);
 
@@ -494,6 +498,182 @@ public static class RenderScenes
     }
 
     // 右（+X）の前の裾寄りをつまみ、視点の平面の上で外上へ持ち上げて離し、仕上げる
+    // ---- 貫通を直す（体のシェイプキー Hip_Big を 100 にすると、後ろの腰で体がスカートを突き抜ける。それを布で押し出す） ----
+    // 1〜2段目: スカート（ペチコートは同じメッシュ）。体 Hip_Big 0 / 100（突き抜けている）/ 調べた所（赤い点）/ 直したあと / 保存したシェイプキー / 直したあとを横から
+    // 3段目: スカートとペチコートを別のレンダラーにして、まとめて直す（ペチコートも一緒に押し出される）
+    // 体は -executeMethod では SkinnedMeshRenderer の描画が古いままなので、BakeMesh で取り出して描く。
+    // ウエストはピン留めしない（ピン留めした点は動かないので、真下の膨らみを布の長さで避けられず、伸びる）。
+    // ログに、調べた結果、直した結果（残り・最大の伸び・時間）、保存した形が体に入った最大の深さを出す
+
+    static void PenetrationScenes()
+    {
+        Camera camera = SetUpCamera(new Vector3(0.45f, 0.88f, 0.72f), new Vector3(0f, 0.7f, 0.03f));
+        camera.aspect = 1f;
+        // 後ろから見るので、光も後ろ（少し左）から当てる
+        Light light = Object.FindObjectOfType<Light>();
+        Quaternion backLight = Quaternion.Euler(35f, 170f, 0f);
+        light.transform.rotation = backLight;
+        Vector3 backPosition = camera.transform.position;
+        Quaternion backRotation = camera.transform.rotation;
+        var shots = new List<Texture2D>();
+        foreach (bool separate in new[] { false, true })
+        {
+            GameObject root = TestClothMenu.CreateInScene(null, separate);
+            var body = root.transform.Find("Body").GetComponent<SkinnedMeshRenderer>();
+            var skirt = root.transform.Find("Skirt").GetComponent<SkinnedMeshRenderer>();
+            SkinnedMeshRenderer petticoat = separate ? root.transform.Find("Petticoat").GetComponent<SkinnedMeshRenderer>() : null;
+            foreach (Transform bone in skirt.bones) bone.localRotation = Quaternion.identity;
+            int hipBig = body.sharedMesh.GetBlendShapeIndex(TestClothMenu.HipBigShapeName);
+            var renderers = separate ? new[] { body, skirt, petticoat } : new[] { body, skirt };
+            string prefix = separate ? "pen_layered" : "pen";
+
+            if (!separate)
+            {
+                body.SetBlendShapeWeight(hipBig, 0f);
+                shots.Add(ShotWithBaked(camera, prefix + "_0_hip_big_0", renderers));
+            }
+            body.SetBlendShapeWeight(hipBig, 100f);
+            shots.Add(ShotWithBaked(camera, prefix + "_1_hip_big_100", renderers));
+
+            var controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+            GameObject bodyView = BakedView(body);
+            Mesh saved = null;
+            try
+            {
+                Renderer[] targets = separate ? new Renderer[] { skirt, petticoat } : new Renderer[] { skirt };
+                if (!controller.TryStartLayered(targets, out string error)) throw new InvalidOperationException(error);
+                ClothEditSession session = controller.Session;
+                GP02.Core.PenetrationReport found = controller.LastPenetration;
+                Debug.Log($"[GP02描画] {prefix}: 編集を始めたときに調べた結果: {found} / {session.BodyDescription}");
+                var points = new List<Vector3>();
+                session.GetPenetrationPoints(points, 2000);
+                session.UpdateCurrentShape();
+                session.DrawPreview(camera);
+                shots.Add(Shot(camera, prefix + "_2_detected_marked", (c, t) => PaintDots(c, t, points, new Color(1f, 0.12f, 0.1f))));
+
+                var timer = System.Diagnostics.Stopwatch.StartNew();
+                int remaining = controller.FixPenetration();
+                timer.Stop();
+                Debug.Log($"[GP02描画] {prefix}: 貫通を直しました（{timer.ElapsedMilliseconds} ms）: {controller.LastPenetrationFix} / 残り {remaining} / 直したあとに調べた結果: {controller.LastPenetration} / 粒子 {session.ParticleCount} / 高速化 {ClothEditSession.DescribeAcceleration(session.Solver.Kernel)}");
+                session.GetPenetrationPoints(points, 2000);
+                session.DrawPreview(camera);
+                shots.Add(Shot(camera, prefix + "_3_fixed", (c, t) => PaintDots(c, t, points, new Color(1f, 0.12f, 0.1f))));
+                if (!separate)
+                {
+                    saved = session.CreateMeshWithBlendShape("Fit_HipBig");
+                }
+            }
+            finally
+            {
+                controller.Dispose();
+            }
+
+            if (saved != null)
+            {
+                // 保存したシェイプキーを 100 にして、Unity のスキニングで取り出した形を描く。体に入った最大の深さもログに出す
+                skirt.sharedMesh = saved;
+                skirt.SetBlendShapeWeight(saved.GetBlendShapeIndex("Fit_HipBig"), 100f);
+                shots.Add(ShotWithBaked(camera, prefix + "_4_saved_100", skirt));
+                Debug.Log($"[GP02描画] {prefix}: 保存したシェイプキー（100）のスカートが体に入った最大の深さ {DeepestInBody(skirt, body) * 1000f:F1} mm");
+
+                // 横（+X 側）の少し後ろから、光もカメラの側から当てる（膨らみの上を布がどう覆っているかの輪郭を見る）
+                camera.transform.position = new Vector3(0.78f, 0.8f, 0.3f);
+                camera.transform.LookAt(new Vector3(0f, 0.7f, 0.05f));
+                light.transform.rotation = Quaternion.Euler(30f, -110f, 0f);
+                shots.Add(ShotWithBaked(camera, prefix + "_5_saved_side", skirt));
+                camera.transform.SetPositionAndRotation(backPosition, backRotation);
+                light.transform.rotation = backLight;
+            }
+            Object.DestroyImmediate(bodyView.GetComponent<MeshFilter>().sharedMesh);
+            Object.DestroyImmediate(bodyView);
+            Object.DestroyImmediate(root);
+        }
+        SaveGrid(shots, 3, "penetration");
+    }
+
+    // skinned を BakeMesh で取り出した形の表示を作り、元のレンダラーを隠す（消すのは呼び出し側。元のレンダラーは隠したまま）
+    static GameObject BakedView(SkinnedMeshRenderer skinned)
+    {
+        var baked = new Mesh();
+        skinned.BakeMesh(baked, true);
+        var view = new GameObject("Baked_" + skinned.name);
+        view.transform.SetPositionAndRotation(skinned.transform.position, skinned.transform.rotation);
+        view.AddComponent<MeshFilter>().sharedMesh = baked;
+        view.AddComponent<MeshRenderer>().sharedMaterials = skinned.sharedMaterials;
+        skinned.forceRenderingOff = true;
+        return view;
+    }
+
+    // いくつかの SkinnedMeshRenderer を BakeMesh で取り出して描く（隠れていたものは、隠れたままにする）
+    static Texture2D ShotWithBaked(Camera camera, string name, params SkinnedMeshRenderer[] skinned)
+    {
+        var views = new List<GameObject>();
+        var hidden = new List<bool>();
+        foreach (SkinnedMeshRenderer s in skinned)
+        {
+            hidden.Add(s.forceRenderingOff);
+            if (!s.forceRenderingOff) views.Add(BakedView(s));
+        }
+        Texture2D texture = Shot(camera, name);
+        for (int i = 0; i < skinned.Length; i++) skinned[i].forceRenderingOff = hidden[i];
+        foreach (GameObject view in views)
+        {
+            Object.DestroyImmediate(view.GetComponent<MeshFilter>().sharedMesh);
+            Object.DestroyImmediate(view);
+        }
+        return texture;
+    }
+
+    // 点を、奥行きに関係なく画像の上に描く（白い縁の赤い四角。シーンビューの赤い点の代わり）
+    static void PaintDots(Camera camera, Texture2D texture, List<Vector3> points, Color color)
+    {
+        foreach (int half in new[] { 3, 2 })
+        {
+            Color c = half == 3 ? Color.white : color;
+            foreach (Vector3 p in points)
+            {
+                Vector3 screen = camera.WorldToScreenPoint(p);
+                if (screen.z <= 0f) continue;
+                int cx = Mathf.RoundToInt(screen.x), cy = Mathf.RoundToInt(screen.y);
+                for (int dy = -half; dy <= half; dy++)
+                {
+                    for (int dx = -half; dx <= half; dx++)
+                    {
+                        int x = cx + dx, y = cy + dy;
+                        if (x >= 0 && y >= 0 && x < texture.width && y < texture.height) texture.SetPixel(x, y, c);
+                    }
+                }
+            }
+        }
+    }
+
+    // skinned（BakeMesh）の頂点のうち、体（BakeMesh）の中に一番深く入ったものの深さ（メートル。入っていなければ 0 以下）
+    static float DeepestInBody(SkinnedMeshRenderer skinned, SkinnedMeshRenderer body)
+    {
+        System.Numerics.Vector3[] Bake(SkinnedMeshRenderer s)
+        {
+            var baked = new Mesh();
+            s.BakeMesh(baked, true);
+            Matrix4x4 toWorld = Matrix4x4.TRS(s.transform.position, s.transform.rotation, Vector3.one);
+            Vector3[] local = baked.vertices;
+            Object.DestroyImmediate(baked);
+            var world = new System.Numerics.Vector3[local.Length];
+            for (int v = 0; v < local.Length; v++)
+            {
+                Vector3 w = toWorld.MultiplyPoint3x4(local[v]);
+                world[v] = new System.Numerics.Vector3(w.x, w.y, w.z);
+            }
+            return world;
+        }
+        var surface = new GP02.Core.BodySurface(Bake(body), body.sharedMesh.triangles);
+        float deepest = float.MinValue;
+        foreach (System.Numerics.Vector3 p in Bake(skinned))
+        {
+            if (surface.TryQuery(p, GP02.Core.BodySurface.DefaultMaxDistance, out GP02.Core.BodyHit hit)) deepest = Mathf.Max(deepest, -hit.SignedDistance);
+        }
+        return deepest;
+    }
+
     static void LiftFrontHem(ClothEditController c, Camera camera, float x)
     {
         c.Mode = ClothEditMode.Grab;
@@ -715,7 +895,8 @@ public static class RenderScenes
         return camera;
     }
 
-    static Texture2D Shot(Camera camera, string name)
+    // paint を渡すと、描いた画像に上から描き足す（カメラは描いたときのまま。シーンビューの重ね描きのように、奥行きに関係なく見える印に使う）
+    static Texture2D Shot(Camera camera, string name, Action<Camera, Texture2D> paint = null)
     {
         var rt = new RenderTexture(Size, Size, 24) { antiAliasing = 4 };
         camera.targetTexture = rt;
@@ -723,6 +904,7 @@ public static class RenderScenes
         RenderTexture.active = rt;
         var texture = new Texture2D(Size, Size, TextureFormat.RGB24, false);
         texture.ReadPixels(new Rect(0, 0, Size, Size), 0, 0);
+        paint?.Invoke(camera, texture);
         texture.Apply();
         RenderTexture.active = null;
         camera.targetTexture = null;

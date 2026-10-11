@@ -3,7 +3,6 @@ using System.Diagnostics;
 using GP02.Core;
 using UnityEngine;
 using NVector3 = System.Numerics.Vector3;
-using Object = UnityEngine.Object;
 
 namespace GP02.EditorTools
 {
@@ -18,6 +17,8 @@ namespace GP02.EditorTools
     /// 複数のレンダラーをまとめて1つの布にしたときは、まとめたレンダラーはすべて (b) から外す（布として動けるので）。
     /// 層どうしの接触（<see cref="LayerContacts"/>）ですぐ内側の層と組になった粒子は、(a) を数えず、内側の層を通り越して体までを測る。
     /// 内側の層は押せば動くので、外側の層は内側の層ごと体の手前まで動ける。
+    /// 体（<see cref="BodySurface"/>）を渡すと、体の中に入っている粒子（体が布を突き抜けている所）の隙間は 0 にする。
+    /// 体の中から内向きに飛ばしたレイは体の中を通り抜けて、反対側の面や何も無い所まで届き、大きな隙間（最大 10cm）になってしまうため。
     /// </summary>
     public static class RestGapMeasurer
     {
@@ -48,6 +49,9 @@ namespace GP02.EditorTools
             /// <summary>何かに当たった粒子の数（残りは上限の値）。</summary>
             public int HitCount;
 
+            /// <summary>体の中に入っていたので、隙間を 0 にした粒子の数。</summary>
+            public int InsideCount;
+
             public float Mean;
             public float Min;
             public float Max;
@@ -62,7 +66,7 @@ namespace GP02.EditorTools
             {
                 if (MeasuredCount == 0) return "隙間: 測れた粒子がありません";
                 return $"体や内側の布までの隙間: 平均 {Mean * 1000f:F1} mm / 最小 {Min * 1000f:F1} mm / 最大 {Max * 1000f:F1} mm" +
-                    $"（測った粒子 {MeasuredCount}、当たった {HitCount}。ほかのレンダラー {OtherRendererCount} 個・三角形 {OtherTriangleCount}。{Milliseconds:F0} ms）";
+                    $"（測った粒子 {MeasuredCount}、当たった {HitCount}、体の中なので 0 にした {InsideCount}。ほかのレンダラー {OtherRendererCount} 個・三角形 {OtherTriangleCount}。{Milliseconds:F0} ms）";
             }
         }
 
@@ -86,12 +90,35 @@ namespace GP02.EditorTools
         /// <param name="passThroughLayers">粒子ごとに、同じ布の別の島を数えないか（<see cref="LayerContacts.HasInnerLayer"/>）。null なら全粒子で数える</param>
         public static Result Measure(ParticleCloth cloth, TriangleBvh bvh, NVector3[] positions, IReadOnlyList<Renderer> targets, bool[] passThroughLayers)
         {
+            if (cloth.Model.RestNormals == null) return null;
+            var timer = Stopwatch.StartNew();
+            OtherRendererMeshes others = OtherRendererMeshes.Collect(targets);
+            Result result = Measure(cloth, bvh, positions, passThroughLayers, others, null);
+            result.Milliseconds = timer.Elapsed.TotalMilliseconds;
+            return result;
+        }
+
+        /// <summary>
+        /// 隙間を測る（集めてあるほかのレンダラーを使う版）。
+        /// </summary>
+        /// <param name="others">同じアバターの、まとめて編集するレンダラー以外のレンダラー（<see cref="OtherRendererMeshes.Collect"/>）</param>
+        /// <param name="body">体の表面。渡すと、体の中にある粒子の隙間を 0 にする。null なら調べない</param>
+        public static Result Measure(ParticleCloth cloth, TriangleBvh bvh, NVector3[] positions, bool[] passThroughLayers, OtherRendererMeshes others, BodySurface body)
+        {
             NVector3[] normals = cloth.Model.RestNormals;
             if (normals == null) return null;
 
             var timer = Stopwatch.StartNew();
             var result = new Result();
-            TriangleBvh otherBvh = BuildOthers(targets, out NVector3[] otherPositions, out result.OtherRendererCount, out result.OtherTriangleCount);
+            TriangleBvh otherBvh = null;
+            NVector3[] otherPositions = null;
+            if (others != null && others.TriangleCount > 0)
+            {
+                otherPositions = others.Positions;
+                otherBvh = new TriangleBvh(otherPositions, others.Triangles);
+                result.OtherRendererCount = others.RendererCount;
+                result.OtherTriangleCount = others.TriangleCount;
+            }
 
             NVector3[] rest = cloth.Model.RestPositions;
             int[] particleIsland = cloth.ParticleIsland;
@@ -138,6 +165,12 @@ namespace GP02.EditorTools
 
                 float gap = GapFromDistance(distance);
                 if (distance != float.MaxValue) hit++;
+                if (body != null && body.TryQuery(rest[i], BodySurface.DefaultMaxDistance, out BodyHit bodyHit) && bodyHit.SignedDistance < 0f)
+                {
+                    gap = 0f;
+                    layerDistance = 0f;
+                    result.InsideCount++;
+                }
                 if (passThrough)
                 {
                     if (blockedGaps == null) blockedGaps = (float[])gaps.Clone();
@@ -169,97 +202,6 @@ namespace GP02.EditorTools
         static float GapFromDistance(float distance)
         {
             return distance == float.MaxValue ? MaxGap : System.Math.Min(MaxGap, System.Math.Max(0f, distance - Margin));
-        }
-
-        /// <summary>
-        /// targets と同じアバター（transform.root の下）の、targets 以外の有効なレンダラーの三角形を、ワールド座標で1つの木にまとめる。
-        /// SkinnedMeshRenderer は BakeMesh で今のポーズの形にする。なければ null。
-        /// </summary>
-        static TriangleBvh BuildOthers(IReadOnlyList<Renderer> targets, out NVector3[] positions, out int rendererCount, out int triangleCount)
-        {
-            positions = null;
-            rendererCount = 0;
-            triangleCount = 0;
-            if (targets == null) return null;
-
-            var allPositions = new List<NVector3>();
-            var allTriangles = new List<int>();
-            var vertices = new List<Vector3>();
-            var triangles = new List<int>();
-
-            // 有効なレンダラーだけ（非アクティブなオブジェクトは含まれない）。まとめたレンダラーが別々のアバターにあれば、それぞれの下を見る
-            var excluded = new HashSet<Renderer>();
-            var roots = new List<Transform>();
-            foreach (Renderer target in targets)
-            {
-                if (target == null) continue;
-                excluded.Add(target);
-                if (!roots.Contains(target.transform.root)) roots.Add(target.transform.root);
-            }
-            var others = new List<Renderer>();
-            foreach (Transform root in roots) others.AddRange(root.GetComponentsInChildren<Renderer>(false));
-            foreach (Renderer renderer in others)
-            {
-                if (excluded.Contains(renderer) || !renderer.enabled) continue;
-
-                Mesh mesh;
-                Matrix4x4 toWorld;
-                Mesh baked = null;
-                if (renderer is SkinnedMeshRenderer skinned)
-                {
-                    if (skinned.sharedMesh == null) continue;
-                    baked = new Mesh();
-                    // スケールを含めて焼くと、レンダラーの位置と回転だけでワールド座標になる
-                    skinned.BakeMesh(baked, true);
-                    mesh = baked;
-                    Transform t = skinned.transform;
-                    toWorld = Matrix4x4.TRS(t.position, t.rotation, Vector3.one);
-                }
-                else if (renderer is MeshRenderer)
-                {
-                    var filter = renderer.GetComponent<MeshFilter>();
-                    if (filter == null || filter.sharedMesh == null) continue;
-                    mesh = filter.sharedMesh;
-                    toWorld = renderer.transform.localToWorldMatrix;
-                }
-                else
-                {
-                    continue;
-                }
-
-                try
-                {
-                    vertices.Clear();
-                    mesh.GetVertices(vertices);
-                    // 読み取れないメッシュ（実行時の Read/Write 無効）は、頂点数と合わない
-                    if (vertices.Count != mesh.vertexCount || vertices.Count == 0) continue;
-
-                    int baseIndex = allPositions.Count;
-                    for (int v = 0; v < vertices.Count; v++)
-                    {
-                        Vector3 w = toWorld.MultiplyPoint3x4(vertices[v]);
-                        allPositions.Add(new NVector3(w.x, w.y, w.z));
-                    }
-                    int before = allTriangles.Count;
-                    for (int sub = 0; sub < mesh.subMeshCount; sub++)
-                    {
-                        if (mesh.GetTopology(sub) != UnityEngine.MeshTopology.Triangles) continue;
-                        triangles.Clear();
-                        mesh.GetTriangles(triangles, sub);
-                        for (int k = 0; k < triangles.Count; k++) allTriangles.Add(baseIndex + triangles[k]);
-                    }
-                    if (allTriangles.Count > before) rendererCount++;
-                }
-                finally
-                {
-                    if (baked != null) Object.DestroyImmediate(baked);
-                }
-            }
-
-            triangleCount = allTriangles.Count / 3;
-            if (triangleCount == 0) return null;
-            positions = allPositions.ToArray();
-            return new TriangleBvh(positions, allTriangles.ToArray());
         }
     }
 }

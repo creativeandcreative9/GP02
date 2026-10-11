@@ -118,7 +118,7 @@ namespace GP02.EditorTools
     /// 触りながら調整するための設定値。ウィンドウの各区切りで変え、EditorPrefs に保存する。
     /// 画面に依存しないので、<see cref="ClothEditController"/> のテストでも使える（Load しなければ既定値のまま）。
     /// </summary>
-    public sealed class ClothEditSettings
+    public sealed partial class ClothEditSettings
     {
         // ClothSolver の既定値と同じにしておく（テストで一致を確かめている）
         public const float DefaultBendCompliance = 0.1f;
@@ -513,6 +513,7 @@ namespace GP02.EditorTools
             BrushCompliance = DefaultBrushCompliance;
             UseRestSurfaceAllowance = true;
             KeepLayersApart = true;
+            ResetPenetrationDefaults();
         }
 
         /// <summary>負の値や、計算を壊す値を直す。</summary>
@@ -551,6 +552,7 @@ namespace GP02.EditorTools
             else if (SelectionFalloffRadius > MaxSelectionFalloffRadius) SelectionFalloffRadius = MaxSelectionFalloffRadius;
             if (!(CompareBlend >= 0f)) CompareBlend = 1f;
             else if (CompareBlend > 1f) CompareBlend = 1f;
+            SanitizePenetration();
         }
 
         /// <summary>
@@ -572,6 +574,7 @@ namespace GP02.EditorTools
             solver.BrushCompliance = BrushCompliance;
             solver.SetRestSurfaceAllowance(UseRestSurfaceAllowance ? restAllowance : null);
             solver.KeepLayersApart = KeepLayersApart;
+            ApplyPenetrationTo(solver);
         }
 
         public static ClothEditSettings Load(string keyPrefix = DefaultKeyPrefix)
@@ -620,6 +623,7 @@ namespace GP02.EditorTools
                 SelectionFalloff = (FalloffPreset)EditorPrefs.GetInt(keyPrefix + "SelectionFalloff", (int)FalloffPreset.Smooth),
                 SelectionMovesAsCloth = EditorPrefs.GetBool(keyPrefix + "SelectionMovesAsCloth", true),
             };
+            settings.LoadPenetration(keyPrefix);
             settings.Sanitize();
             return settings;
         }
@@ -667,6 +671,7 @@ namespace GP02.EditorTools
             EditorPrefs.SetBool(keyPrefix + "ShowSelectionWeights", ShowSelectionWeights);
             EditorPrefs.SetInt(keyPrefix + "SelectionFalloff", (int)SelectionFalloff);
             EditorPrefs.SetBool(keyPrefix + "SelectionMovesAsCloth", SelectionMovesAsCloth);
+            SavePenetration(keyPrefix);
         }
 
         /// <summary>保存した値を消す（次の Load で既定値に戻る）。</summary>
@@ -687,6 +692,7 @@ namespace GP02.EditorTools
             {
                 EditorPrefs.DeleteKey(keyPrefix + key);
             }
+            DeletePenetration(keyPrefix);
         }
     }
 }

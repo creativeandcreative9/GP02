@@ -23,7 +23,7 @@ namespace GP02.Tests
     /// <c>GP02_GUI=1 GP02_UNITY_ARGS="-testFilter GP02.Tests.ClothEditWindowGuiSmokeTests" tools/unity/run-tests.sh</c>
     /// 画像は tools/unity/out/gui/ に出る。
     /// </summary>
-    public class ClothEditWindowGuiSmokeTests
+    public partial class ClothEditWindowGuiSmokeTests
     {
         const string ShotFolder = "/repo/tools/unity/out/gui";
         const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Instance;

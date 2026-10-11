@@ -338,6 +338,17 @@ namespace GP02.Core
         /// <summary>頂点ごとに結びつけた粒子の数（確認用）。</summary>
         public int BoundParticleCount(int weldedVertex) => _bindOffsets[weldedVertex + 1] - _bindOffsets[weldedVertex];
 
+        /// <summary>
+        /// まとめた後の頂点 weldedVertex に結びつけた、k 番目（0 〜 <see cref="BoundParticleCount"/> - 1）の粒子と、その重み。
+        /// 布の面のある点を動かすには、どの粒子を動かせばよいかを知るのに使う（体の尖った所が粒子の間から出ている所を押し出すとき）。
+        /// </summary>
+        public int GetBoundParticle(int weldedVertex, int k, out float weight)
+        {
+            int index = _bindOffsets[weldedVertex] + k;
+            weight = _bindWeights[index];
+            return _bindParticles[index];
+        }
+
         /// <summary>この布用のソルバーを作る（粗い段も使う）。</summary>
         public ClothSolver CreateSolver() => new ClothSolver(Model, Hierarchy);
     }

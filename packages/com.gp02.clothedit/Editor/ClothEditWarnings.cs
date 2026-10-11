@@ -48,6 +48,9 @@ namespace GP02.EditorTools
 
         /// <summary>ピンが1つも無い（布全体が動きやすい。編集中）。</summary>
         NoPins,
+
+        /// <summary>体が布を突き抜けている（編集中に最後に調べた結果）。</summary>
+        Penetration,
     }
 
     /// <summary>診断の「直す」ボタンでできること。</summary>
@@ -102,7 +105,7 @@ namespace GP02.EditorTools
     /// 診断: 編集を始める前と編集中に、対象と編集の問題をまとめて点検する。重さは <see cref="MessageType.Error"/>（重大）・
     /// <see cref="MessageType.Warning"/>（注意）・<see cref="MessageType.Info"/>（情報）。画面に依存しないので、テストで確かめられる。
     /// </summary>
-    public static class ClothEditWarnings
+    public static partial class ClothEditWarnings
     {
         /// <summary>スケールの軸ごとの違いがこの割合を超えたら、非一様とみなす。</summary>
         public const float NonUniformScaleTolerance = 0.01f;
@@ -318,6 +321,7 @@ namespace GP02.EditorTools
                         TargetWarningFix.FitMirrorPlane));
                 }
             }
+            CollectPenetration(controller, result);
         }
 
         /// <summary>

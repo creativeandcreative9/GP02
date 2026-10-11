@@ -307,7 +307,8 @@ namespace GP02.EditorTools
 
             // 体や内側の布までの隙間。布を渡されたとき（保存後の作り直し）も、今の形で測り直す。
             // まとめて編集するレンダラーは動けるので「体」から外し、内側の層と組になった粒子は、内側の層を通り越して体までを測る
-            RestGap = RestGapMeasurer.Measure(_cloth, _bvh, _welded, _renderers, LayerContacts.HasInnerLayer);
+            OtherRendererMeshes others = PrepareBody();
+            RestGap = RestGapMeasurer.Measure(_cloth, _bvh, _welded, LayerContacts.HasInnerLayer, others, Body);
             RestAllowance = RestGap?.Gaps;
             RestAllowanceWithoutLayers = RestGap?.GapsWithoutPassThrough;
             _solver.SetRestSurfaceAllowance(RestAllowance);

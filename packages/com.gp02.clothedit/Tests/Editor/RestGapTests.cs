@@ -141,7 +141,7 @@ namespace GP02.Tests
                 }
                 Assert.That(petticoatCount, Is.GreaterThan(10));
                 Debug.Log($"[GP02] ペチコートの隙間（前後のウエスト付近 {petticoatCount} 粒子）: 平均 {gapSum / petticoatCount * 1000f:F1} mm / 胴体までの距離との最大の差 {worstError * 1000f:F2} mm");
-                // 胴体は 24 角形なので、辺の中央は半径より最大 0.9mm 内側。ポーズでスカートの形もわずかに変わる
+                // 胴体は 48 角形なので、辺の中央は半径より最大 0.2mm 内側。ポーズでスカートの形もわずかに変わる
                 Assert.That(worstError, Is.LessThan(0.004f));
                 Assert.That(gapSum / petticoatCount, Is.GreaterThan(0.02f));
             }

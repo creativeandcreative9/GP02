@@ -36,7 +36,9 @@ namespace GP02.EditorTools
             fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals, brushGoal = d.BrushGoal, brushLambda = d.BrushLambda)
             fixed (int* restAnchor = d.RestAnchor)
             fixed (float* restAllowance = d.RestAllowance, contactGap = d.ContactGap)
-            fixed (int* contactOuter = d.ContactOuter, contactInner = d.ContactInner)
+            fixed (int* contactOuter = d.ContactOuter, contactInner = d.ContactInner, bodyParticles = d.BodyPlaneParticles)
+            fixed (Vector3* bodyPoints = d.BodyPlanePoints, bodyNormals = d.BodyPlaneNormals)
+            fixed (float* bodyMin = d.BodyPlaneMinDistances)
             {
                 var args = new BurstClothKernels.IterationArgs
                 {
@@ -85,6 +87,12 @@ namespace GP02.EditorTools
                     ContactInner = contactInner,
                     ContactGap = contactGap,
                     ContactReach = d.ContactReach,
+                    // 体が無いときは配列が null のことがある
+                    BodyPlaneCount = bodyParticles != null && bodyPoints != null && bodyNormals != null && bodyMin != null ? d.BodyPlaneCount : 0,
+                    BodyPlaneParticles = bodyParticles,
+                    BodyPlanePoints = (float*)bodyPoints,
+                    BodyPlaneNormals = (float*)bodyNormals,
+                    BodyPlaneMinDistances = bodyMin,
                 };
                 BurstClothKernels.Iterate(&args, iterations);
             }

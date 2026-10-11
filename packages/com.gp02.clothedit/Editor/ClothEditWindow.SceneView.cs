@@ -371,6 +371,7 @@ namespace GP02.EditorTools
                 Handles.color = new Color(1f, 0.3f, 0.2f, 1f);
                 for (int i = 0; i < _pinDots.Count; i++) Dot(_pinDots[i], 0.015f);
             }
+            DrawPenetrationDots(session);
 
             bool selectMode = _controller.Mode == ClothEditMode.Select;
             bool selectBusy = selectMode && (_controller.IsTransformingSelection || _controller.IsSettling);

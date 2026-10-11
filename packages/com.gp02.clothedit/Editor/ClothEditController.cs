@@ -653,6 +653,7 @@ namespace GP02.EditorTools
 
             // Burst のコンパイルをここで済ませる（最初のドラッグで止まらないように）
             double warmUp = _session.WarmUp();
+            DetectPenetrationOnStart();
 
             // 作り直した直後の形が、Undo の戻り先の基準になる
             _state = ClothEditState.Create();
@@ -2135,6 +2136,7 @@ namespace GP02.EditorTools
             }
 
             if (_session.ReadState(_state)) AfterShapeChanged();
+            RedetectPenetrationIfStale();
         }
 
         void RebuildSession()

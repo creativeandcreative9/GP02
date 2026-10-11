@@ -55,6 +55,11 @@ namespace GP02.EditorTools
             public int* ContactInner;            // 前処理で探し直す
             public float* ContactGap;
             public float ContactReach;           // 内側の粒子の面に沿ってこれより離れた組は解かない
+            public int BodyPlaneCount;           // 0 なら体との平面の段は何もしない
+            public int* BodyPlaneParticles;
+            public float* BodyPlanePoints;       // 平面ごとに x, y, z（内部の座標）
+            public float* BodyPlaneNormals;
+            public float* BodyPlaneMinDistances;
         }
 
         public struct CoarseLevelArgs
@@ -128,6 +133,7 @@ namespace GP02.EditorTools
                 SolveTethers(a);
                 if (a->KeepOutsideRestSurface != 0) SolveRestSurface(a);
                 if (a->ContactCount > 0) SolveLayerContacts(a);
+                if (a->BodyPlaneCount > 0) SolveBodyPlanes(a);
             }
 
             // 後処理：動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）。ワールド座標へ書き戻す
@@ -240,6 +246,28 @@ namespace GP02.EditorTools
                 float s = -c / w;
                 p[3 * i] += wi * s * nx; p[3 * i + 1] += wi * s * ny; p[3 * i + 2] += wi * s * nz;
                 p[3 * j] -= wj * s * nx; p[3 * j + 1] -= wj * s * ny; p[3 * j + 2] -= wj * s * nz;
+            }
+        }
+
+        // 体との平面を順に解く（動かない粒子は動かさない。ClothSolver の C# 版と同じ）
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void SolveBodyPlanes(IterationArgs* a)
+        {
+            float* p = a->Positions;
+            float* inverseMass = a->InverseMass;
+            float* points = a->BodyPlanePoints;
+            float* normals = a->BodyPlaneNormals;
+            for (int k = 0; k < a->BodyPlaneCount; k++)
+            {
+                int i = a->BodyPlaneParticles[k];
+                if (inverseMass[i] == 0f) continue;
+                float nx = normals[3 * k], ny = normals[3 * k + 1], nz = normals[3 * k + 2];
+                float d = (p[3 * i] - points[3 * k]) * nx + (p[3 * i + 1] - points[3 * k + 1]) * ny + (p[3 * i + 2] - points[3 * k + 2]) * nz
+                    - a->BodyPlaneMinDistances[k];
+                if (d >= 0f) continue;
+                p[3 * i] -= d * nx;
+                p[3 * i + 1] -= d * ny;
+                p[3 * i + 2] -= d * nz;
             }
         }
 

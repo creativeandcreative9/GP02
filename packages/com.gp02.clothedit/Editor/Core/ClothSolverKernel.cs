@@ -20,10 +20,11 @@ namespace GP02.Core
         /// 1. 計算範囲の伸び・曲げの制約の λ を 0 に戻す（<see cref="ClothSolverIterationData.ActiveStretch"/>、<see cref="ClothSolverIterationData.ActiveBend"/>）
         /// 2. <see cref="ClothSolverIterationData.KeepOutsideRestSurface"/> が true なら、元の形の近い粒子（<see cref="ClothSolverIterationData.RestAnchor"/>）を探し直す。
         ///    続けて <see cref="ClothSolverIterationData.ContactCount"/> が正なら、接触の組の内側の粒子（<see cref="ClothSolverIterationData.ContactInner"/>）を探し直す
-        /// 3. 反復を iterations 回行う（つまんだ範囲の引き寄せ → 曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約 → 層どうしの接触）。
+        /// 3. 反復を iterations 回行う（つまんだ範囲の引き寄せ → 曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約 → 層どうしの接触 → 体との平面）。
         ///    テザーは、粒子ごとに「範囲の外側なら GrabSource から GrabDistance 以内」→「NearestPin から PinDistance 以内」の順。
         ///    最初の引き寄せは <see cref="ClothSolverIterationData.BrushCompliance"/> が正のときだけ、
-        ///    元の形より内側に入らない制約は KeepOutsideRestSurface が true のときだけ、層どうしの接触は ContactCount が正のときだけ
+        ///    元の形より内側に入らない制約は KeepOutsideRestSurface が true のときだけ、層どうしの接触は ContactCount が正のときだけ、
+        ///    体との平面は <see cref="ClothSolverIterationData.BodyPlaneCount"/> が正のときだけ
         /// 4. 計算範囲の粒子の位置を、ワールド座標（内部の座標 + <see cref="ClothSolverIterationData.Origin"/>）として
         ///    <see cref="ClothSolverIterationData.WorldPositions"/> へ書き戻す
         /// 前後の処理（1・2・4）を C# で別に行うと、粒子が多いときに反復1回分より重くなるため、まとめて任せている。
@@ -140,14 +141,32 @@ namespace GP02.Core
         public readonly float[] ContactGap;
         public readonly float ContactReach;
 
+        /// <summary>
+        /// 体との平面の数（0 なら体との段は何もしない）。平面 k は、粒子 i = BodyPlaneParticles[k] が
+        /// dot(p_i - BodyPlanePoints[k], BodyPlaneNormals[k]) &gt;= BodyPlaneMinDistances[k] を満たすようにする片側だけの制約（点は内部の座標）。
+        /// 反復の最後に、平面を順に、逆質量が 0 の粒子は飛ばして、d = dot(p_i - 点, 向き) - 下限 が負なら p_i -= d * 向き とする。
+        /// 同じ粒子が2つの平面に出てくることがある（体の尖った所のための平面）。
+        /// </summary>
+        public readonly int BodyPlaneCount;
+        public readonly int[] BodyPlaneParticles;
+        public readonly Vector3[] BodyPlanePoints;
+        public readonly Vector3[] BodyPlaneNormals;
+        public readonly float[] BodyPlaneMinDistances;
+
         internal ClothSolverIterationData(Vector3[] positions, Vector3[] worldPositions, Vector3 origin, int[] graphOffsets, int[] graphNeighbors, float[] inverseMass,
             int[] bendPairs, float[] bendRestLengths, float[] bendLambda, int[] activeBend, int activeBendCount, float bendCompliance,
             int[] stretchPairs, float[] stretchRestLengths, float[] stretchLambda, int[] activeStretch, int activeStretchCount, float stretchCompliance,
             int[] activeParticles, int activeParticleCount, int grabbed, bool[] inBrush, float[] grabDistance, int[] grabSource, int[] nearestPin, float[] pinDistance,
             bool keepOutsideRestSurface, Vector3[] restPositions, Vector3[] restNormals, int[] restAnchor, float[] restAllowance,
             float brushCompliance, Vector3[] brushGoal, Vector3[] brushLambda,
-            int contactCount, int[] contactOuter, int[] contactInner, float[] contactGap, float contactReach)
+            int contactCount, int[] contactOuter, int[] contactInner, float[] contactGap, float contactReach,
+            int bodyPlaneCount, int[] bodyPlaneParticles, Vector3[] bodyPlanePoints, Vector3[] bodyPlaneNormals, float[] bodyPlaneMinDistances)
         {
+            BodyPlaneCount = bodyPlaneCount;
+            BodyPlaneParticles = bodyPlaneParticles;
+            BodyPlanePoints = bodyPlanePoints;
+            BodyPlaneNormals = bodyPlaneNormals;
+            BodyPlaneMinDistances = bodyPlaneMinDistances;
             ContactReach = contactReach;
             ContactCount = contactCount;
             ContactOuter = contactOuter;

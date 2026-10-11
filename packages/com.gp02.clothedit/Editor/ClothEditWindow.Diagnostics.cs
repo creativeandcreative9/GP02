@@ -89,6 +89,7 @@ namespace GP02.EditorTools
                     }
                 }
             }
+            DrawPenetrationDiagnostics();
             if (GUILayout.Button(new GUIContent(L10n.Tr("点検し直す", "Check Again"), L10n.Tr("対象と編集の状態を、今の内容で点検し直します", "Checks the target and the edit again with their current state"))))
             {
                 _warningsDirty = true;

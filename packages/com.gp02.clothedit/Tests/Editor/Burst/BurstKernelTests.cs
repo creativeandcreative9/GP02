@@ -171,6 +171,62 @@ namespace GP02.Tests
             Assert.That(maxDifference, Is.LessThan(1e-4f));
         }
 
+        // 体との平面（貫通を直す・直したあとに内へ押す）でも C# と一致すること。体はテスト用の体に Hip_Big を 100 で入れた形（ポーズなし）
+        [Test]
+        public void BurstKernel_MatchesCSharpResult_WithBodyPlanes()
+        {
+            UnityEngine.Mesh skirtMesh = TestClothMenu.CreateSkirtMesh();
+            var cloth = ParticleCloth.Build(MeshBridge.ToNumerics(skirtMesh.vertices, UnityEngine.Vector3.one), skirtMesh.triangles);
+            UnityEngine.Object.DestroyImmediate(skirtMesh);
+            UnityEngine.Mesh bodyMesh = TestClothMenu.CreateBodyMesh();
+            var deltas = new UnityEngine.Vector3[bodyMesh.vertexCount];
+            bodyMesh.GetBlendShapeFrameVertices(bodyMesh.GetBlendShapeIndex(TestClothMenu.HipBigShapeName), 0, deltas, null, null);
+            UnityEngine.Vector3[] bodyVertices = bodyMesh.vertices;
+            for (int i = 0; i < bodyVertices.Length; i++) bodyVertices[i] += deltas[i];
+            var body = new BodySurface(MeshBridge.ToNumerics(bodyVertices, UnityEngine.Vector3.one), bodyMesh.triangles);
+            UnityEngine.Object.DestroyImmediate(bodyMesh);
+            body.ClassifyIslands(cloth.Model.RestPositions);
+
+            // 「貫通を直す」は収束の判定で反復の回数が変わるので、ここでは反復の回数を決めて解く
+            Vector3[] Run(IClothSolverKernel kernel, out int planes, out int cleared)
+            {
+                var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { Kernel = kernel };
+                solver.SetBody(body);
+                var clear = new List<int>();
+                for (int i = 0; i < cloth.Model.ParticleCount; i++)
+                {
+                    if (solver.GetBodyMinDistance(i) < solver.BodyMargin - 1e-6f) clear.Add(i);
+                }
+                cleared = clear.Count;
+                solver.RequireBodyClearance(clear);
+                solver.Solve(60);
+                // 直したあとに、後ろの腰の布を内へ押す（体との平面とつまんだ範囲の引き寄せが同時に効く）
+                int grabbed = solver.FindNearestParticle(new Vector3(0f, 0.755f, 0.17f));
+                Vector3 start = solver.Positions[grabbed];
+                for (int f = 1; f <= 5; f++)
+                {
+                    solver.Grab(grabbed, start + new Vector3(0f, 0f, -0.03f) * f / 5f, 0.03f);
+                    solver.Solve(10);
+                }
+                planes = solver.BodyPlaneCount;
+                return solver.Positions.ToArray();
+            }
+
+            Vector3[] expected = Run(null, out int planeCount, out int clearedCount);
+            Vector3[] actual = Run(new BurstClothSolverKernel(), out _, out _);
+            float moved = 0f, maxDifference = 0f;
+            for (int i = 0; i < expected.Length; i++)
+            {
+                moved = System.Math.Max(moved, Vector3.Distance(expected[i], cloth.Model.RestPositions[i]));
+                maxDifference = System.Math.Max(maxDifference, Vector3.Distance(expected[i], actual[i]));
+            }
+            Debug.Log($"[GP02] Burst と C# の差（体との平面 {planeCount}、押し出す粒子 {clearedCount}）: 最大 {maxDifference:E2} m（最大の移動 {moved:F3} m）");
+            Assert.That(clearedCount, Is.GreaterThan(20), "体に入っている粒子がありません");
+            Assert.That(planeCount, Is.GreaterThan(0), "体との平面が使われていません");
+            Assert.That(moved, Is.GreaterThan(0.005f), "操作で動いていません");
+            Assert.That(maxDifference, Is.LessThan(1e-4f));
+        }
+
         // ピン留め → つまんで数コマ引っ張る → 仕上げ → 離す
         static Vector3[] Operate(ParticleCloth cloth, float size, IClothSolverKernel kernel, float brushCompliance = ClothSolver.DefaultBrushCompliance)
         {

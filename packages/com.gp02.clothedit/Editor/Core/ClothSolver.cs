@@ -25,7 +25,7 @@ namespace GP02.Core
     /// <see cref="ActiveMargin"/> を有限にすると、さらに周りだけに絞れるが、
     /// 外側を固定するため、大きく引っ張ると境目が伸びる（布を周りから引き寄せられないため）。
     /// </summary>
-    public sealed class ClothSolver
+    public sealed partial class ClothSolver
     {
         readonly ClothModel _model;
         readonly ClothHierarchy _hierarchy;
@@ -1472,6 +1472,7 @@ namespace GP02.Core
         public void ResetToRest()
         {
             SetInternalPositions(_model.RestPositions);
+            ResetBodyRatchet();
             _grabbed = -1;
             _activeDirty = true;
         }
@@ -1484,6 +1485,7 @@ namespace GP02.Core
         {
             if (positions.Length != _positions.Length) throw new ArgumentException("粒子数が一致しません。", nameof(positions));
             SetInternalPositions(positions);
+            ResetBodyRatchet();
             _grabbed = -1;
             _activeDirty = true;
         }
@@ -1703,6 +1705,8 @@ namespace GP02.Core
             bool softBrush = _grabbed >= 0 && _brushCompliance > 0f;
             int contactCount = SolvesLayerContacts ? _contactCount : 0;
 
+            if (iterations > 0) RefreshBodyPlanes();
+
             IClothSolverKernel kernel = Kernel;
             if (kernel != null && iterations > 0)
             {
@@ -1713,7 +1717,8 @@ namespace GP02.Core
                     _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _grabSource, _nearestPin, _pinDistance,
                     keepOutside, _restInternal, _restNormals, _restAnchor, _restAllowance,
                     softBrush ? _brushCompliance : 0f, _brushGoal, _brushLambda,
-                    contactCount, _contactOuter, _contactInner, _contactGap, _contactReach), iterations);
+                    contactCount, _contactOuter, _contactInner, _contactGap, _contactReach,
+                    _bodyPlaneCount, _bodyPlaneParticle, _bodyPlanePoint, _bodyPlaneNormal, _bodyPlaneMin), iterations);
                 if (keepOutside && iterations > 0) PushClampedBrushOutside();
                 return;
             }
@@ -1733,6 +1738,7 @@ namespace GP02.Core
                 SolveTethers();
                 if (keepOutside) SolveRestSurface();
                 if (contactCount > 0) SolveLayerContacts();
+                if (_bodyPlaneCount > 0) SolveBodyPlanes();
             }
             if (keepOutside && iterations > 0) PushClampedBrushOutside();
 

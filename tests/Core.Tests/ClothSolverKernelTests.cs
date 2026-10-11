@@ -82,6 +82,14 @@ public class ClothSolverKernelTests
                     d.Positions[i] += wi * s * n;
                     d.Positions[j] -= wj * s * n;
                 }
+                for (int k = 0; k < d.BodyPlaneCount; k++)
+                {
+                    int i = d.BodyPlaneParticles[k];
+                    if (d.InverseMass[i] == 0f) continue;
+                    Vector3 n = d.BodyPlaneNormals[k];
+                    float depth = Vector3.Dot(d.Positions[i] - d.BodyPlanePoints[k], n) - d.BodyPlaneMinDistances[k];
+                    if (depth < 0f) d.Positions[i] -= depth * n;
+                }
             }
             // 後処理：ワールド座標へ書き戻す
             for (int a = 0; a < d.ActiveParticleCount; a++)
