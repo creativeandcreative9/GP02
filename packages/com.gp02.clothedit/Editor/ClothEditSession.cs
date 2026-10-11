@@ -321,7 +321,7 @@ namespace GP02.EditorTools
             RestAllowance = RestGap?.Gaps;
             RestAllowanceWithoutLayers = RestGap?.GapsWithoutPassThrough;
             _solver.SetRestSurfaceAllowance(RestAllowance);
-            if (RestGap != null) UnityEngine.Debug.Log("[GP02] " + DescribeTargets() + ": " + RestGap + $"（層どうしの接触 {LayerContacts.Count} 組）");
+            if (RestGap != null) ClothEditLog.Info("[GP02] " + DescribeTargets() + ": " + RestGap + $"（層どうしの接触 {LayerContacts.Count} 組）");
 
             foreach (Part part in _parts)
             {

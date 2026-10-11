@@ -393,7 +393,7 @@ namespace GP02.EditorTools
             _poseJob = null;
             InstallPoseCheck(result, job.Rig);
             int steps = Math.Max(1, result.Entries.Count);
-            Debug.Log($"[GP02] {job.Session.DescribeTargets()}: 動作チェック {result.DescribeSummary()} / ポーズ {result.PoseCount} × {result.StageCount} 段階（うちクリップのコマ {result.ClipSampleCount}）" +
+            ClothEditLog.Info($"[GP02] {job.Session.DescribeTargets()}: 動作チェック {result.DescribeSummary()} / ポーズ {result.PoseCount} × {result.StageCount} 段階（うちクリップのコマ {result.ClipSampleCount}）" +
                 $" / 時間 合計 {result.Milliseconds:F0} ms（準備 {result.PrepareMilliseconds:F0} ms、1ポーズ平均 {(result.Milliseconds - result.PrepareMilliseconds) / steps:F0} ms）" +
                 $" / {result.BodyDescription} / 服のボーン: アバターの動きをうつす {result.FollowerCount}、親に付いていく {result.UnmatchedBoneCount}" +
                 (result.EscapePlan != null ? $" / 外へ逃がせるか所 {result.EscapePlan.PushedRegions}（ウェイトが原因 {result.EscapePlan.LowGainRegions}、深すぎる {result.EscapePlan.TooFarRegions}、体にぴったり {result.EscapePlan.TightRegions}）" : "") +
@@ -710,7 +710,7 @@ namespace GP02.EditorTools
                 }
             }
             LastPoseEscape = report;
-            Debug.Log($"[GP02] {_session.DescribeTargets()}: 元のポーズで外へ逃がしました。{report}（{DescribeAccelerationForLog()}）");
+            ClothEditLog.Info($"[GP02] {_session.DescribeTargets()}: 元のポーズで外へ逃がしました。{report}（{DescribeAccelerationForLog()}）");
             return report;
         }
     }

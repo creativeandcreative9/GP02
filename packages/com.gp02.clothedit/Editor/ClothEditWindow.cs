@@ -1161,11 +1161,18 @@ namespace GP02.EditorTools
                     _settings.UseAcceleration);
             }
 
+            bool log = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("記録をコンソールに出す", "Log to Console"),
+                L10n.Tr("オンにすると、編集の開始・保存・貫通や動作チェックの結果などの記録を、コンソールに出します（不具合を報告するときに使います）。既定はオフ",
+                    "When on, writes a log of starting, saving, penetration and motion check results, etc. to the Console (useful when reporting a problem). Default off")),
+                ClothEditLog.Enabled);
+            if (log != ClothEditLog.Enabled) ClothEditLog.Enabled = log;
+
             bool changed = EditorGUI.EndChangeCheck();
             if (GUILayout.Button(new GUIContent(L10n.Tr("既定に戻す", "Reset to Defaults"),
                 L10n.Tr("道具・ブラシ・対称・表示を含め、すべての設定値を既定値に戻します。", "Resets every setting, including tool, brush, symmetry and display, to its default."))))
             {
                 _settings.ResetToDefaults();
+                ClothEditLog.Enabled = false;
                 _brushCentimeters = 3f;
                 _influenceCentimeters = 30f;
                 changed = true;

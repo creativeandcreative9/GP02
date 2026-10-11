@@ -142,7 +142,7 @@ namespace GP02.Tests
             var keys = new List<string>
             {
                 "GP02.Language", ClothEditView.PrefKey, ClothEditHelp.ShownOncePrefKey, BurstInstaller.GuideShownPrefKey,
-                ClothEditCurveLibrary.DefaultKey, "GP02.ShapeKeyList.Settings",
+                ClothEditCurveLibrary.DefaultKey, "GP02.ShapeKeyList.Settings", ClothEditLog.PrefKey,
             };
             foreach (PropertyInfo property in typeof(ClothEditSettings).GetProperties(BindingFlags.Public | BindingFlags.Instance)) keys.Add(ClothEditSettings.DefaultKeyPrefix + property.Name);
             foreach (FieldInfo field in typeof(ClothEditSettings).GetFields(BindingFlags.Public | BindingFlags.Instance)) keys.Add(ClothEditSettings.DefaultKeyPrefix + field.Name);
@@ -156,6 +156,8 @@ namespace GP02.Tests
             L10n.Language = UiLanguage.Japanese;
             EditorPrefs.DeleteKey("GP02.Language");
             ClothEditView.Reload();
+            // コンソールの記録はふだん出さない設定だが、この記録（walkthrough.md）に、操作ごとの計算の結果を残すために出す
+            ClothEditLog.Enabled = true;
             return found == 0 ? "GP02 の EditorPrefs は1つも残っていなかった（空の状態から）。取っておきの編集も空にした" : "GP02 の EditorPrefs " + found + " 件を消した。取っておきの編集も空にした";
         }
 

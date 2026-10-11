@@ -30,7 +30,7 @@ namespace GP02.EditorTools
         {
             if (!EnsureAlive()) return null;
             PenetrationReport report = _session.DetectPenetration(BuildPenetrationOptions());
-            Debug.Log("[GP02] " + _session.DescribeTargets() + ": " + report);
+            ClothEditLog.Info("[GP02] " + _session.DescribeTargets() + ": " + report);
             Notify();
             return report;
         }
@@ -75,7 +75,7 @@ namespace GP02.EditorTools
             }
             CommitOperation();
             AfterShapeChanged();
-            Debug.Log($"[GP02] {_session.DescribeTargets()}: 貫通を直しました。{result}（{DescribeAccelerationForLog()}）");
+            ClothEditLog.Info($"[GP02] {_session.DescribeTargets()}: 貫通を直しました。{result}（{DescribeAccelerationForLog()}）");
             return result.RemainingPenetrating;
         }
 
@@ -96,7 +96,7 @@ namespace GP02.EditorTools
         void DetectPenetrationOnStart()
         {
             PenetrationReport report = _session.DetectPenetration(BuildPenetrationOptions());
-            if (report.HasBody) Debug.Log("[GP02] " + _session.DescribeTargets() + ": " + report);
+            if (report.HasBody) ClothEditLog.Info("[GP02] " + _session.DescribeTargets() + ": " + report);
         }
     }
 }

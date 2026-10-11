@@ -658,13 +658,13 @@ namespace GP02.EditorTools
                 if (carriedPinParticles != null && carriedPinParticles.Count > 0)
                 {
                     int pinned = _session.PinParticles(carriedPinParticles);
-                    Debug.Log($"[GP02] ピン {pinned} 粒子を引き継ぎました。");
+                    ClothEditLog.Info($"[GP02] ピン {pinned} 粒子を引き継ぎました。");
                 }
             }
             else if (carriedPins != null && carriedPins.Count > 0)
             {
                 int pinned = _session.PinNear(carriedPins, _session.Cloth.Spacing * 0.75f, carriedPinIslands);
-                Debug.Log($"[GP02] ピン {carriedPins.Count} 点から {pinned} 粒子を引き継ぎました。");
+                ClothEditLog.Info($"[GP02] ピン {carriedPins.Count} 点から {pinned} 粒子を引き継ぎました。");
             }
 
             RestoreSelection(carriedSelection, reuseCloth != null);
@@ -685,7 +685,7 @@ namespace GP02.EditorTools
             LastStretch = 0f;
             HasHover = false;
             MarkClean();
-            Debug.Log($"[GP02] {_session.DescribeTargets()}: 頂点 {_session.VertexCount} / 粒子 {_session.ParticleCount} / 層どうしの接触 {_session.LayerContacts.Count} 組 / 準備 {_session.PrepareMilliseconds:F0}ms / 初回の計算 {warmUp:F0}ms");
+            ClothEditLog.Info($"[GP02] {_session.DescribeTargets()}: 頂点 {_session.VertexCount} / 粒子 {_session.ParticleCount} / 層どうしの接触 {_session.LayerContacts.Count} 組 / 準備 {_session.PrepareMilliseconds:F0}ms / 初回の計算 {warmUp:F0}ms");
             Notify();
             return true;
         }
@@ -2278,7 +2278,7 @@ namespace GP02.EditorTools
             string where = string.Join(", ", paths);
             message = L10n.Tr($"シェイプキー「{name}」を {where} に保存しました。",
                 $"Saved the shape key \"{name}\" to {where}.");
-            Debug.Log("[GP02] " + message);
+            ClothEditLog.Info("[GP02] " + message);
             // 保存の Undo が、次の編集と同じグループにならないようにする
             Undo.IncrementCurrentGroup();
 
@@ -2305,7 +2305,7 @@ namespace GP02.EditorTools
             }
             double rebaseMs = timer.Elapsed.TotalMilliseconds;
             if (!StartSession(null, null, rebased, pinParticles, carry, out string error)) message += L10n.Tr("\n編集を続けられませんでした。「編集を開始」からやり直してください。\n", "\nCould not continue editing. Press \"Start Editing\" to start over.\n") + error;
-            Debug.Log($"[GP02] 保存後の作り直し {timer.Elapsed.TotalMilliseconds:F0}ms（うち静止状態の更新 {rebaseMs:F0}ms）");
+            ClothEditLog.Info($"[GP02] 保存後の作り直し {timer.Elapsed.TotalMilliseconds:F0}ms（うち静止状態の更新 {rebaseMs:F0}ms）");
             return true;
         }
 

@@ -176,7 +176,7 @@ namespace GP02.EditorTools
             preview.Milliseconds = timer.Elapsed.TotalMilliseconds;
             _weightPreview = preview;
             _weightShapeSession = null;
-            Debug.Log($"[GP02] {_session.DescribeTargets()}: ウェイトを体に寄せる（確認）: {preview}");
+            ClothEditLog.Info($"[GP02] {_session.DescribeTargets()}: ウェイトを体に寄せる（確認）: {preview}");
             Notify();
             return preview;
         }
@@ -403,7 +403,7 @@ namespace GP02.EditorTools
                 afterRig?.Dispose();
             }
             LastWeightFix = report;
-            Debug.Log($"[GP02] {(_session != null ? _session.DescribeTargets() : "")}: ウェイトを体に寄せました。{report}");
+            ClothEditLog.Info($"[GP02] {(_session != null ? _session.DescribeTargets() : "")}: ウェイトを体に寄せました。{report}");
             Notify();
             return report;
         }
@@ -530,7 +530,7 @@ namespace GP02.EditorTools
             Undo.IncrementCurrentGroup();
             LastWeightFix = null;
             RebuildSession();
-            Debug.Log($"[GP02] {(_session != null ? _session.DescribeTargets() : "")}: データからウェイトの変更を外しました。");
+            ClothEditLog.Info($"[GP02] {(_session != null ? _session.DescribeTargets() : "")}: データからウェイトの変更を外しました。");
             Notify();
             return true;
         }

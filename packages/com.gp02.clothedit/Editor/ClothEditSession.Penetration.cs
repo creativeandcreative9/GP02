@@ -45,7 +45,7 @@ namespace GP02.EditorTools
             BodyDescription = description;
             _solver.SetBody(Body);
             BodyMilliseconds = timer.Elapsed.TotalMilliseconds;
-            UnityEngine.Debug.Log($"[GP02] {DescribeTargets()}: {description}（{BodyMilliseconds:F0} ms）");
+            ClothEditLog.Info($"[GP02] {DescribeTargets()}: {description}（{BodyMilliseconds:F0} ms）");
             return others;
         }
 
@@ -91,7 +91,7 @@ namespace GP02.EditorTools
                 }
             }
             BodyMilliseconds = timer.Elapsed.TotalMilliseconds;
-            UnityEngine.Debug.Log($"[GP02] {DescribeTargets()}: 体を集め直しました。{description}（{BodyMilliseconds:F0} ms）");
+            ClothEditLog.Info($"[GP02] {DescribeTargets()}: 体を集め直しました。{description}（{BodyMilliseconds:F0} ms）");
             return Body != null;
         }
 
