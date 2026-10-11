@@ -208,5 +208,209 @@ namespace GP02.Tests
                 sceneView.Close();
             }
         }
+
+        // 衣装の正面から、布に当たるレイ（GuiCloth は 1m 四方で、x が -0.5〜0.5、y が 0.5〜1.5）
+        static Ray ClothRay(float x, float y) => new Ray(new Vector3(x, y, -3f), Vector3.forward);
+
+        // ワールドの点を、シーンビューの GUI 座標（イベントの mousePosition）にする
+        static Vector2 GuiPoint(SceneView sceneView, Vector3 world)
+        {
+            Camera camera = sceneView.camera;
+            Vector3 screen = camera.WorldToScreenPoint(world);
+            float ppp = EditorGUIUtility.pixelsPerPoint;
+            return new Vector2(screen.x / ppp, (camera.pixelHeight - screen.y) / ppp);
+        }
+
+        // 画像のために設定を変えるので、あとで元に戻す（EditorPrefs に保存される設定を壊さない）
+        sealed class SettingsBackup
+        {
+            readonly ClothEditSettings _settings;
+            readonly ClothEditMode _tool;
+            readonly SelectionHandle _handle;
+            readonly HandleOrientation _space;
+            readonly bool _symmetry, _asCloth;
+            readonly float _radius;
+
+            public SettingsBackup(ClothEditSettings settings)
+            {
+                _settings = settings;
+                _tool = settings.Tool;
+                _handle = settings.HandleType;
+                _space = settings.HandleSpace;
+                _symmetry = settings.SymmetryEnabled;
+                _asCloth = settings.SelectionMovesAsCloth;
+                _radius = settings.SelectionFalloffRadius;
+            }
+
+            public void Restore()
+            {
+                _settings.Tool = _tool;
+                _settings.HandleType = _handle;
+                _settings.HandleSpace = _space;
+                _settings.SymmetryEnabled = _symmetry;
+                _settings.SelectionMovesAsCloth = _asCloth;
+                _settings.SelectionFalloffRadius = _radius;
+                _settings.Save();
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator Window_SelectMove_DrawsTheSelectionSection_WithTheNumericFields()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 900);
+            Renderer cloth = CreateCloth();
+            SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
+            try
+            {
+                SetField(window, "_target", cloth);
+                typeof(ClothEditWindow).GetMethod("StartEdit", Private).Invoke(window, null);
+                var controller = GetField<ClothEditController>(window, "_controller");
+                Assert.That(controller.IsEditing, Is.True, controller.LastError);
+                // 画面に収まるよう、道具より上と下の区切りを閉じる
+                SetField(window, "_foldTarget", false);
+                SetField(window, "_foldBrush", false);
+                SetField(window, "_foldDisplay", false);
+                SetField(window, "_foldSave", false);
+
+                // 1. 「選んで動かす」だが、まだ選んでいない
+                controller.Settings.SymmetryEnabled = false;
+                controller.Settings.Tool = ClothEditMode.Select;
+                yield return Pump();
+                Shot(window, "select_window_empty");
+
+                // 2. 選んだ（ピン留めした点を含む）。対称もオン。数値で動かすを開く
+                controller.Session.PaintPins(new Vector3(0f, 1.5f, 0f), 0.1f, true);
+                SetField(window, "_brushCentimeters", 12f);
+                controller.BrushRadius = 0.12f;
+                Assert.That(controller.SelectPaintBegin(ClothRay(0.05f, 1.45f), false), Is.True);
+                controller.SelectPaintEnd();
+                controller.Settings.SymmetryEnabled = true;
+                controller.Settings.HandleSpace = HandleOrientation.Normal;
+                SetField(window, "_foldNumeric", true);
+                SetField(window, "_numericMove", new Vector3(0f, -5f, 0f));
+                SetField(window, "_numericRotate", new Vector3(0f, 0f, 15f));
+                SetField(window, "_numericScale", new Vector3(100f, 120f, 100f));
+                yield return Pump();
+                Assert.That(controller.SelectionCount, Is.GreaterThan(0));
+                Shot(window, "select_window_selected");
+
+                // 3. 「選んで動かす」以外の道具でも、選択があれば区切りが残る。形だけ動かす
+                controller.Settings.SelectionMovesAsCloth = false;
+                controller.Settings.Tool = ClothEditMode.Grab;
+                yield return Pump();
+                Shot(window, "select_window_other_tool");
+            }
+            finally
+            {
+                backup.Restore();
+                window.Close();
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator SceneView_SelectMove_ShowsThePointsAndTheHandle_AndTakesMouseEvents()
+        {
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 700);
+            var sceneView = EditorWindow.GetWindow<SceneView>();
+            sceneView.position = new Rect(450, 10, 800, 700);
+            Renderer cloth = CreateCloth();
+            SettingsBackup backup = new SettingsBackup(GetField<ClothEditController>(window, "_controller").Settings);
+            try
+            {
+                SetField(window, "_target", cloth);
+                typeof(ClothEditWindow).GetMethod("StartEdit", Private).Invoke(window, null);
+                var controller = GetField<ClothEditController>(window, "_controller");
+                Assert.That(controller.IsEditing, Is.True, controller.LastError);
+                SetField(window, "_showShortcuts", false);
+                controller.Settings.SymmetryEnabled = false;
+                controller.Settings.SelectionMovesAsCloth = true;
+                controller.Settings.HandleType = SelectionHandle.Move;
+                sceneView.LookAt(new Vector3(0f, 1f, 0f), Quaternion.identity, 0.9f);
+                controller.Settings.Tool = ClothEditMode.Select;
+                controller.Settings.SelectionFalloffRadius = 0.08f;
+                SetField(window, "_brushCentimeters", 10f);   // ウィンドウのスライダーの値が、描画のたびに Controller へ渡る
+                controller.BrushRadius = 0.1f;
+                yield return Pump(20);
+
+                // 1. マウスを乗せる（薄いピンクの点とブラシの円）
+                Vector2 hoverPoint = GuiPoint(sceneView, new Vector3(0.15f, 1.1f, 0f));
+                sceneView.SendEvent(new Event { type = EventType.MouseMove, mousePosition = hoverPoint });
+                yield return Pump(10);
+                Assert.That(controller.HasHover, Is.True, "マウスの位置から布に当たらない（座標の変換が合っていない）");
+                Assert.That(controller.HoverSelectCount, Is.GreaterThan(0));
+                Shot(sceneView, "select_scene_hover");
+
+                // 2. ドラッグで塗って選ぶ（イベントを送って、窓の入口から確かめる）
+                var hotBefore = GUIUtility.hotControl;
+                sceneView.SendEvent(new Event { type = EventType.MouseDown, button = 0, clickCount = 1, mousePosition = hoverPoint });
+                sceneView.SendEvent(new Event { type = EventType.MouseDrag, button = 0, mousePosition = GuiPoint(sceneView, new Vector3(0.15f, 0.9f, 0f)) });
+                sceneView.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = GuiPoint(sceneView, new Vector3(0.15f, 0.9f, 0f)) });
+                yield return Pump(10);
+                int painted = controller.SelectionCount;
+                Assert.That(painted, Is.GreaterThan(50), "ドラッグで点が選ばれる");
+                Assert.That(GUIUtility.hotControl, Is.EqualTo(hotBefore), "離したらホットなコントロールは戻る");
+                Shot(sceneView, "select_scene_painted_move_handle");
+
+                // 3. ハンドルの種類と、対称（鏡像の側）、なめらかな範囲の色分け
+                controller.Settings.HandleType = SelectionHandle.Rotate;
+                controller.Settings.SymmetryEnabled = true;
+                yield return Pump(10);
+                Shot(sceneView, "select_scene_rotate_handle_symmetry");
+                controller.Settings.HandleType = SelectionHandle.Scale;
+                controller.Settings.SymmetryEnabled = false;
+                yield return Pump(10);
+                Shot(sceneView, "select_scene_scale_handle");
+
+                // 4. Shift+ドラッグの矩形で選び（Ctrl も押して外し）、空の所のクリックで解除する
+                int beforeRect = controller.SelectionCount;
+                Vector2 a = GuiPoint(sceneView, new Vector3(-0.4f, 1.3f, 0f));
+                Vector2 b = GuiPoint(sceneView, new Vector3(-0.2f, 1.1f, 0f));
+                sceneView.SendEvent(new Event { type = EventType.MouseMove, mousePosition = a });
+                sceneView.SendEvent(new Event { type = EventType.MouseDown, button = 0, clickCount = 1, shift = true, mousePosition = a });
+                sceneView.SendEvent(new Event { type = EventType.MouseDrag, button = 0, shift = true, mousePosition = b });
+                yield return Pump(4);
+                Shot(sceneView, "select_scene_rect_dragging");
+                sceneView.SendEvent(new Event { type = EventType.MouseUp, button = 0, shift = true, mousePosition = b });
+                yield return Pump(10);
+                Assert.That(controller.SelectionCount, Is.GreaterThan(beforeRect), "矩形で点が増える");
+
+                sceneView.SendEvent(new Event { type = EventType.MouseMove, mousePosition = GuiPoint(sceneView, new Vector3(0.3f, 0.6f, 0f)) });
+                sceneView.SendEvent(new Event { type = EventType.MouseDown, button = 0, clickCount = 2, mousePosition = GuiPoint(sceneView, new Vector3(0.3f, 0.6f, 0f)) });
+                sceneView.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = GuiPoint(sceneView, new Vector3(0.3f, 0.6f, 0f)) });
+                yield return Pump(4);
+                Assert.That(controller.SelectionCount, Is.GreaterThan(controller.Session.ParticleCount * 9 / 10), "ダブルクリックで部品全体（この布は1つの島）");
+
+                Vector2 empty = GuiPoint(sceneView, new Vector3(0.8f, 1f, 0f));
+                sceneView.SendEvent(new Event { type = EventType.MouseMove, mousePosition = empty });
+                sceneView.SendEvent(new Event { type = EventType.MouseDown, button = 0, clickCount = 1, mousePosition = empty });
+                sceneView.SendEvent(new Event { type = EventType.MouseUp, button = 0, mousePosition = empty });
+                yield return Pump(4);
+                Assert.That(controller.SelectionCount, Is.EqualTo(0), "何もない所のクリックで解除");
+
+                // 5. Esc: 選んだあとの Esc で解除される
+                Assert.That(controller.SelectPaintBegin(ClothRay(0.1f, 1.0f), false), Is.True);
+                controller.SelectPaintEnd();
+                Assert.That(controller.SelectionCount, Is.GreaterThan(0));
+                sceneView.SendEvent(new Event { type = EventType.KeyDown, keyCode = KeyCode.Escape });
+                yield return Pump(4);
+                Assert.That(controller.SelectionCount, Is.EqualTo(0), "何もしていないときの Esc で解除");
+
+                // 6. 数値で動かしてから、動かしたあとの形を見る
+                Assert.That(controller.SelectPaintBegin(ClothRay(0.1f, 1.0f), false), Is.True);
+                controller.SelectPaintEnd();
+                Assert.That(controller.ApplySelectionTransform(new Vector3(0f, 0f, -0.1f), Quaternion.identity, Vector3.one), Is.True);
+                for (int i = 0; i < 400 && controller.IsBusy; i++) controller.Tick(EditorApplication.timeSinceStartup + 10 + i * 0.016);
+                yield return Pump(10);
+                Shot(sceneView, "select_scene_after_move");
+            }
+            finally
+            {
+                backup.Restore();
+                window.Close();
+                sceneView.Close();
+            }
+        }
     }
 }

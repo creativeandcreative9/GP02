@@ -1478,10 +1478,26 @@ namespace GP02.EditorTools
             }
         }
 
+        /// <summary>
+        /// <see cref="MirroredSelection"/> を計算し直すたびに増える番号。選択は同じでも、対称の設定（軸やずれ）が変わると鏡像の側が変わるので、
+        /// 画面の表示のキャッシュを作り直すかの判断に使う。
+        /// </summary>
+        public int MirroredSelectionStamp
+        {
+            get
+            {
+                RefreshMirroredSelection();
+                return _mirroredStamp;
+            }
+        }
+
+        int _mirroredStamp;
+
         void RefreshMirroredSelection()
         {
             bool has = _session != null && TryGetMirrorPlane(out _mirroredPlaneNow);
             if (_mirroredVersion == _selectionVersion && has == _mirroredHasPlane && (!has || SamePlane(_mirroredPlane, _mirroredPlaneNow))) return;
+            _mirroredStamp++;
             _mirroredVersion = _selectionVersion;
             _mirroredHasPlane = has;
             _mirroredPlane = _mirroredPlaneNow;
@@ -1495,6 +1511,74 @@ namespace GP02.EditorTools
         }
 
         MirrorPlane _mirroredPlaneNow;
+
+        // ---- ブラシで塗ると選ばれる点（マウスの下の表示用） ----
+
+        /// <summary><see cref="HoverSelectParticle"/> の上限。これを超えるときは間引く。</summary>
+        public const int MaxHoverSelectParticles = 1000;
+
+        readonly int[] _hoverSelectParticles = new int[MaxHoverSelectParticles];
+        readonly List<int> _hoverSelectWork = new List<int>();
+        int _hoverSelectCount;
+        bool _hoverSelectValid;
+        ClothEditSession _hoverSelectSession;
+        Vector3 _hoverSelectPoint;
+        int _hoverSelectTriangle;
+        float _hoverSelectRadius;
+        int _hoverSelectShape;
+
+        /// <summary>
+        /// 今ブラシで塗ると選ばれる点（カーソルの下の、同じ部品（島）の、ブラシ半径の中）の数。「選んで動かす」の道具でカーソルが布に乗っているときだけ。
+        /// カーソルの位置・半径・形が変わったときだけ計算し直す。上限は <see cref="MaxHoverSelectParticles"/>（超えるときは間引く）。
+        /// </summary>
+        public int HoverSelectCount
+        {
+            get
+            {
+                RefreshHoverSelect();
+                return _hoverSelectCount;
+            }
+        }
+
+        /// <summary>k 番目の粒子の番号。位置は <c>Session.Solver.Positions</c> から読む。</summary>
+        public int HoverSelectParticle(int k) => _hoverSelectParticles[k];
+
+        void RefreshHoverSelect()
+        {
+            if (_session == null || !HasHover || Mode != ClothEditMode.Select || _dragging || _settling)
+            {
+                _hoverSelectCount = 0;
+                _hoverSelectValid = false;
+                return;
+            }
+            int shape = _session.ShapeVersion;
+            if (_hoverSelectValid && ReferenceEquals(_hoverSelectSession, _session) && _hoverSelectPoint == HoverPoint && _hoverSelectTriangle == _hoverTriangle
+                && _hoverSelectRadius == _brushRadius && _hoverSelectShape == shape)
+            {
+                return;
+            }
+            _hoverSelectValid = true;
+            _hoverSelectSession = _session;
+            _hoverSelectPoint = HoverPoint;
+            _hoverSelectTriangle = _hoverTriangle;
+            _hoverSelectRadius = _brushRadius;
+            _hoverSelectShape = shape;
+
+            _session.CollectInSphere(HoverPoint, _brushRadius, _hoverTriangle, _hoverSelectWork);
+            if (_hoverSelectWork.Count == 0)
+            {
+                // 塗るときと同じく、半径が小さくて粒子が入らないときは、一番近い粒子を1つ
+                int nearest = _session.FindParticle(HoverPoint, _hoverTriangle);
+                if (nearest >= 0) _hoverSelectWork.Add(nearest);
+            }
+            int stride = (_hoverSelectWork.Count + MaxHoverSelectParticles - 1) / MaxHoverSelectParticles;
+            if (stride < 1) stride = 1;
+            _hoverSelectCount = 0;
+            for (int k = 0; k < _hoverSelectWork.Count && _hoverSelectCount < MaxHoverSelectParticles; k += stride)
+            {
+                _hoverSelectParticles[_hoverSelectCount++] = _hoverSelectWork[k];
+            }
+        }
 
         // ---- ハンドルの基準 ----
 

@@ -21,7 +21,22 @@ namespace GP02.EditorTools
         internal void OverlaySetTool(ClothEditMode tool)
         {
             if (_settings.Tool == tool) return;
+            RememberToolBeforeSelect();
             _settings.Tool = tool;
+            CommitOverlaySettings();
+        }
+
+        // 「選んで動かす」のボタン。入れると今の道具を覚え、切るとその道具に戻る（Q と同じ）
+        internal void OverlaySetSelectTool(bool on)
+        {
+            RememberToolBeforeSelect();
+            OverlaySetTool(on ? ClothEditMode.Select : ClothEditShortcuts.LeaveSelectTool(_toolBeforeSelect));
+        }
+
+        internal void OverlaySetHandle(SelectionHandle handle)
+        {
+            if (_settings.HandleType == handle) return;
+            _settings.HandleType = handle;
             CommitOverlaySettings();
         }
 

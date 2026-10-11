@@ -6,9 +6,10 @@ using UnityEngine;
 namespace GP02.EditorTools
 {
     /// <summary>
-    /// 布の編集の操作画面。道具（つまむ・回す・拡大縮小・ピン留め・元に戻すブラシ）をシーンビューで使い、結果をシェイプキーとして保存する。
+    /// 布の編集の操作画面。道具（つまむ・回す・拡大縮小・ピン留め・元に戻すブラシ・選んで動かす）をシーンビューで使い、結果をシェイプキーとして保存する。
     /// 操作の流れは <see cref="ClothEditController"/> が持ち、ここはイベントを読んで渡すことと、表示だけを受け持つ。
-    /// ウィンドウの内容はこのファイル、シーンビューの入力と重ね描きは ClothEditWindow.SceneView.cs。
+    /// ウィンドウの内容はこのファイル、シーンビューの入力と重ね描きは ClothEditWindow.SceneView.cs、
+    /// 「選んで動かす」の区切りとハンドルは ClothEditWindow.Selection.cs。
     /// </summary>
     public sealed partial class ClothEditWindow : EditorWindow
     {
@@ -18,7 +19,7 @@ namespace GP02.EditorTools
         const float InfluenceMinCm = 5f;
         const float InfluenceMaxCm = 100f;
 
-        // ツールバーに並べる順（ClothEditMode の数値とは別）
+        // ツールバーに並べる順（ClothEditMode の数値とは別）。「選んで動かす」は、道具の下に1つだけ広いボタンで置く
         static readonly ClothEditMode[] ToolOrder =
         {
             ClothEditMode.Grab, ClothEditMode.Rotate, ClothEditMode.Scale,
@@ -126,6 +127,7 @@ namespace GP02.EditorTools
 
         void OnUpdate()
         {
+            RememberToolBeforeSelect();
             _controller?.Tick(EditorApplication.timeSinceStartup);
         }
 
@@ -141,6 +143,7 @@ namespace GP02.EditorTools
             if (!_controller.IsEditing && ClothSolver.DefaultKernel == null) BurstInstaller.DrawNotice();
             DrawTargetSection();
             DrawToolSection();
+            DrawSelectionSection();
             DrawBrushSection();
             DrawSymmetrySection();
             DrawDisplaySection();
@@ -515,11 +518,23 @@ namespace GP02.EditorTools
                 ClothEditMode mode = ToolOrder[i];
                 labels[i] = new GUIContent(ClothEditHelp.ToolName(mode) + " (" + ClothEditHelp.ToolKey(mode) + ")", ClothEditHelp.ToolTip(mode));
             }
+            // 「選んで動かす」を使っているときは、上の6つはどれも選ばれていない（-1）
             int current = System.Array.IndexOf(ToolOrder, _settings.Tool);
-            int selected = GUILayout.SelectionGrid(Mathf.Max(0, current), labels, 3);
-            if (selected != current)
+            int selected = GUILayout.SelectionGrid(current, labels, 3);
+            if (selected != current && selected >= 0)
             {
+                RememberToolBeforeSelect();
                 _settings.Tool = ToolOrder[selected];
+                _settingsDirty = true;
+                SceneView.RepaintAll();
+            }
+            bool selectOn = GUILayout.Toggle(_settings.Tool == ClothEditMode.Select,
+                new GUIContent(ClothEditHelp.ToolName(ClothEditMode.Select) + " (" + ClothEditHelp.ToolKey(ClothEditMode.Select) + ")", ClothEditHelp.ToolTip(ClothEditMode.Select)), "Button");
+            if (selectOn != (_settings.Tool == ClothEditMode.Select))
+            {
+                RememberToolBeforeSelect();
+                // もう一度押すと、直前の道具に戻る（Q と同じ）
+                _settings.Tool = selectOn ? ClothEditMode.Select : ClothEditShortcuts.LeaveSelectTool(_toolBeforeSelect);
                 _settingsDirty = true;
                 SceneView.RepaintAll();
             }
@@ -562,6 +577,10 @@ namespace GP02.EditorTools
                     _settings.RelaxStrength = EditorGUILayout.Slider(new GUIContent(L10n.Tr("強さ", "Strength"),
                         L10n.Tr("1回塗るごとに、元の形へ近づける割合です。1 で元の形に戻ります。", "How far each stroke brings the cloth back to its original shape. 1 restores it fully.")),
                         _settings.RelaxStrength, 0f, 1f);
+                    break;
+                case ClothEditMode.Select:
+                    EditorGUILayout.LabelField(L10n.Tr("ドラッグ: 塗って選ぶ（Ctrl: 外す。半径はブラシ半径）", "Drag: paint to select (Ctrl: deselect; radius is the brush radius)"), EditorStyles.wordWrappedMiniLabel);
+                    EditorGUILayout.LabelField(L10n.Tr("Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと / Esc: 解除", "Shift+Drag: rectangle / Double-click: whole part / Esc: clear"), EditorStyles.wordWrappedMiniLabel);
                     break;
             }
             if (EditorGUI.EndChangeCheck()) _settingsDirty = true;
@@ -619,11 +638,7 @@ namespace GP02.EditorTools
             EditorGUI.BeginChangeCheck();
 
             // プリセットを選ぶと、そのカーブを下のカーブに写す（描き足して使える）。カーブを直接いじると「自由に描く」になる
-            string[] presetNames =
-            {
-                L10n.Tr("一定", "Constant"), L10n.Tr("なめらか", "Smooth"), L10n.Tr("直線", "Linear"),
-                L10n.Tr("鋭い", "Sharp"), L10n.Tr("球", "Sphere"), L10n.Tr("自由に描く", "Custom"),
-            };
+            string[] presetNames = FalloffPresetNames();
             var preset = (FalloffPreset)EditorGUILayout.Popup(new GUIContent(L10n.Tr("減衰カーブ", "Falloff"),
                 L10n.Tr("ブラシの範囲の中で、中心から端へ動きがどう弱まるか。横軸が中心(0)→端(1)、縦軸が動きの強さです。", "How the motion weakens from the center to the edge of the brush. Horizontal: center (0) to edge (1); vertical: strength.")),
                 (int)_settings.Falloff, presetNames);

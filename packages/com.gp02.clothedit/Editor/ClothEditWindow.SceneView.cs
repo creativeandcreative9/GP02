@@ -22,9 +22,9 @@ namespace GP02.EditorTools
         GUIStyle _helpStyle;
         double _radiusChangedAt = double.NegativeInfinity;
 
-        // Shift＋ドラッグの矩形で、ピン留め・解除をまとめて行う
+        // Shift＋ドラッグの矩形で、ピン留め・解除、点の選択・解除をまとめて行う
         bool _rectDragging;
-        bool _rectPinned;
+        RectPurpose _rectPurpose;
         Vector2 _rectStart;
         Vector2 _rectEnd;
 
@@ -92,11 +92,14 @@ namespace GP02.EditorTools
             // ドラッグ中（押している間）は、道具や半径を変えない
             if (GUIUtility.hotControl != 0) return;
 
-            if (ClothEditShortcuts.TryGetTool(key, e.shift, out ClothEditMode tool))
+            // Q は「選んで動かす」（もう一度押すと直前の道具）。「選んで動かす」の間の W/E/R はハンドルの種類。
+            // Shift は P（ピン解除）のときだけ意味があり、W/E/R/T/Q に Shift が付いていたら何もしない
+            RememberToolBeforeSelect();
+            ToolKeyResult keyResult = ClothEditShortcuts.ResolveToolKey(key, e.shift, _settings.Tool, _toolBeforeSelect, _settings.HandleType);
+            if (keyResult.Handled)
             {
-                // Shift は P（ピン解除）のときだけ意味がある。W/E/R/T に Shift が付いていたら何もしない
-                if (e.shift && key != KeyCode.P) return;
-                _settings.Tool = tool;
+                _settings.Tool = keyResult.Tool;
+                _settings.HandleType = keyResult.Handle;
                 _settings.Save();
                 _controller.ApplySettings();
                 RefreshHover(e);
@@ -136,23 +139,35 @@ namespace GP02.EditorTools
             if (_controller == null || !_controller.IsEditing) return;
             Event e = Event.current;
             int controlId = GUIUtility.GetControlID(FocusType.Passive);
+            _sceneControlId = controlId;
             sceneView.wantsMouseMove = true;
+            bool selecting = _controller.Mode == ClothEditMode.Select;
 
             if (e.type == EventType.Layout)
             {
-                // クリックでオブジェクトの選択が変わらないようにする
+                // クリックでオブジェクトの選択が変わらないようにする。ハンドルは、これより近いコントロールとして先に当たる
                 HandleUtility.AddDefaultControl(controlId);
+                if (selecting)
+                {
+                    DoSelectionHandles(e);
+                    EndHandleDragIfReleased();
+                }
                 return;
             }
 
             if (e.type == EventType.Repaint)
             {
                 DrawOverlay();
+                if (selecting)
+                {
+                    DoSelectionHandles(e);
+                    DrawSelectionCount(sceneView);
+                }
                 DrawHint();
                 return;
             }
 
-            // Esc：ドラッグ中・仕上げ中の操作を取り消して、押す前の形に戻す
+            // Esc：ドラッグ中・仕上げ中の操作を取り消して、押す前の形に戻す。何もしていなければ、選んだ点を解除する
             if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape)
             {
                 if (_rectDragging)
@@ -163,12 +178,25 @@ namespace GP02.EditorTools
                     sceneView.Repaint();
                     return;
                 }
-                if (_controller.Cancel())
+                bool pointerCancelled = SelectCancelPointer();
+                if (_controller.Cancel() || pointerCancelled)
                 {
                     GUIUtility.hotControl = 0;
                     e.Use();
                 }
+                else if (selecting && _controller.SelectionCount > 0)
+                {
+                    _controller.ClearSelection();
+                    e.Use();
+                }
                 return;
+            }
+
+            // ハンドルが先にイベントを使う（ハンドルの上のクリックで、塗る選び方が始まらないようにする）
+            if (selecting)
+            {
+                DoSelectionHandles(e);
+                EndHandleDragIfReleased();
             }
 
             // 視点操作（Alt）と右・中ボタンは何もしない
@@ -183,6 +211,11 @@ namespace GP02.EditorTools
 
                 case EventType.MouseDown:
                     if (e.button != 0 || HandleUtility.nearestControl != controlId) break;
+                    if (selecting)
+                    {
+                        SelectMouseDown(sceneView, e, controlId);
+                        break;
+                    }
                     if (IsPinTool(_controller.Mode) && (e.shift || e.control))
                     {
                         // ピン留め・解除の範囲指定。Shift＋ドラッグ: 矩形、Ctrl＋クリック: 部品（島）全体
@@ -190,7 +223,7 @@ namespace GP02.EditorTools
                         if (e.shift)
                         {
                             _rectDragging = true;
-                            _rectPinned = pinned;
+                            _rectPurpose = pinned ? RectPurpose.Pin : RectPurpose.Unpin;
                             _rectStart = _rectEnd = e.mousePosition;
                             GUIUtility.hotControl = controlId;
                         }
@@ -208,6 +241,11 @@ namespace GP02.EditorTools
 
                 case EventType.MouseDrag:
                     if (e.button != 0 || GUIUtility.hotControl != controlId) break;
+                    if (selecting)
+                    {
+                        if (SelectMouseDrag(sceneView, e)) e.Use();
+                        break;
+                    }
                     if (_rectDragging)
                     {
                         _rectEnd = e.mousePosition;
@@ -223,6 +261,11 @@ namespace GP02.EditorTools
                 case EventType.MouseUp:
                     if (e.button != 0 || GUIUtility.hotControl != controlId) break;
                     GUIUtility.hotControl = 0;
+                    if (selecting)
+                    {
+                        if (SelectMouseUp(sceneView, e)) e.Use();
+                        break;
+                    }
                     if (_rectDragging)
                     {
                         _rectDragging = false;
@@ -240,16 +283,12 @@ namespace GP02.EditorTools
         // 矩形の中の粒子をピン留め（解除）する
         void ApplyPinRect(SceneView sceneView)
         {
-            Rect guiRect = ClothEditPinRange.FromCorners(_rectStart, _rectEnd);
-            float ppp = EditorGUIUtility.pixelsPerPoint;
-            if (!ClothEditPinRange.IsBigEnough(guiRect, ppp)) return;
-
-            Camera camera = sceneView.camera;
-            Rect viewport = ClothEditPinRange.GuiRectToViewport(guiRect, camera.pixelWidth, camera.pixelHeight, ppp);
+            if (!TryGetRectCamera(sceneView, out Camera camera, out Rect viewport)) return;
+            bool pinned = _rectPurpose == RectPurpose.Pin;
             Transform cameraTransform = camera.transform;
             int changed = _controller.PinInRect(camera.projectionMatrix * camera.worldToCameraMatrix, cameraTransform.position, cameraTransform.forward,
-                camera.orthographic, viewport, _rectPinned);
-            sceneView.ShowNotification(new GUIContent(_rectPinned
+                camera.orthographic, viewport, pinned);
+            sceneView.ShowNotification(new GUIContent(pinned
                 ? L10n.Tr($"{changed} 粒子をピン留めしました", $"Pinned {changed} particles")
                 : L10n.Tr($"{changed} 粒子のピンを外しました", $"Unpinned {changed} particles")), 1.0);
         }
@@ -265,6 +304,7 @@ namespace GP02.EditorTools
                 case ClothEditMode.Rotate: return new Color(0.8f, 0.5f, 1f, 1f);
                 case ClothEditMode.Scale: return new Color(0.4f, 1f, 0.5f, 1f);
                 case ClothEditMode.Relax: return new Color(1f, 0.65f, 0.2f, 1f);
+                case ClothEditMode.Select: return ClothEditHelp.SelectBrushColor;
                 default: return new Color(0.2f, 0.8f, 1f, 1f);
             }
         }
@@ -299,9 +339,14 @@ namespace GP02.EditorTools
                 for (int i = 0; i < _pinDots.Count; i++) Dot(_pinDots[i], 0.015f);
             }
 
-            if (!_controller.HasHover) return;
+            bool selectMode = _controller.Mode == ClothEditMode.Select;
+            bool selectBusy = selectMode && (_controller.IsTransformingSelection || _controller.IsSettling);
+            if (selectMode) DrawSelectionDisplay(session);
 
-            // ブラシを当てる前の、範囲に入る粒子（重みで色分け）
+            // 選んだ点を動かしている間は、マウスがハンドルの上にあるので、つまんだ範囲の色分けだけ出す（ブラシの円は出さない）
+            if (!_controller.HasHover && !(selectBusy && _controller.PreviewCount > 0)) return;
+
+            // ブラシを当てる前の、範囲に入る粒子（重みで色分け）。選んだ点の変形中・仕上げ中は、動かしている範囲
             int previewCount = _controller.PreviewCount;
             if (previewCount > 0)
             {
@@ -316,6 +361,8 @@ namespace GP02.EditorTools
                     Dot(new Vector3(p.X, p.Y, p.Z), 0.008f + 0.006f * w);
                 }
             }
+
+            if (selectBusy || (selectMode && (_rectDragging || IsMouseOverHandle()))) return;
 
             Handles.color = ToolColor(_controller.Mode);
             Handles.DrawWireDisc(_controller.BrushRingCenter, _controller.HoverNormal, _controller.BrushRadius);
@@ -354,7 +401,14 @@ namespace GP02.EditorTools
         void DrawRectSelection()
         {
             Rect rect = ClothEditPinRange.FromCorners(_rectStart, _rectEnd);
-            Color color = _rectPinned ? new Color(1f, 0.3f, 0.2f) : new Color(0.9f, 0.9f, 0.2f);
+            Color color;
+            switch (_rectPurpose)
+            {
+                case RectPurpose.Pin: color = new Color(1f, 0.3f, 0.2f); break;
+                case RectPurpose.Unpin: color = new Color(0.9f, 0.9f, 0.2f); break;
+                case RectPurpose.Select: color = ClothEditHelp.SelectedColor; break;
+                default: color = new Color(0.6f, 0.8f, 1f); break;
+            }
             EditorGUI.DrawRect(rect, new Color(color.r, color.g, color.b, 0.12f));
             const float Edge = 1f;
             EditorGUI.DrawRect(new Rect(rect.xMin, rect.yMin, rect.width, Edge), color);
@@ -378,7 +432,7 @@ namespace GP02.EditorTools
                 _helpStyle = new GUIStyle(EditorStyles.label) { fontSize = 11, alignment = TextAnchor.MiddleLeft };
             }
 
-            string text = ClothEditHelp.GetHint(_controller.Mode, _controller.IsDragging, _controller.IsSettling);
+            string text = ClothEditHelp.GetHint(_controller.Mode, _controller.IsDragging, _controller.IsSettling, _controller.SelectionCount);
             if (_controller.IsComparing)
             {
                 float blend = _controller.ShowOriginal || _controller.HoldOriginal ? 0f : _controller.CompareBlend;

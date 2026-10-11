@@ -9,7 +9,7 @@ namespace GP02.EditorTools
 {
     /// <summary>
     /// シーンビューの道具バー（Overlay）。布を編集している間だけ出て、道具の切り替えと、対称・伸びの表示・元の形の表示・ショートカット一覧の
-    /// オン／オフができる。編集ウィンドウと同じ設定を触るので、どちらで変えても同じになる。
+    /// オン／オフができる。「選んで動かす」の間は、ハンドルの種類（移動・回転・拡大縮小）の切り替えも出る。編集ウィンドウと同じ設定を触るので、どちらで変えても同じになる。
     /// 状態の反映は、画面に出ている間だけ短い間隔で読み直す（ショートカットキーやウィンドウでの変更に追従するため）。
     /// </summary>
     [Overlay(typeof(SceneView), OverlayId, "GP02", defaultDisplay = true, defaultDockZone = DockZone.RightColumn, defaultLayout = Layout.Panel)]
@@ -27,6 +27,9 @@ namespace GP02.EditorTools
         const long RefreshMilliseconds = 100;
 
         readonly Dictionary<ClothEditMode, ToolbarToggle> _toolToggles = new Dictionary<ClothEditMode, ToolbarToggle>();
+        readonly Dictionary<SelectionHandle, ToolbarToggle> _handleToggles = new Dictionary<SelectionHandle, ToolbarToggle>();
+        ToolbarToggle _select;
+        VisualElement _handleRow;
         ToolbarToggle _symmetry;
         ToolbarToggle _stretch;
         ToolbarToggle _original;
@@ -65,6 +68,39 @@ namespace GP02.EditorTools
                 }
                 root.Add(line);
             }
+
+            // 「選んで動かす」と、その間だけ出るハンドルの種類
+            VisualElement selectLine = Row();
+            selectLine.style.marginTop = 4f;
+            _select = new ToolbarToggle();
+            StyleCell(_select);
+            _select.RegisterValueChangedCallback(evt =>
+            {
+                // 選んでいるときにもう一度押すと、直前の道具に戻る（Q と同じ）
+                ClothEditWindow owner = ClothEditWindow.OverlayOwner;
+                if (owner != null) owner.OverlaySetSelectTool(evt.newValue);
+                Refresh();
+            });
+            selectLine.Add(_select);
+            root.Add(selectLine);
+
+            _handleRow = Row();
+            _handleToggles.Clear();
+            foreach (SelectionHandle handle in new[] { SelectionHandle.Move, SelectionHandle.Rotate, SelectionHandle.Scale })
+            {
+                var toggle = new ToolbarToggle();
+                StyleCell(toggle);
+                SelectionHandle captured = handle;
+                toggle.RegisterValueChangedCallback(evt =>
+                {
+                    ClothEditWindow owner = ClothEditWindow.OverlayOwner;
+                    if (owner != null) owner.OverlaySetHandle(captured);
+                    Refresh();
+                });
+                _handleToggles[handle] = toggle;
+                _handleRow.Add(toggle);
+            }
+            root.Add(_handleRow);
 
             VisualElement options = Row();
             options.style.marginTop = 4f;
@@ -123,6 +159,14 @@ namespace GP02.EditorTools
                 toggle.text = ClothEditHelp.ToolName(pair.Key);
                 toggle.tooltip = ClothEditHelp.ToolTip(pair.Key);
                 toggle.SetValueWithoutNotify(settings.Tool == pair.Key);
+            }
+
+            bool selecting = settings.Tool == ClothEditMode.Select;
+            Set(_select, ClothEditHelp.ToolName(ClothEditMode.Select), ClothEditHelp.ToolTip(ClothEditMode.Select), selecting);
+            _handleRow.style.display = selecting ? DisplayStyle.Flex : DisplayStyle.None;
+            foreach (KeyValuePair<SelectionHandle, ToolbarToggle> pair in _handleToggles)
+            {
+                Set(pair.Value, ClothEditHelp.HandleName(pair.Key), ClothEditHelp.HandleTip(pair.Key), settings.HandleType == pair.Key);
             }
 
             Set(_symmetry, L10n.Tr("対称", "Symmetry"),

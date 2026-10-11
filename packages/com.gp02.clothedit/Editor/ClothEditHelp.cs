@@ -32,6 +32,74 @@ namespace GP02.EditorTools
             return c;
         }
 
+        /// <summary>選んだ点の色（橙）。</summary>
+        public static Color SelectedColor => new Color(1f, 0.55f, 0.08f, 1f);
+
+        /// <summary>対称がオンのとき、選んだ点の鏡像の側（動くが選んではいない点）の色。選んだ点の色を薄くしたもの。</summary>
+        public static Color MirroredColor => new Color(1f, 0.55f, 0.08f, 0.35f);
+
+        /// <summary>「選んで動かす」のブラシの円の色。選んだ点の橙とは違う色にする。</summary>
+        public static Color SelectBrushColor => new Color(1f, 0.4f, 0.75f, 1f);
+
+        /// <summary>マウスの下の、塗ると選ばれる点の色（ブラシの円と同じ色を薄くしたもの）。</summary>
+        public static Color SelectHoverColor => new Color(1f, 0.4f, 0.75f, 0.55f);
+
+        /// <summary>
+        /// 選んだ点の周りの、なめらかに減る範囲の点の色。重み 0（端）は薄い青、1（選んだ点の近く）は黄で、選んだ点の橙につながる。
+        /// ブラシを当てる前の範囲の色（<see cref="WeightColor"/>）とは、選んだ点と区別できるよう、端を薄くしている。
+        /// </summary>
+        public static Color SelectionWeightColor(float weight)
+        {
+            weight = Mathf.Clamp01(weight);
+            Color c = Color.Lerp(new Color(0.35f, 0.65f, 1f), new Color(1f, 0.85f, 0.2f), weight);
+            c.a = 0.25f + 0.6f * weight;
+            return c;
+        }
+
+        public static string HandleName(SelectionHandle handle)
+        {
+            switch (handle)
+            {
+                case SelectionHandle.Rotate: return L10n.Tr("回転", "Rotate");
+                case SelectionHandle.Scale: return L10n.Tr("拡大縮小", "Scale");
+                default: return L10n.Tr("移動", "Move");
+            }
+        }
+
+        /// <summary>ハンドルの種類を切り替えるキー（「選んで動かす」の間だけ）。</summary>
+        public static string HandleKey(SelectionHandle handle)
+        {
+            switch (handle)
+            {
+                case SelectionHandle.Rotate: return "E";
+                case SelectionHandle.Scale: return "R";
+                default: return "W";
+            }
+        }
+
+        public static string HandleTip(SelectionHandle handle)
+        {
+            string key = HandleKey(handle);
+            switch (handle)
+            {
+                case SelectionHandle.Rotate:
+                    return L10n.Tr($"回転ハンドル（{key}）: 選んだ点を、中心のまわりに回します。「選んで動かす」の間は、{key} キーでこのハンドルに切り替わります",
+                        $"Rotate handle ({key}): rotates the selected points around the pivot. While Select & Move is active, the {key} key switches to this handle");
+                case SelectionHandle.Scale:
+                    return L10n.Tr($"拡大縮小ハンドル（{key}）: 選んだ点を、中心から大きく・小さくします（軸ごとにも変えられます）。「選んで動かす」の間は、{key} キーでこのハンドルに切り替わります",
+                        $"Scale handle ({key}): scales the selected points around the pivot (per axis, too). While Select & Move is active, the {key} key switches to this handle");
+                default:
+                    return L10n.Tr($"移動ハンドル（{key}）: 選んだ点を、矢印の向きや面の上で動かします。「選んで動かす」の間は、{key} キーでこのハンドルに切り替わります",
+                        $"Move handle ({key}): moves the selected points along an arrow or on a plane. While Select & Move is active, the {key} key switches to this handle");
+            }
+        }
+
+        /// <summary>選んだ点の数の表示（ハンドルの近くに出す小さな文字）。</summary>
+        public static string SelectionCountLabel(int count)
+        {
+            return L10n.Tr($"{count:N0} 点を選択中", $"{count:N0} selected");
+        }
+
         public static string ToolName(ClothEditMode mode)
         {
             switch (mode)
@@ -67,6 +135,9 @@ namespace GP02.EditorTools
                 case ClothEditMode.Relax:
                     return L10n.Tr($"元に戻すブラシ（{key}）: 塗った所を元の形へ近づけます。強さは「ブラシ」の区切りで決めます",
                         $"Restore Brush ({key}): paint to bring an area back toward its original shape. Set the strength in the Brush section");
+                case ClothEditMode.Select:
+                    return L10n.Tr($"選んで動かす（{key}）: ドラッグで点を塗って選び（Ctrl で外す、Shift+ドラッグで矩形、ダブルクリックで部品ごと）、出てきたハンドルで動かす・回す・拡大縮小します。もう一度 {key} で前の道具に戻ります",
+                        $"Select & Move ({key}): drag to paint points to select (Ctrl to deselect, Shift+Drag for a rectangle, double-click for a whole part), then move / rotate / scale them with the handle. Press {key} again to go back to the previous tool");
                 default:
                     return L10n.Tr($"つまむ（{key}）: 布をドラッグして、つまんだ所を引っ張ります。周りの布も伸びずに付いてきます。Shift で精密操作",
                         $"Grab ({key}): drag the cloth to pull the grabbed area. The cloth around follows without stretching. Shift for fine control");
@@ -83,18 +154,25 @@ namespace GP02.EditorTools
                 case ClothEditMode.Pin: return "P";
                 case ClothEditMode.Unpin: return "Shift+P";
                 case ClothEditMode.Relax: return "T";
+                case ClothEditMode.Select: return "Q";
                 default: return "W";
             }
         }
 
-        /// <summary>シーンビューの左上に出す案内（改行つき）。1行目が状態と今の道具の操作、2行目が共通の操作。</summary>
-        public static string GetHint(ClothEditMode mode, bool dragging, bool settling)
+        /// <summary>シーンビューの左上に出す案内（改行つき）。1行目が状態と今の道具の操作、2行目が共通の操作。「選んで動かす」は操作が多いので、2行に分ける。</summary>
+        /// <param name="selectionCount">選んでいる点の数（「選んで動かす」の案内を、選ぶ前と選んだあとで変える）</param>
+        public static string GetHint(ClothEditMode mode, bool dragging, bool settling, int selectionCount = 0)
         {
             string common = L10n.Tr("Ctrl+ホイール / [ ]: ブラシ半径　C(押す): 元の形　Alt+ドラッグ: 視点移動　F1: ショートカット一覧",
                 "Ctrl+Wheel / [ ]: brush radius   C (hold): original shape   Alt+Drag: orbit   F1: shortcuts");
 
             string first;
-            if (dragging)
+            if (dragging && mode == ClothEditMode.Select)
+            {
+                first = L10n.Tr("GP02 選んだ点を動かしています: 離すと仕上げます / Shift: ゆっくり / Ctrl: 刻み / Esc: 取り消し",
+                    "GP02 Moving the selection: release to settle / Shift: slow / Ctrl: snap / Esc: cancel");
+            }
+            else if (dragging)
             {
                 first = mode == ClothEditMode.Rotate ? L10n.Tr("GP02 回しています: 横に動かす / Ctrl: 15°刻み / Shift: 精密 / 離すと仕上げ / Esc: 取り消し",
                         "GP02 Rotating: drag sideways / Ctrl: 15-degree steps / Shift: fine / release to settle / Esc: cancel")
@@ -132,6 +210,15 @@ namespace GP02.EditorTools
                         first = L10n.Tr($"GP02 {name}: 左ドラッグで塗った所を元の形へ近づける（離すと仕上げ）",
                             $"GP02 {name}: drag to bring the painted area back toward its original shape (settles on release)");
                         break;
+                    case ClothEditMode.Select:
+                        first = L10n.Tr($"GP02 {name}: ドラッグで塗って選ぶ（Ctrl: 外す）/ Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと",
+                                $"GP02 {name}: drag to paint-select (Ctrl: deselect) / Shift+Drag: rectangle / Double-click: whole part")
+                            + "\n" + (selectionCount > 0
+                                ? L10n.Tr($"{selectionCount:N0} 点を選択中: ハンドルで動かす（Shift: ゆっくり / Ctrl: 刻み）/ W E R: ハンドルの種類 / Esc: 解除 / Q: 戻る",
+                                    $"{selectionCount:N0} selected: drag the handle (Shift: slow / Ctrl: snap) / W E R: handle type / Esc: clear / Q: back")
+                                : L10n.Tr("空の所をクリック: 解除 / 選ぶとハンドルが出る（W E R: 移動・回転・拡大縮小）/ Esc: 解除 / Q: 戻る",
+                                    "Click empty space: clear / A handle appears once selected (W E R: move, rotate, scale) / Esc: clear / Q: back"));
+                        break;
                     default:
                         first = L10n.Tr($"GP02 {name}: 左ドラッグで布をつまんで動かす / Shift: 精密 / Esc: 取り消し",
                             $"GP02 {name}: drag to grab and move the cloth / Shift: fine / Esc: cancel");
@@ -147,20 +234,26 @@ namespace GP02.EditorTools
             result.Clear();
             void Add(string key, string ja, string en) => result.Add(new KeyValuePair<string, string>(key, L10n.Tr(ja, en)));
 
-            Add("W", "つまむ", "Grab");
-            Add("E", "回す（横ドラッグ。Ctrl で15°刻み）", "Rotate (drag sideways; Ctrl for 15-degree steps)");
-            Add("R", "拡大縮小（横ドラッグ。0.2〜3倍）", "Scale (drag sideways; 0.2x to 3x)");
+            Add("W", "つまむ（選んで動かす中は、移動ハンドル）", "Grab (the move handle while in Select & Move)");
+            Add("E", "回す（横ドラッグ。Ctrl で15°刻み）（選んで動かす中は、回転ハンドル）", "Rotate (drag sideways; Ctrl for 15-degree steps) (the rotate handle while in Select & Move)");
+            Add("R", "拡大縮小（横ドラッグ。0.2〜3倍）（選んで動かす中は、拡大縮小ハンドル）", "Scale (drag sideways; 0.2x to 3x) (the scale handle while in Select & Move)");
+            Add("Q", "選んで動かす（もう一度押すと前の道具）", "Select & Move (press again to return to the previous tool)");
             Add("P", "ピン留め", "Pin");
             Add("Shift+P", "ピン解除", "Unpin");
             Add("T", "元に戻すブラシ", "Restore Brush");
             Add(L10n.Tr("Shift+ドラッグ", "Shift+Drag"), "動きを 1/5 にする（精密操作）", "Move at 1/5 speed (fine control)");
             Add(L10n.Tr("Shift+ドラッグ（ピン）", "Shift+Drag (Pin)"), "矩形の中をまとめてピン留め・解除", "Pin / unpin everything inside a rectangle");
             Add(L10n.Tr("Ctrl+クリック（ピン）", "Ctrl+Click (Pin)"), "その部品（島）全体をピン留め・解除", "Pin / unpin the whole part (island)");
+            Add(L10n.Tr("ドラッグ（選ぶ）", "Drag (Select)"), "ブラシ半径で塗って選ぶ（Ctrl で外す）", "Paint-select with the brush radius (Ctrl to deselect)");
+            Add(L10n.Tr("Shift+ドラッグ（選ぶ）", "Shift+Drag (Select)"), "矩形で選ぶ（Ctrl+Shift で外す）", "Select inside a rectangle (Ctrl+Shift to deselect)");
+            Add(L10n.Tr("ダブルクリック（選ぶ）", "Double-click (Select)"), "その部品（島）ごと選ぶ（Ctrl で外す）", "Select the whole part (island) (Ctrl to deselect)");
+            Add(L10n.Tr("空の所をクリック（選ぶ）", "Click empty space (Select)"), "選択を解除", "Clear the selection");
+            Add(L10n.Tr("ハンドルのドラッグ", "Drag the handle"), "選んだ点を動かす（Shift でゆっくり、Ctrl で刻み）", "Move the selected points (Shift to slow down, Ctrl to snap)");
             Add(L10n.Tr("Ctrl+ホイール", "Ctrl+Wheel"), "ブラシ半径", "Brush radius");
             Add(L10n.Tr("Ctrl+Shift+ホイール", "Ctrl+Shift+Wheel"), "影響範囲", "Influence range");
             Add("[  ]", "ブラシ半径（Shift で影響範囲）", "Brush radius (Shift for influence range)");
             Add(L10n.Tr("C（押している間）", "C (hold)"), "元の形を見せる", "Show the original shape");
-            Add("Esc", "ドラッグ・仕上げ中の操作を取り消す", "Cancel the stroke being dragged or settled");
+            Add("Esc", "ドラッグ・仕上げ中の操作を取り消す（何もしていなければ、選択を解除）", "Cancel the stroke being dragged or settled (clears the selection when idle)");
             Add("Ctrl+Z / Ctrl+Y", "1操作ずつ戻す・やり直す", "Undo / redo one operation at a time");
             Add(L10n.Tr("Alt+ドラッグ", "Alt+Drag"), "視点を動かす", "Orbit the view");
             Add("F1", "この一覧を出す・隠す", "Show / hide this list");

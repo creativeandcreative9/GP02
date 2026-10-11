@@ -14,6 +14,26 @@ namespace GP02.EditorTools
         InfluenceRadius,
     }
 
+    /// <summary><see cref="ClothEditShortcuts.ResolveToolKey"/> の結果。</summary>
+    public readonly struct ToolKeyResult
+    {
+        public ToolKeyResult(ClothEditMode tool, SelectionHandle handle)
+        {
+            Handled = true;
+            Tool = tool;
+            Handle = handle;
+        }
+
+        /// <summary>キーが道具・ハンドルの切り替えとして使われたか。false なら、ほかの値は意味を持たない。</summary>
+        public bool Handled { get; }
+
+        /// <summary>切り替えたあとの道具。</summary>
+        public ClothEditMode Tool { get; }
+
+        /// <summary>切り替えたあとのハンドルの種類（「選んで動かす」の間の W/E/R）。</summary>
+        public SelectionHandle Handle { get; }
+    }
+
     /// <summary>
     /// シーンビューのショートカット。キーと操作の対応だけを持つ（画面に依存しないので、テストで確かめられる）。
     /// 実際にイベントを読んで消費するのはウィンドウ。
@@ -37,6 +57,41 @@ namespace GP02.EditorTools
                     tool = ClothEditMode.Grab;
                     return false;
             }
+        }
+
+        /// <summary>
+        /// 道具のキーを押したときの結果。<see cref="TryGetTool"/> に、「選んで動かす」の分を足したもの。
+        /// Q: 「選んで動かす」に切り替え、もう一度押すと直前の道具（previousTool）に戻る。
+        /// 「選んで動かす」の間は、W/E/R が道具ではなくハンドルの種類（移動・回転・拡大縮小）を切り替える（道具はそのまま）。
+        /// P・Shift+P・T は、いつでも今までどおり道具を変える。Shift は P のときだけ意味があり、ほかのキーに付いていたら何もしない。
+        /// </summary>
+        /// <param name="current">今の道具</param>
+        /// <param name="previousTool">「選んで動かす」に入る前の道具（Q で戻る先）。「選んで動かす」自身なら、つまむに戻る</param>
+        /// <param name="handle">今のハンドルの種類</param>
+        public static ToolKeyResult ResolveToolKey(KeyCode key, bool shift, ClothEditMode current, ClothEditMode previousTool, SelectionHandle handle)
+        {
+            if (key == KeyCode.Q)
+            {
+                if (shift) return default;
+                return new ToolKeyResult(current == ClothEditMode.Select ? LeaveSelectTool(previousTool) : ClothEditMode.Select, handle);
+            }
+            if (shift && key != KeyCode.P) return default;
+            if (current == ClothEditMode.Select)
+            {
+                switch (key)
+                {
+                    case KeyCode.W: return new ToolKeyResult(current, SelectionHandle.Move);
+                    case KeyCode.E: return new ToolKeyResult(current, SelectionHandle.Rotate);
+                    case KeyCode.R: return new ToolKeyResult(current, SelectionHandle.Scale);
+                }
+            }
+            return TryGetTool(key, shift, out ClothEditMode tool) ? new ToolKeyResult(tool, handle) : default;
+        }
+
+        /// <summary>「選んで動かす」をやめたときに戻る道具。前の道具が分からない（「選んで動かす」自身）なら、つまむ。</summary>
+        public static ClothEditMode LeaveSelectTool(ClothEditMode previousTool)
+        {
+            return previousTool == ClothEditMode.Select ? ClothEditMode.Grab : previousTool;
         }
 
         /// <summary>押している間だけ元の形を見せるキー（C）。</summary>

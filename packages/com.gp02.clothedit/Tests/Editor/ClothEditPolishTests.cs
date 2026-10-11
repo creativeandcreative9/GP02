@@ -753,7 +753,7 @@ namespace GP02.Tests
                 var overlay = new ClothEditOverlay();
                 UnityEngine.UIElements.VisualElement root = overlay.CreatePanelContent();
                 var toggles = root.Query<UnityEditor.UIElements.ToolbarToggle>().ToList();
-                Assert.That(toggles.Count, Is.EqualTo(10), "道具 6 + 対称・伸び・元の形・ショートカット");
+                Assert.That(toggles.Count, Is.EqualTo(14), "道具 6 + 選んで動かす + ハンドル 3 + 対称・伸び・元の形・ショートカット");
                 Assert.That(root.Query<UnityEditor.UIElements.ToolbarButton>().ToList().Count, Is.EqualTo(1), "説明書");
 
                 // 道具: 今の道具だけが選ばれ、名前とツールチップが付く
@@ -772,7 +772,7 @@ namespace GP02.Tests
                 overlay.Refresh();
                 Assert.That(toggles[3].value, Is.True);
                 Assert.That(toggles[1].value, Is.False);
-                Assert.That(toggles[6].value, Is.True, "対称");
+                Assert.That(toggles[10].value, Is.True, "対称");
 
                 // 道具バー側の変更が、ウィンドウの設定になる
                 window.OverlaySetTool(ClothEditMode.Scale);
@@ -788,7 +788,7 @@ namespace GP02.Tests
                 L10n.Language = UiLanguage.English;
                 overlay.Refresh();
                 Assert.That(toggles[0].text, Is.EqualTo("Grab"));
-                Assert.That(toggles[6].text, Is.EqualTo("Symmetry"));
+                Assert.That(toggles[10].text, Is.EqualTo("Symmetry"));
             }
             finally
             {
