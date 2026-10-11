@@ -15,7 +15,10 @@ namespace GP02.Core
         /// <summary>高速化が実際に効いているか。名前だけ登録されていて、実際には遅い経路で動いている場合は false。</summary>
         bool IsAccelerated { get; }
 
-        /// <summary>細かい粒子の反復（曲げの制約 → 伸びの制約 → テザー）を iterations 回行う。</summary>
+        /// <summary>
+        /// 細かい粒子の反復（曲げの制約 → 伸びの制約 → テザー → 元の形より内側に入らない制約）を iterations 回行う。
+        /// 最後の制約は <see cref="ClothSolverIterationData.KeepOutsideRestSurface"/> が true のときだけ。
+        /// </summary>
         void Iterate(in ClothSolverIterationData data, int iterations);
 
         /// <summary>粗い段1段分（<see cref="ClothSolverCoarseLevelData.Iterations"/> 回の伸びだけの制約 → この段に含まれない粒子への配分）を行う。</summary>
@@ -68,11 +71,29 @@ namespace GP02.Core
         public readonly int[] NearestPin;
         public readonly float[] PinDistance;
 
+        /// <summary>元の形より内側に入らないようにするか。false なら、下の3つは null のことがある。</summary>
+        public readonly bool KeepOutsideRestSurface;
+
+        /// <summary>元の位置（内部の座標）と、元の形の面の外向き（決められない粒子は 0 ベクトル）。</summary>
+        public readonly Vector3[] RestPositions;
+        public readonly Vector3[] RestNormals;
+
+        /// <summary>
+        /// 粒子ごとの、今の位置に一番近い元の粒子。テザーの後に、つまんでいる範囲以外の粒子を、
+        /// この粒子の面（RestPositions と RestNormals で決まる平面）より外側へ押し戻す。
+        /// </summary>
+        public readonly int[] RestAnchor;
+
         internal ClothSolverIterationData(Vector3[] positions, float[] inverseMass,
             int[] bendPairs, float[] bendRestLengths, float[] bendLambda, int[] activeBend, int activeBendCount, float bendCompliance,
             int[] stretchPairs, float[] stretchRestLengths, float[] stretchLambda, int[] activeStretch, int activeStretchCount, float stretchCompliance,
-            int[] activeParticles, int activeParticleCount, int grabbed, bool[] inBrush, float[] grabDistance, int[] nearestPin, float[] pinDistance)
+            int[] activeParticles, int activeParticleCount, int grabbed, bool[] inBrush, float[] grabDistance, int[] nearestPin, float[] pinDistance,
+            bool keepOutsideRestSurface, Vector3[] restPositions, Vector3[] restNormals, int[] restAnchor)
         {
+            KeepOutsideRestSurface = keepOutsideRestSurface;
+            RestPositions = restPositions;
+            RestNormals = restNormals;
+            RestAnchor = restAnchor;
             Positions = positions;
             InverseMass = inverseMass;
             BendPairs = bendPairs;

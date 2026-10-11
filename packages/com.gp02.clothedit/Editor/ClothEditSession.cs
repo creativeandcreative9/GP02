@@ -102,10 +102,19 @@ namespace GP02.EditorTools
             {
                 throw new ArgumentException("布がこのメッシュに合いません（頂点数か三角形数が違います）。", nameof(cloth));
             }
+            if (cloth == null && CountTriangles(_sourceMesh) == 0)
+            {
+                throw new ArgumentException($"「{_sourceMesh.name}」には三角形（面）がありません。面のあるメッシュを指定してください。", nameof(renderer));
+            }
             _createdWeights = ReadBlendShapeWeights(renderer);
 
             var timer = Stopwatch.StartNew();
             Vector3[] baseVertices = _sourceMesh.vertices;
+            // エディタでは Read/Write が無効なメッシュも読めるが、読めない環境では空の配列が返る
+            if (baseVertices.Length != _sourceMesh.vertexCount)
+            {
+                throw new ArgumentException($"「{_sourceMesh.name}」の頂点を読み取れません。モデルの Import Settings で Read/Write を有効にしてください。", nameof(renderer));
+            }
             if (renderer is SkinnedMeshRenderer skinned) ApplyBlendShapeWeights(skinned, _sourceMesh, baseVertices);
 
             _vertexMatrices = ComputeVertexMatrices(renderer, _sourceMesh);
@@ -158,10 +167,16 @@ namespace GP02.EditorTools
         public static bool IsClothCompatible(Mesh mesh, ParticleCloth cloth)
         {
             if (mesh == null || cloth == null) return false;
+            return cloth.Topology.VertexToWelded.Length == mesh.vertexCount
+                && cloth.Topology.SourceToTriangle.Length == CountTriangles(mesh);
+        }
+
+        /// <summary>全サブメッシュの三角形の数（<c>mesh.triangles</c> の3つ組の数）。</summary>
+        public static long CountTriangles(Mesh mesh)
+        {
             long indexCount = 0;
             for (int sub = 0; sub < mesh.subMeshCount; sub++) indexCount += mesh.GetIndexCount(sub);
-            return cloth.Topology.VertexToWelded.Length == mesh.vertexCount
-                && cloth.Topology.SourceToTriangle.Length == indexCount / 3;
+            return indexCount / 3;
         }
 
         /// <summary>レンダラーのメッシュに、布が合うか（<see cref="IsClothCompatible(Mesh, ParticleCloth)"/>）。</summary>
@@ -479,6 +494,21 @@ namespace GP02.EditorTools
         {
             _grabParticle = -1;
             _solver.Release();
+        }
+
+        /// <summary>
+        /// ソルバーを1回だけ動かして、計算の部品（Burst など）の初回のコンパイルを済ませる。
+        /// 最初のドラッグで一瞬止まるのを避けるため、編集を始めるときに呼ぶ。粒子の位置は元に戻すので、形は変わらない。
+        /// </summary>
+        /// <returns>かかった時間（ミリ秒）</returns>
+        public double WarmUp()
+        {
+            var timer = Stopwatch.StartNew();
+            NVector3[] saved = _solver.Positions.ToArray();
+            _solver.Solve(1);
+            _solver.SetPositions(saved);
+            timer.Stop();
+            return timer.Elapsed.TotalMilliseconds;
         }
 
         /// <summary>元の形に戻す（ピンは保持）。</summary>

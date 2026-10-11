@@ -35,6 +35,10 @@ namespace GP02.EditorTools
             public float* GrabDistance;
             public int* NearestPin;
             public float* PinDistance;
+            public int KeepOutsideRestSurface;   // 0 / 1
+            public float* RestPositions;
+            public float* RestNormals;
+            public int* RestAnchor;
         }
 
         public struct CoarseLevelArgs
@@ -64,6 +68,7 @@ namespace GP02.EditorTools
                 SolveDistances(a->Positions, a->InverseMass, a->ActiveBend, a->ActiveBendCount, a->BendPairs, a->BendRest, a->BendLambda, a->BendCompliance);
                 SolveDistances(a->Positions, a->InverseMass, a->ActiveStretch, a->ActiveStretchCount, a->StretchPairs, a->StretchRest, a->StretchLambda, a->StretchCompliance);
                 SolveTethers(a);
+                if (a->KeepOutsideRestSurface != 0) SolveRestSurface(a);
             }
         }
 
@@ -171,6 +176,28 @@ namespace GP02.EditorTools
                 // つまんだ範囲も、ピンから布の長さ以上は離れない
                 int pin = a->NearestPin[i];
                 if (pin >= 0) SolveTether(a->Positions, i, pin, a->PinDistance[i]);
+            }
+        }
+
+        // 元の形の、近い粒子の面より内側にあれば、面まで押し戻す（つまんでいる範囲は対象外）
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void SolveRestSurface(IterationArgs* a)
+        {
+            float* p = a->Positions;
+            float* rest = a->RestPositions;
+            float* normals = a->RestNormals;
+            bool grabbing = a->Grabbed >= 0;
+            for (int n = 0; n < a->ActiveParticleCount; n++)
+            {
+                int i = a->ActiveParticles[n];
+                if (grabbing && a->InBrush[i] != 0) continue;
+                int r = a->RestAnchor[i];
+                float nx = normals[3 * r], ny = normals[3 * r + 1], nz = normals[3 * r + 2];
+                float d = (p[3 * i] - rest[3 * r]) * nx + (p[3 * i + 1] - rest[3 * r + 1]) * ny + (p[3 * i + 2] - rest[3 * r + 2]) * nz;
+                if (d >= 0f) continue;
+                p[3 * i] -= d * nx;
+                p[3 * i + 1] -= d * ny;
+                p[3 * i + 2] -= d * nz;
             }
         }
 

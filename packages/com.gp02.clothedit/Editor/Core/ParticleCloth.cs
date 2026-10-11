@@ -22,6 +22,9 @@ namespace GP02.Core
         const float BendRange = 2.6f;
         const float BindRange = 2f;
 
+        // 島の面の向きの平均の長さがこれ以上（向きがほぼそろっている）なら、平らな島とみなす（0.95 で約18度のばらつき）
+        const float FlatIslandNormalAgreement = 0.95f;
+
         public MeshTopology Topology { get; }
         public ClothModel Model { get; }
         public float Spacing { get; }
@@ -78,7 +81,7 @@ namespace GP02.Core
 
             var hierarchy = ClothHierarchy.Build(topology, search, particles, particleTriangle, spacing, coarseLevels, StretchRange, BindRange);
 
-            var model = new ClothModel(particles, stretchPairs.ToArray(), bendPairs.ToArray());
+            var model = new ClothModel(particles, stretchPairs.ToArray(), bendPairs.ToArray(), ComputeRestNormals(topology, particles, particleTriangle));
             return new ParticleCloth(topology, model, hierarchy, spacing, particleTriangle, offsets, bindParticles, bindWeights);
         }
 
@@ -173,9 +176,91 @@ namespace GP02.Core
             DeformWelded(particles, welded);
 
             MeshTopology topology = Topology.WithPositions(welded);
-            var model = new ClothModel(particles, Model.StretchPairs, Model.BendPairs);
+            var model = new ClothModel(particles, Model.StretchPairs, Model.BendPairs, ComputeRestNormals(topology, particles, ParticleTriangle));
             ClothHierarchy hierarchy = Hierarchy.WithRestPositions(particles);
             return new ParticleCloth(topology, model, hierarchy, Spacing, ParticleTriangle, _bindOffsets, _bindParticles, _bindWeights);
+        }
+
+        /// <summary>
+        /// 粒子ごとの、元の形の面の外向き。粒子が乗っている三角形の向き（頂点の並び）で決める。
+        /// - 裏面用に同じ頂点で向きを逆にした三角形が重なっている場合は、どちらが外か分からないので 0 ベクトル（対象外）にする
+        /// - 島の粒子の大半で、向きが島の重心から内側を指していれば、裏返しのメッシュとみなして島ごと反転する
+        /// - 島がほぼ平ら（向きがほとんどそろっている）なら、包んでいるもの（体や内側の布）が無いので対象外にする。
+        ///   平らな布の裏側へ引っ張る動きを妨げないため
+        /// 面の向きだけで決めるのは、隣の粒子と向きをそろえるやり方だと、鋭い折り目（90度以上）で向きを取り違えるため。
+        /// </summary>
+        internal static Vector3[] ComputeRestNormals(MeshTopology topology, Vector3[] particles, int[] particleTriangle)
+        {
+            int[] triangles = topology.Triangles;
+            Vector3[] positions = topology.Positions;
+
+            // 同じ3頂点を持つ三角形（裏面用の重ね）を探す
+            var twin = new bool[topology.TriangleCount];
+            var seen = new Dictionary<(int, int, int), int>();
+            for (int t = 0; t < topology.TriangleCount; t++)
+            {
+                int a = triangles[3 * t], b = triangles[3 * t + 1], c = triangles[3 * t + 2];
+                if (a > b) (a, b) = (b, a);
+                if (b > c) (b, c) = (c, b);
+                if (a > b) (a, b) = (b, a);
+                var key = (a, b, c);
+                if (seen.TryGetValue(key, out int other))
+                {
+                    twin[t] = true;
+                    twin[other] = true;
+                }
+                else
+                {
+                    seen.Add(key, t);
+                }
+            }
+
+            var normals = new Vector3[particles.Length];
+            for (int i = 0; i < particles.Length; i++)
+            {
+                int t = particleTriangle[i];
+                if (twin[t]) continue;
+                Vector3 a = positions[triangles[3 * t]], b = positions[triangles[3 * t + 1]], c = positions[triangles[3 * t + 2]];
+                Vector3 n = Vector3.Cross(b - a, c - a);
+                float length = n.Length();
+                if (length > 0f) normals[i] = n / length;
+            }
+
+            // 島ごとに、向きが重心の外側を指しているかの多数決を取る
+            int islandCount = topology.IslandCount;
+            var centroid = new Vector3[islandCount];
+            var count = new int[islandCount];
+            for (int i = 0; i < particles.Length; i++)
+            {
+                int island = topology.TriangleIsland[particleTriangle[i]];
+                centroid[island] += particles[i];
+                count[island]++;
+            }
+            var vote = new int[islandCount];
+            var voters = new int[islandCount];
+            var normalSum = new Vector3[islandCount];
+            for (int i = 0; i < particles.Length; i++)
+            {
+                if (normals[i] == Vector3.Zero) continue;
+                int island = topology.TriangleIsland[particleTriangle[i]];
+                float d = Vector3.Dot(normals[i], particles[i] - centroid[island] / count[island]);
+                vote[island] += d >= 0f ? 1 : -1;
+                voters[island]++;
+                normalSum[island] += normals[i];
+            }
+            for (int i = 0; i < particles.Length; i++)
+            {
+                int island = topology.TriangleIsland[particleTriangle[i]];
+                if (voters[island] == 0) continue;
+                if (normalSum[island].Length() >= FlatIslandNormalAgreement * voters[island])
+                {
+                    normals[i] = Vector3.Zero;
+                    continue;
+                }
+                // 重心による判定は形によって当てにならないので、はっきり内向きのときだけ反転する
+                if (vote[island] < -voters[island] / 2) normals[i] = -normals[i];
+            }
+            return normals;
         }
 
         /// <summary>頂点ごとに結びつけた粒子の数（確認用）。</summary>

@@ -56,6 +56,45 @@ namespace GP02.Tests
             Assert.That(maxDifference, Is.LessThan(1e-4f));
         }
 
+        // 曲がった布（テスト用のスカート）では、元の形より内側に入らない制約が効く。その状態でも C# と一致すること
+        [Test]
+        public void BurstKernel_MatchesCSharpResult_WithRestSurface()
+        {
+            UnityEngine.Mesh mesh = TestClothMenu.CreateSkirtMesh();
+            var cloth = ParticleCloth.Build(MeshBridge.ToNumerics(mesh.vertices, UnityEngine.Vector3.one), mesh.triangles);
+            UnityEngine.Object.DestroyImmediate(mesh);
+            int withNormals = 0;
+            foreach (Vector3 n in cloth.Model.RestNormals) if (n != Vector3.Zero) withNormals++;
+            Assert.That(withNormals, Is.GreaterThan(cloth.Model.ParticleCount / 2), "スカートで外向きが決まっていません");
+
+            Vector3[] Run(IClothSolverKernel kernel)
+            {
+                var solver = new ClothSolver(cloth.Model, cloth.Hierarchy) { Kernel = kernel };
+                float top = float.MinValue;
+                foreach (Vector3 p in cloth.Model.RestPositions) top = System.Math.Max(top, p.Y);
+                for (int i = 0; i < cloth.Model.ParticleCount; i++)
+                {
+                    if (cloth.Model.RestPositions[i].Y > top - cloth.Spacing) solver.SetPinned(i, true);
+                }
+                // 前側（-Z）の裾寄りを手前へ引く。横の布が内側へ引き込まれ、制約が働く
+                int grabbed = solver.FindNearestParticle(new Vector3(0f, top - 0.25f, -0.3f));
+                Vector3 start = solver.Positions[grabbed];
+                for (int f = 1; f <= 5; f++)
+                {
+                    solver.Grab(grabbed, start + new Vector3(0f, 0.02f, -0.08f) * f / 5f, 0.04f);
+                    solver.Solve(10);
+                }
+                return solver.Positions.ToArray();
+            }
+
+            Vector3[] expected = Run(null);
+            Vector3[] actual = Run(new BurstClothSolverKernel());
+            float maxDifference = 0f;
+            for (int i = 0; i < expected.Length; i++) maxDifference = System.Math.Max(maxDifference, Vector3.Distance(expected[i], actual[i]));
+            Debug.Log($"[GP02] Burst と C# の差（スカート、内側に入らない制約あり）: 最大 {maxDifference:E2} m");
+            Assert.That(maxDifference, Is.LessThan(1e-4f));
+        }
+
         // ピン留め → つまんで数コマ引っ張る → 仕上げ → 離す
         static Vector3[] Operate(ParticleCloth cloth, float size, IClothSolverKernel kernel)
         {

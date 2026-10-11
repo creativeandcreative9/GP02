@@ -32,6 +32,11 @@ namespace GP02.Core
         readonly Vector3 _origin;
         readonly Vector3[] _positions;        // 内部の座標（ワールド座標 - _origin）
         readonly Vector3[] _worldPositions;   // 外に見せるワールド座標
+
+        // 元の形より内側に入らないようにするための情報（KeepOutsideRestSurface）
+        readonly Vector3[] _restInternal;     // 元の位置（内部の座標）
+        readonly Vector3[] _restNormals;      // 元の形の面の外向き。決められない粒子は 0 ベクトル。null なら無し
+        readonly int[] _restAnchor;           // 粒子ごとの、今の位置に一番近い元の粒子
         readonly bool[] _pinned;
         readonly float[] _stretchLambda;
         readonly float[] _bendLambda;
@@ -78,6 +83,13 @@ namespace GP02.Core
 
         /// <summary>伸びやすさ。0 で伸びない。</summary>
         public float StretchCompliance { get; set; } = 0f;
+
+        /// <summary>
+        /// 元の形の表面より内側に入らないようにするか（既定は true）。つまんでいる範囲は対象外。
+        /// 衣装はもともと体や内側の布の外側にあるので、これだけで体や内側の布へのすり抜けをほぼ防げる。
+        /// 内側へ押し込む編集をしたいときは false にする。<see cref="ClothModel.RestNormals"/> が無い布では効かない。
+        /// </summary>
+        public bool KeepOutsideRestSurface { get; set; } = true;
 
         /// <summary>粗い段1段あたりの反復回数。</summary>
         public int CoarseIterations { get; set; } = 10;
@@ -134,6 +146,10 @@ namespace GP02.Core
             _positions = new Vector3[n];
             for (int i = 0; i < n; i++) _positions[i] = rest[i] - _origin;
             _worldPositions = (Vector3[])rest.Clone();
+            _restInternal = (Vector3[])_positions.Clone();
+            _restNormals = model.RestNormals;
+            _restAnchor = new int[n];
+            for (int i = 0; i < n; i++) _restAnchor[i] = i;
             _pinned = new bool[n];
             _stretchLambda = new float[model.StretchRestLengths.Length];
             _bendLambda = new float[model.BendRestLengths.Length];
@@ -353,6 +369,9 @@ namespace GP02.Core
             for (int a = 0; a < _activeStretchCount; a++) _stretchLambda[_activeStretch[a]] = 0f;
             for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
 
+            bool keepOutside = KeepOutsideRestSurface && _restNormals != null;
+            if (keepOutside && iterations > 0) UpdateRestAnchors();
+
             IClothSolverKernel kernel = Kernel;
             if (kernel != null)
             {
@@ -361,7 +380,8 @@ namespace GP02.Core
                     kernel.Iterate(new ClothSolverIterationData(_positions, _inverseMass,
                         bendPairs, bendRest, _bendLambda, _activeBend, _activeBendCount, BendCompliance,
                         stretchPairs, stretchRest, _stretchLambda, _activeStretch, _activeStretchCount, StretchCompliance,
-                        _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _nearestPin, _pinDistance), iterations);
+                        _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _nearestPin, _pinDistance,
+                        keepOutside, _restInternal, _restNormals, _restAnchor), iterations);
                 }
             }
             else
@@ -373,6 +393,7 @@ namespace GP02.Core
                     SolveDistances(_activeStretch, _activeStretchCount, stretchPairs, stretchRest, _stretchLambda, StretchCompliance);
 
                     SolveTethers();
+                    if (keepOutside) SolveRestSurface();
                 }
             }
 
@@ -536,6 +557,68 @@ namespace GP02.Core
                 // 布の長さが足りない方向へ引っ張ると、本物の布のように目標の手前で止まる（持ち上がる）。
                 int pin = _nearestPin[i];
                 if (pin >= 0) SolveTether(i, pin, _pinDistance[i]);
+            }
+        }
+
+        // 1回の Solve の間に粒子が動く距離は粒子の間隔より十分小さいので、近い元の粒子は Solve の最初に1度だけ探す。
+        // 今の近い粒子から、伸びの制約でつながった隣へ、近くなる限りたどる（表面に沿って探すので、重ね着の別の層には移らない）
+        void UpdateRestAnchors()
+        {
+            int[] offsets = _graph.Offsets;
+            int[] neighbors = _graph.Neighbors;
+            Vector3[] p = _positions;
+            Vector3[] rest = _restInternal;
+            for (int a = 0; a < _activeParticleCount; a++)
+            {
+                int i = _activeParticles[a];
+                int anchor = _restAnchor[i];
+                float px = p[i].X, py = p[i].Y, pz = p[i].Z;
+                float best = DistanceSquared(px, py, pz, rest[anchor]);
+                for (int step = 0; step < 16; step++)
+                {
+                    int next = -1;
+                    int end = offsets[anchor + 1];
+                    for (int k = offsets[anchor]; k < end; k++)
+                    {
+                        int candidate = neighbors[k];
+                        float d = DistanceSquared(px, py, pz, rest[candidate]);
+                        if (d < best)
+                        {
+                            best = d;
+                            next = candidate;
+                        }
+                    }
+                    if (next < 0) break;
+                    anchor = next;
+                }
+                _restAnchor[i] = anchor;
+            }
+        }
+
+        static float DistanceSquared(float x, float y, float z, Vector3 b)
+        {
+            float dx = x - b.X, dy = y - b.Y, dz = z - b.Z;
+            return dx * dx + dy * dy + dz * dz;
+        }
+
+        // 元の形の、近い粒子の面より内側にあれば、面まで押し戻す。粒子は1cm間隔なので、曲面でも誤差は1mm未満
+        void SolveRestSurface()
+        {
+            Vector3[] p = _positions;
+            Vector3[] rest = _restInternal;
+            Vector3[] normals = _restNormals;
+            bool grabbing = _grabbed >= 0;
+            for (int a = 0; a < _activeParticleCount; a++)
+            {
+                int i = _activeParticles[a];
+                if (grabbing && _inBrush[i]) continue;
+                int r = _restAnchor[i];
+                float nx = normals[r].X, ny = normals[r].Y, nz = normals[r].Z;
+                float d = (p[i].X - rest[r].X) * nx + (p[i].Y - rest[r].Y) * ny + (p[i].Z - rest[r].Z) * nz;
+                if (d >= 0f) continue;
+                p[i].X -= d * nx;
+                p[i].Y -= d * ny;
+                p[i].Z -= d * nz;
             }
         }
 

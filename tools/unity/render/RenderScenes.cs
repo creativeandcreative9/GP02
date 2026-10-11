@@ -23,6 +23,15 @@ public static class RenderScenes
             Mesh saved;
             using (var session = new ClothEditSession(skirt))
             {
+                // 実際の使い方に合わせて、ウエスト（一番上の段）をピン留めする
+                float top = float.MinValue;
+                foreach (Vector3 v in session.CurrentWorldVertices) top = Mathf.Max(top, v.y);
+                var rest = session.Cloth.Model.RestPositions;
+                for (int i = 0; i < rest.Length; i++)
+                {
+                    if (rest[i].Y > top - 1.5f * session.Cloth.Spacing) session.Solver.SetPinned(i, true);
+                }
+
                 // スカートの前側の裾寄りを、手前・少し上へ 10cm 引っ張り、手を止めて仕上げる
                 var origin = new Vector3(0f, 0.55f, -1f);
                 session.Raycast(new Ray(origin, Vector3.forward), out Vector3 hit, out _, out int triangle);

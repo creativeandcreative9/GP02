@@ -31,6 +31,8 @@ namespace GP02.EditorTools
             fixed (int* bendPairs = d.BendPairs, activeBend = d.ActiveBend, stretchPairs = d.StretchPairs, activeStretch = d.ActiveStretch,
                 activeParticles = d.ActiveParticles, nearestPin = d.NearestPin)
             fixed (bool* inBrush = d.InBrush)
+            fixed (Vector3* restPositions = d.RestPositions, restNormals = d.RestNormals)
+            fixed (int* restAnchor = d.RestAnchor)
             {
                 var args = new BurstClothKernels.IterationArgs
                 {
@@ -55,6 +57,11 @@ namespace GP02.EditorTools
                     GrabDistance = grabDistance,
                     NearestPin = nearestPin,
                     PinDistance = pinDistance,
+                    // 配列が null のときは使わない（KeepOutsideRestSurface を 0 にする）
+                    KeepOutsideRestSurface = d.KeepOutsideRestSurface && restNormals != null ? 1 : 0,
+                    RestPositions = (float*)restPositions,
+                    RestNormals = (float*)restNormals,
+                    RestAnchor = restAnchor,
                 };
                 BurstClothKernels.Iterate(&args, iterations);
             }

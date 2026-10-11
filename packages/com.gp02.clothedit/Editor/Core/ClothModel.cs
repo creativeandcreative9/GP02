@@ -22,8 +22,23 @@ namespace GP02.Core
         public int[] BendPairs { get; }
         public float[] BendRestLengths { get; }
 
+        /// <summary>
+        /// 粒子ごとの、元の形の面の外向き（長さ1）。外向きが決められない粒子は 0 ベクトル。null なら無し。
+        /// <see cref="ClothSolver.KeepOutsideRestSurface"/> で、元の形より内側に入らないようにするのに使う。
+        /// </summary>
+        public Vector3[] RestNormals { get; }
+
         public ClothModel(Vector3[] restPositions, int[] stretchPairs, int[] bendPairs)
+            : this(restPositions, stretchPairs, bendPairs, null)
         {
+        }
+
+        /// <param name="restNormals">粒子ごとの元の形の面の外向き。null なら無し</param>
+        public ClothModel(Vector3[] restPositions, int[] stretchPairs, int[] bendPairs, Vector3[] restNormals)
+        {
+            if (restNormals != null && restPositions != null && restNormals.Length != restPositions.Length)
+                throw new ArgumentException("粒子数が一致しません。", nameof(restNormals));
+            RestNormals = restNormals;
             RestPositions = restPositions ?? throw new ArgumentNullException(nameof(restPositions));
             StretchPairs = stretchPairs ?? throw new ArgumentNullException(nameof(stretchPairs));
             BendPairs = bendPairs ?? throw new ArgumentNullException(nameof(bendPairs));

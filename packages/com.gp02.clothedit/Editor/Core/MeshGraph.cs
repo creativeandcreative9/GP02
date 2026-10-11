@@ -12,6 +12,10 @@ namespace GP02.Core
         readonly int[] _neighbors;
         readonly float[] _lengths;
 
+        /// <summary>ノード i の隣は <see cref="Neighbors"/>[Offsets[i] .. Offsets[i + 1])。</summary>
+        public int[] Offsets => _offsets;
+        public int[] Neighbors => _neighbors;
+
         public MeshGraph(int nodeCount, int[] pairs, float[] lengths)
         {
             var degree = new int[nodeCount + 1];

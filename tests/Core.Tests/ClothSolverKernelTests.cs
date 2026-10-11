@@ -12,7 +12,7 @@ public class ClothSolverKernelTests
 {
     // 渡されるデータだけを使って、ソルバーの C# と同じ式・同じ順序で計算する。
     // データに漏れがないこと（カーネルがソルバーの内部を見なくても計算できること）の確認を兼ねる
-    sealed class ReferenceKernel : IClothSolverKernel
+    internal sealed class ReferenceKernel : IClothSolverKernel
     {
         public int IterateCalls, CoarseCalls, IterationsTotal;
 
@@ -33,6 +33,16 @@ public class ClothSolverKernelTests
                     if (d.Grabbed >= 0 && !d.InBrush[i]) Tether(d.Positions, i, d.Grabbed, d.GrabDistance[i]);
                     int pin = d.NearestPin[i];
                     if (pin >= 0) Tether(d.Positions, i, pin, d.PinDistance[i]);
+                }
+                if (!d.KeepOutsideRestSurface) continue;
+                for (int a = 0; a < d.ActiveParticleCount; a++)
+                {
+                    int i = d.ActiveParticles[a];
+                    if (d.Grabbed >= 0 && d.InBrush[i]) continue;
+                    int r = d.RestAnchor[i];
+                    Vector3 n = d.RestNormals[r];
+                    float depth = Vector3.Dot(d.Positions[i] - d.RestPositions[r], n);
+                    if (depth < 0f) d.Positions[i] -= depth * n;
                 }
             }
         }
