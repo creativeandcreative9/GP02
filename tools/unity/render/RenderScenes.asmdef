@@ -1,0 +1,5 @@
+{
+    "name": "RenderScenes",
+    "references": [ "GP02.Core", "GP02.Editor" ],
+    "includePlatforms": [ "Editor" ]
+}

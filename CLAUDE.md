@@ -45,6 +45,11 @@ GP02/
   - クラウド環境のプロキシと証明書（`/root/.ccr/ca-bundle.crt`）は、スクリプトがコンテナに渡す
   - イメージは `mirror.gcr.io/unityci/editor:ubuntu-2022.3.22f1-base-3`（Docker Hub は匿名の取得上限にかかるためミラーを使う）
   - 結果は `tools/unity/out/`。2回目以降は `unity/Library` が残るので速い
+- Unity での見た目の確認（Docker、画面あり）: `tools/unity/render.sh`
+  - 仮想画面（Xvfb）とソフトウェア描画（Mesa の llvmpipe）で Unity を起動し、テスト用の衣装の編集前・編集中のプレビュー・保存したシェイプキーを画像にする
+  - 描画の中身は `tools/unity/render/RenderScenes.cs`。出力は `tools/unity/out/render/`（`edit_and_save.png` に1枚にまとめる）
+  - 開発用の `unity/` とは別の作業用プロジェクトを使うので、`run-tests.sh` と同時に動かせる
+  - `-executeMethod` では毎フレームの更新が回らないので、SkinnedMeshRenderer は `BakeMesh` で取り出して描く
 - `.meta` の作成: `python3 tools/unity/generate_meta.py`
   - `packages/` にファイルやフォルダを追加したら、必ず実行して `.meta` もコミットする（Unityに自動で作らせるとGUIDがPCごとに変わるため）
 
