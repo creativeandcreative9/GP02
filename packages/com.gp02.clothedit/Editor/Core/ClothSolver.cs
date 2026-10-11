@@ -64,6 +64,18 @@ namespace GP02.Core
         float _influenceRadius = 0.3f;
         float _activeMargin = float.PositiveInfinity;
 
+        /// <summary>
+        /// 新しく作るソルバーの <see cref="Kernel"/> の初期値。null なら C# で計算する。
+        /// Burst など、環境によって使える高速版が、読み込み時に自分を登録するために使う。
+        /// </summary>
+        public static IClothSolverKernel DefaultKernel { get; set; }
+
+        /// <summary>
+        /// 重い計算（反復と粗い段）を任せる部品。null ならこのクラスの C# で計算する。
+        /// 作ったときは <see cref="DefaultKernel"/> が入る。
+        /// </summary>
+        public IClothSolverKernel Kernel { get; set; } = DefaultKernel;
+
         /// <summary>伸びやすさ。0 で伸びない。</summary>
         public float StretchCompliance { get; set; } = 0f;
 
@@ -341,13 +353,27 @@ namespace GP02.Core
             for (int a = 0; a < _activeStretchCount; a++) _stretchLambda[_activeStretch[a]] = 0f;
             for (int a = 0; a < _activeBendCount; a++) _bendLambda[_activeBend[a]] = 0f;
 
-            for (int it = 0; it < iterations; it++)
+            IClothSolverKernel kernel = Kernel;
+            if (kernel != null)
             {
-                // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
-                SolveDistances(_activeBend, _activeBendCount, bendPairs, bendRest, _bendLambda, BendCompliance);
-                SolveDistances(_activeStretch, _activeStretchCount, stretchPairs, stretchRest, _stretchLambda, StretchCompliance);
+                if (iterations > 0)
+                {
+                    kernel.Iterate(new ClothSolverIterationData(_positions, _inverseMass,
+                        bendPairs, bendRest, _bendLambda, _activeBend, _activeBendCount, BendCompliance,
+                        stretchPairs, stretchRest, _stretchLambda, _activeStretch, _activeStretchCount, StretchCompliance,
+                        _activeParticles, _activeParticleCount, _grabbed, _inBrush, _grabDistance, _nearestPin, _pinDistance), iterations);
+                }
+            }
+            else
+            {
+                for (int it = 0; it < iterations; it++)
+                {
+                    // 最後に伸びの制約とテザーを解くと、1回の反復の終わりで布の長さが最も保たれる
+                    SolveDistances(_activeBend, _activeBendCount, bendPairs, bendRest, _bendLambda, BendCompliance);
+                    SolveDistances(_activeStretch, _activeStretchCount, stretchPairs, stretchRest, _stretchLambda, StretchCompliance);
 
-                SolveTethers();
+                    SolveTethers();
+                }
             }
 
             // 動くのは計算範囲の粒子だけ（ピン留めと範囲外は動かない）
@@ -362,8 +388,17 @@ namespace GP02.Core
 
         void SolveCoarseLevels()
         {
+            IClothSolverKernel kernel = Kernel;
             foreach (var level in _hierarchy.Levels)
             {
+                if (kernel != null)
+                {
+                    kernel.SolveCoarseLevel(new ClothSolverCoarseLevelData(_positions, _levelStart, _inverseMass, level.Members,
+                        level.StretchPairs, level.RestLengths, level.BindOffsets, level.BindParents, level.BindWeights,
+                        _activeParticles, _activeParticleCount, CoarseIterations));
+                    continue;
+                }
+
                 foreach (int m in level.Members) _levelStart[m] = _positions[m];
 
                 for (int it = 0; it < CoarseIterations; it++) SolveStretchOnly(level.StretchPairs, level.RestLengths);

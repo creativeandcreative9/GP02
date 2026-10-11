@@ -291,6 +291,7 @@ namespace GP02.EditorTools
             EditorGUILayout.LabelField("粒子の数", _session.ParticleCount.ToString("N0"));
             EditorGUILayout.LabelField("ピンの数", _session.PinnedCount.ToString("N0"));
             EditorGUILayout.LabelField("最大の伸び", $"{_lastStretch * 100f:F1} %");
+            EditorGUILayout.LabelField("高速化", ClothEditSession.DescribeAcceleration(_session.Solver.Kernel));
             EditorGUILayout.LabelField("状態", _dragging ? "つまんでいる" : _settling ? "仕上げ中" : "待機中");
 
             EditorGUILayout.Space();

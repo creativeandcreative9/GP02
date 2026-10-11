@@ -1,0 +1,33 @@
+{
+    "name": "GP02.Tests.Editor.Burst",
+    "rootNamespace": "GP02.Tests",
+    "references": [
+        "GP02.Core",
+        "GP02.Editor",
+        "GP02.Editor.Burst",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "GP02_BURST"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.burst",
+            "expression": "1.8.0",
+            "define": "GP02_BURST"
+        }
+    ],
+    "noEngineReferences": false
+}

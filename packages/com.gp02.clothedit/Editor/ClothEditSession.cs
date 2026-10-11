@@ -57,6 +57,16 @@ namespace GP02.EditorTools
         public ParticleCloth Cloth => _cloth;
         public ClothSolver Solver => _solver;
 
+        /// <summary>
+        /// 計算の高速化の状態を表す文字列（ウィンドウに表示する）。
+        /// Burst の有無はこのアセンブリから見えないので、ソルバーのカーネルの名前で判断する。
+        /// </summary>
+        public static string DescribeAcceleration(IClothSolverKernel kernel)
+        {
+            if (kernel == null) return "なし（Burst を入れると速くなります）";
+            return kernel.IsAccelerated ? $"{kernel.Name}（有効）" : $"{kernel.Name}（無効。Jobs > Burst > Enable Compilation を確認してください）";
+        }
+
         /// <summary>準備（粒子化）にかかった時間（ミリ秒）。</summary>
         public double PrepareMilliseconds { get; }
         public int ParticleCount => _cloth.Model.ParticleCount;

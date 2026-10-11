@@ -67,7 +67,8 @@ GP02/
 - 速さは Unity（Mono）で測る。クラウドの .NET より10倍以上遅いことがある
   - Mono では System.Numerics.Vector3 の演算子が1つずつ関数の呼び出しになるので、毎フレーム回る処理では成分ごとに計算する
   - Unity での測定は、一時的な EditMode テストを `unity/Assets/` に置き、`GP02_UNITY_ARGS=-debugCodeOptimization tools/unity/run-tests.sh` で行う（エディタの既定はデバッグモード）
-  - Burst（依存が増える）は、成分ごとの書き方で足りなければ検討する
+  - Burst は任意の高速化として使う（`Editor/Burst/` の `GP02.Editor.Burst`。com.unity.burst があるときだけ `versionDefines` と `defineConstraints` で有効になり、`ClothSolver.DefaultKernel` を差し替える）。Burst がなくても、すべての機能が C# で動く
+  - 開発用の `unity/` には Burst を入れてある。Burst なしの確認は、manifest から一時的に外して `tools/unity/run-tests.sh` を回す
 
 ## 未解決の課題
 - 粒子化した布で、ドラッグ直後に局所的な伸びが残る（スカート相当・10cm引っ張り・反復40回で、粒子間の伸びが最大約27%）
