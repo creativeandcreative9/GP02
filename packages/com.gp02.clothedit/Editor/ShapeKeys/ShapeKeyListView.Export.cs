@@ -221,11 +221,14 @@ namespace GP02.EditorTools
             }
         }
 
-        // 書き出しの前に、何が起きるか（追加・上書き・別名・焼き込み・飛ばす）の一覧
+        // 反映の前に、何が起きるか（追加・上書き・別名・焼き込み・飛ばす）の一覧。
+        // 反映は毎回元のメッシュの複製から作るので、元のメッシュに対しての内容になる（今のメッシュとの違いは「メッシュと違う所」の1行）
         void DrawPlan(List<ExportPlanItem> plan)
         {
             _settings.ShowExportPlan = EditorGUILayout.Foldout(_settings.ShowExportPlan,
-                L10n.Tr("反映の内容（実行前の確認）", "What applying will do (check before running)") + (plan != null ? "  —  " + ShapeKeyExportPlan.Summarize(plan) : ""), true);
+                new GUIContent(L10n.Tr("反映の内容（実行前の確認）", "What applying will do (check before running)") + (plan != null ? "  —  " + ShapeKeyExportPlan.Summarize(plan) : ""),
+                    L10n.Tr("元のメッシュから作り直すときの内容です（反映は毎回、元のメッシュの複製から作ります）。今のメッシュとの違いは「メッシュと違う所」の行に出ます。",
+                        "What rebuilding from the original mesh will do (applying always starts from a copy of the original mesh). Differences from the current mesh are shown on the \"Differs from the mesh\" line.")), true);
             if (!_settings.ShowExportPlan || plan == null) return;
             if (plan.Count == 0)
             {
