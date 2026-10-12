@@ -234,8 +234,8 @@ namespace GP02.EditorTools
                 }
                 else if (IsAboveWeakerStrength)
                 {
-                    hintJa = $"確認で『{tryWeaker}』を選ぶと和らぎます。";
-                    hintEn = $"Choosing \"{tryWeaker}\" in the confirmation eases this.";
+                    hintJa = $"『{tryWeaker}』で和らぎます。";
+                    hintEn = $"\"{tryWeaker}\" eases this.";
                 }
                 else
                 {

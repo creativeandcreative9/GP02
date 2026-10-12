@@ -86,16 +86,13 @@ namespace GP02.EditorTools
         }
 
         /// <summary>
-        /// 強さを弱めて試し直した候補の、適用の確認（<see cref="Confirm"/>）の本文: 試した強さ、候補の説明、まだ伸びるときの一言、適用するかの問い。
+        /// 強さを弱めて試し直した候補の、適用の確認（<see cref="Confirm"/>）の本文: 試した強さ、候補の説明、適用するかの問い。
+        /// まだ伸びるときの一言（さらに下げられる）は、候補の説明の中にあるので、ここでは足さない（同じことを2回言わない）。
         /// </summary>
         public static string WeightFixWeakerResultMessage(WeightFixPreview weaker, bool detailedView)
         {
             string text = L10n.Tr($"強さ {weaker.StrengthPercent}% で試した結果です。", $"This is the result with the strength at {weaker.StrengthPercent}%.")
                 + "\n" + weaker.Describe(detailedView);
-            if (weaker.StretchesTooMuch)
-            {
-                text += "\n" + L10n.Tr("まだ伸びます。くわしく表示の『強さ』で、さらに下げられます。", "It still stretches. You can lower \"Strength\" further in the detailed view.");
-            }
             return WeightFixApplyMessage(text);
         }
 

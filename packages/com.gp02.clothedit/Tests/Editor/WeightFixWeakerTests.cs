@@ -200,7 +200,7 @@ namespace GP02.Tests
             StringAssert.Contains("弱めて", ask);
             StringAssert.Contains("体から離れた布（スカートなど）が伸びすぎます。強さを 50% に弱めて、もう一度試せます。", ask);
             StringAssert.Contains(full.Describe(false), ask, "本文に、候補の説明（かんたん表示のもの）がある");
-            StringAssert.Contains("確認で『弱めて（50%）試す』を選ぶと和らぎます", ask);
+            StringAssert.Contains("『弱めて（50%）試す』で和らぎます", ask);
             StringAssert.Contains(full.StretchPoseName, ask);
 
             // 弱めて試し直す: 強さ 50% の候補を作り、前後を見せて、適用するかを聞く
@@ -218,8 +218,9 @@ namespace GP02.Tests
             StringAssert.Contains(half.Describe(false), confirm);
             StringAssert.Contains("、強さ 50%", FirstLine(half.Describe(false)), "説明の1行目に強さが出る");
             StringAssert.EndsWith("この候補を適用しますか？（Ctrl+Z の 1 回で戻せます）", confirm);
-            Assert.That(confirm.Contains("まだ伸びます。くわしく表示の『強さ』で、さらに下げられます。"), Is.EqualTo(half.StretchesTooMuch),
-                "50% でもまだ伸びるときだけ、「まだ伸びます」と言う");
+            // 50% でもまだ伸びるときだけ、「さらに下げられます」と言う。その一言は候補の説明の中に1回だけ（同じことを2回言わない）
+            Assert.That(CountOf(confirm, "さらに下げられます"), Is.EqualTo(half.StretchesTooMuch ? 1 : 0), confirm);
+            StringAssert.DoesNotContain("まだ伸びます", confirm);
             StringAssert.DoesNotContain("弱めて", confirm, "もう 50% なので、さらに「弱めて」とは言わない");
 
             // 適用した: 結果の強さも 0.5。設定の強さは 1 のまま（次の衣装では、100% のままにするため）
@@ -379,12 +380,12 @@ namespace GP02.Tests
             StringAssert.StartsWith(full.Describe(false), offer);
             StringAssert.EndsWith("\n\n体から離れた布（スカートなど）が伸びすぎます。強さを 50% に弱めて、もう一度試せます。", offer);
 
-            // 弱めて試した結果で、まだ伸びる: 強さ → 候補の説明 → 「まだ伸びます」 → 適用するかの問い、の順
+            // 弱めて試した結果で、まだ伸びる: 強さ → 候補の説明（「さらに下げられます」の一言を含む）→ 適用するかの問い、の順。一言は1回だけ
             WeightFixPreview still = FakePreview(0.5f, 0.45f, 0.9f);
             Assert.That(still.StretchesTooMuch, Is.True);
             string stillMessage = ClothEditPrompts.WeightFixWeakerResultMessage(still, false);
-            StringAssert.StartsWith("強さ 50% で試した結果です。\n" + still.Describe(false), stillMessage);
-            StringAssert.EndsWith("\nまだ伸びます。くわしく表示の『強さ』で、さらに下げられます。\n\nこの候補を適用しますか？（Ctrl+Z の 1 回で戻せます）", stillMessage);
+            Assert.That(stillMessage, Is.EqualTo("強さ 50% で試した結果です。\n" + still.Describe(false) + "\n\nこの候補を適用しますか？（Ctrl+Z の 1 回で戻せます）"));
+            Assert.That(CountOf(stillMessage, "くわしく表示の『強さ』で、さらに下げられます。"), Is.EqualTo(1), stillMessage);
 
             // 50% で和らいだ: 「まだ伸びます」は言わない
             WeightFixPreview calm = FakePreview(0.5f, 0.45f, 0.55f);
@@ -406,7 +407,7 @@ namespace GP02.Tests
             StringAssert.EndsWith("\n\nCloth away from the body (such as a skirt) stretches too much. You can lower the strength to 50% and try again.", ClothEditPrompts.WeightFixOfferMessage(full, false));
             string english = ClothEditPrompts.WeightFixWeakerResultMessage(still, false);
             StringAssert.StartsWith("This is the result with the strength at 50%.\n", english);
-            StringAssert.Contains("\nIt still stretches. You can lower \"Strength\" further in the detailed view.", english);
+            Assert.That(CountOf(english, "You can lower \"Strength\" further in the detailed view."), Is.EqualTo(1), english);
             StringAssert.EndsWith("\n\nApply this candidate? (One Ctrl+Z undoes it)", english);
         }
 
@@ -425,7 +426,7 @@ namespace GP02.Tests
             StringAssert.DoesNotContain("強さ", FirstLine(simple));
             StringAssert.Contains("体から離れた所の布の伸び: 座る（最後まで）で 45% → 200%", simple);
             // かんたん表示（強さが 50% より大きい）: 確認の「弱めて試す」を勧める。強さのスライダーは無い
-            StringAssert.Contains("体から離れた布（スカートなど）が、脚などに貼り付いて伸びます。確認で『弱めて（50%）試す』を選ぶと和らぎます。", simple);
+            StringAssert.Contains("体から離れた布（スカートなど）が、脚などに貼り付いて伸びます。『弱めて（50%）試す』で和らぎます。", simple);
             StringAssert.DoesNotContain("さらに下げられます", simple);
             // くわしく表示: 「強さ」を下げて確認し直す
             StringAssert.Contains("『強さ』を下げて確認し直すと和らぎます（50% くらい）", detailed);
@@ -449,7 +450,7 @@ namespace GP02.Tests
             WeightFixPreview most = FakePreview(0.8f, 0.45f, 2f);
             StringAssert.Contains("強さ 80%", FirstLine(most.Describe(false)));
             Assert.That(most.CanTryWeaker, Is.True);
-            StringAssert.Contains("確認で『弱めて（50%）試す』を選ぶと和らぎます", most.Describe(false));
+            StringAssert.Contains("『弱めて（50%）試す』で和らぎます", most.Describe(false));
 
             // 伸びすぎない: 一言は出ない
             WeightFixPreview calm = FakePreview(1f, 0.45f, 0.5f);
@@ -475,7 +476,7 @@ namespace GP02.Tests
             L10n.Language = UiLanguage.English;
             WeightFixPreview full = FakePreview(1f, 0.45f, 2f);
             WeightFixPreview half = FakePreview(0.5f, 0.45f, 0.9f);
-            StringAssert.Contains("Choosing \"Try Weaker (50%)\" in the confirmation eases this.", full.Describe(false));
+            StringAssert.Contains("\"Try Weaker (50%)\" eases this.", full.Describe(false));
             StringAssert.Contains("Lowering \"Strength\" (to about 50%) and checking again eases this.", full.Describe(true));
             StringAssert.Contains("You can lower \"Strength\" further in the detailed view.", half.Describe(false));
             StringAssert.Contains("Lowering \"Strength\" further and checking again eases this.", half.Describe(true));
@@ -504,6 +505,14 @@ namespace GP02.Tests
             Assert.That(ClothEditPrompts.WeightFixChoiceFromButton(0), Is.EqualTo(WeightFixChoice.TryWeaker));
             Assert.That(ClothEditPrompts.WeightFixChoiceFromButton(1), Is.EqualTo(WeightFixChoice.Cancel));
             Assert.That(ClothEditPrompts.WeightFixChoiceFromButton(2), Is.EqualTo(WeightFixChoice.ApplyAsIs));
+        }
+
+        // text の中に part が出てくる回数
+        static int CountOf(string text, string part)
+        {
+            int count = 0;
+            for (int i = text.IndexOf(part, System.StringComparison.Ordinal); i >= 0; i = text.IndexOf(part, i + part.Length, System.StringComparison.Ordinal)) count++;
+            return count;
         }
     }
 }

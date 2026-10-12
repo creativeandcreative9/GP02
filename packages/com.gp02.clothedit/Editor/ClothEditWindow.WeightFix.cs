@@ -134,6 +134,20 @@ namespace GP02.EditorTools
                         GUIUtility.ExitGUI();
                     }
                 }
+                // 確認のダイアログでやめたあとも、弱めて試せるように（候補の説明が「弱めて試す」を勧めるので、そのボタンを窓にも置く）
+                if (preview.CanTryWeaker)
+                {
+                    using (new EditorGUI.DisabledScope(!_controller.CanPreviewWeightFix || _controller.IsBusy))
+                    {
+                        if (GUILayout.Button(new GUIContent(ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.TryWeaker),
+                            L10n.Tr($"強さを {WeightFixPreview.WeakerPercent}% にして、もう一度候補を作って試し、前後を見せてから適用するかを聞きます（設定の強さは変えません）",
+                                $"Makes the candidate again at {WeightFixPreview.WeakerPercent}% strength, tries the poses, shows before and after, and asks whether to apply (the Strength setting is not changed)"))))
+                        {
+                            TryWeakerWeightFix();
+                            GUIUtility.ExitGUI();
+                        }
+                    }
+                }
                 if (GUILayout.Button(new GUIContent(L10n.Tr("やめる", "Discard"), L10n.Tr("確認した候補を捨てます（何も変えません）", "Discards the checked candidate (nothing changes)")), GUILayout.Width(70f)))
                 {
                     _controller.DiscardWeightFixPreview();

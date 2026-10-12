@@ -160,7 +160,7 @@ namespace GP02.Tests
                 Assert.That(controller.RunPoseCheck(), Is.Not.Null, controller.LastPoseCheckError);
                 Assert.That(controller.CanPreviewWeightFix, Is.True);
 
-                // 強さ 100% の候補: 体から離れた布が伸びすぎる。説明の最後に「確認で『弱めて（50%）試す』を選ぶと和らぎます」
+                // 強さ 100% の候補: 体から離れた布が伸びすぎる。説明の最後に「『弱めて（50%）試す』で和らぎます」。窓の候補の下にも「弱めて（50%）試す」のボタンが出る
                 WeightFixPreview full = controller.PreviewWeightFix();
                 Assert.That(full, Is.Not.Null, controller.LastWeightFixError);
                 Assert.That(full.StretchesTooMuch, Is.True);
