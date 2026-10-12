@@ -95,7 +95,7 @@ namespace GP02.Tests
                 yield return Stage("08", "1つ戻す・やり直す", "気に入らないので、窓の「1つ戻す」を押す（Ctrl+Z の代わり）。やり直しも試す。", S08_UndoRedo());
                 yield return Stage("09", "選んで動かす（形だけ動かす）", "裾の前を塗って選び、ハンドルで下へ動かす。「形だけ動かす」で、布の伸びを気にせず長くする。", S09_SelectAndMove());
                 yield return Stage("10", "動作チェックを始める", "座ったり足を上げたりしたときに体が服を突き抜けないか、「動作チェックを始める」で調べる。", S10_MotionCheck());
-                yield return Stage("11", "悪いポーズを見る", "突き抜けたポーズを、「順に見る」でシーンビューに出して確かめる。", S11_ShowBadPose());
+                yield return Stage("11", "悪いポーズを見る", "突き抜けたポーズの一覧（折りたたみ）を開き、「順に見る」でシーンビューに出して確かめる。", S11_ShowBadPose());
                 yield return Stage("12", "おすすめの直し方に従う", "動作チェックの「おすすめの直し方」の、いちばん上のボタンを押して直す（浅い所なら「元のポーズで外へ逃がす」、ウェイトが原因なら「ウェイトを体に寄せる」）。", S12_FollowRecommendation());
                 yield return Stage("13", "体との貫通（今の姿勢）を見て直す", "診断の「体との貫通」を見る。スカートを細くしようと内側へ押し込んで食い込ませると、どう出るか。「貫通を直す」を押す。", S13_Penetration());
                 yield return Stage("14", "保存する", "編集中の見出しの行（「編集を終了」の隣）の「保存」を押す。保存したあと、一覧・手順の案内・インスペクターに何が出るか。", S14_Save());
@@ -641,13 +641,15 @@ namespace GP02.Tests
             PoseCheckResult result = C.LastPoseCheck;
             Assert.That(result, Is.Not.Null, "動作チェックの結果が出なかった: " + C.LastPoseCheckError);
             Fact("結果: " + result.DescribeSummary() + "。ポーズ " + result.PoseCount + " × " + result.StageCount + " 段階、突き抜けたポーズ " + result.PenetratingPoseCount + "、体: " + result.BodyDescription);
-            yield return Snap("10c_motion_check_result", "動作チェックの結果。「よく使うポーズ」と「大きく動くポーズ」の2行、悪い順の上位、「順に見る」などのボタンと「おすすめの直し方」。シーンの布には、よく使うポーズで突き抜ける所だけ色の点が出る", 6);
+            yield return Snap("10c_motion_check_result", "動作チェックの結果。見出し（よく使うポーズ）、「おすすめの直し方」、「大きく動くポーズ」の1行、折りたたんだ「突き抜けたポーズの一覧（n 件）」。シーンの布には、よく使うポーズで突き抜ける所だけ色の点が出る", 6);
         }
 
         // ---- 11 ----
 
         IEnumerator S11_ShowBadPose()
         {
+            // 「順に見る」は、悪い順の一覧の折りたたみの中にあるので、先に見出しをクリックして開く
+            yield return TogglePoseList(true);
             string state = ButtonState(_cloth, "順に見る");
             Fact("「順に見る」ボタンの状態: " + state);
             yield return ClickOrCall("順に見る", () => C.IsPosePreviewActive, () => C.ShowNextPenetratingPose(), "ClothEditController.ShowNextPenetratingPose()");
@@ -1231,6 +1233,24 @@ namespace GP02.Tests
             Selection.activeGameObject = expected;
             Op(Via.Controller, label + "Selection.activeGameObject で「" + name + "」を選んだ");
             yield return Pump(4);
+        }
+
+        // 動作チェックの「突き抜けたポーズの一覧（n 件）」の見出しをクリックして、開く・閉じる（件数は変わるので、前の文字で探す）
+        IEnumerator TogglePoseList(bool open)
+        {
+            if ((bool)GetField(_cloth, "_foldPoseRanked") == open) yield break;
+            bool clicked = ClickText(_cloth, "^突き抜けたポーズの一覧", out string how, "*");
+            yield return Pump(3);
+            if (clicked && (bool)GetField(_cloth, "_foldPoseRanked") == open)
+            {
+                Op(Via.Real, "窓の見出し" + how + "（" + (open ? "開く" : "閉じる") + "）");
+                yield break;
+            }
+            Op(Via.Real, "窓の見出し" + how + (clicked ? " → 開閉しなかった" : ""));
+            SetField(_cloth, "_foldPoseRanked", open);
+            Op(Via.Setting, "見出しの開閉の値（_foldPoseRanked）を直接 " + open + " にした");
+            _cloth.Repaint();
+            yield return Pump(3);
         }
 
         // 窓の「手順（今どこまで済んだか）」の見出しをクリックして、開く・閉じる

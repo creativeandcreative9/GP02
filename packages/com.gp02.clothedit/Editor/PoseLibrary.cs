@@ -120,6 +120,9 @@ namespace GP02.EditorTools
         /// <summary>ポーズの一覧（並びは画面に出す順）。</summary>
         public static IReadOnlyList<PosePreset> All => Presets;
 
+        /// <summary>かんたん表示の1行に使う短い名前（中身の説明は「くわしい説明」にある）。</summary>
+        public static string LargeMotionShortLabel => L10n.Tr("大きく動くポーズ", "Big-motion poses");
+
         /// <summary>大きく動くポーズのまとめた呼び名（結果の文に出す）。</summary>
         public static string LargeMotionLabel => L10n.Tr("大きく動くポーズ（座る・しゃがむ・足を上げる・開く）", "Big-motion poses (sit, squat, raise a leg, legs apart)");
 

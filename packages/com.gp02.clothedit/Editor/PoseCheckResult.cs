@@ -300,6 +300,26 @@ namespace GP02.EditorTools
                 $"{label}: {s.TotalRegionCount} place(s) in {bad} of {s.IncludedGroupCount} poses. This is normal for skirts and the like (in VRChat they are often moved by PhysBones)");
         }
 
+        /// <summary>
+        /// かんたん表示の、大きく動くポーズの結果の1行（例「大きく動くポーズ: 5 / 5 ポーズで 20 か所（スカートなどでは普通に起きます）」）。
+        /// 長い説明（揺れもの（PhysBone）の話）は、「くわしい説明」の折りたたみに移した。1つも試していなければ空。
+        /// </summary>
+        public string DescribeLargeShort()
+        {
+            PoseCheckSummary s = LargeSummary;
+            if (s == null || s.IncludedEntryCount == 0) return "";
+            int bad = s.PenetratingGroupCount;
+            string label = PoseLibrary.LargeMotionShortLabel;
+            if (bad == 0) return L10n.Tr($"{label}: 突き抜けなし ✓", $"{label}: no poke-through ✓");
+            if (IncludesLargePoses)
+            {
+                return L10n.Tr($"{label}: {bad} / {s.IncludedGroupCount} ポーズで {s.TotalRegionCount} か所（最大 {s.MaxDepth * 1000f:F1} mm）",
+                    $"{label}: {s.TotalRegionCount} place(s) in {bad} of {s.IncludedGroupCount} poses (up to {s.MaxDepth * 1000f:F1} mm)");
+            }
+            return L10n.Tr($"{label}: {bad} / {s.IncludedGroupCount} ポーズで {s.TotalRegionCount} か所（スカートなどでは普通に起きます）",
+                $"{label}: {s.TotalRegionCount} place(s) in {bad} of {s.IncludedGroupCount} poses (normal for skirts and the like)");
+        }
+
         /// <summary>試したポーズ（試した順、重ねない。クリップのコマは含めない）。</summary>
         public List<PosePreset> GetPoses()
         {
@@ -386,6 +406,27 @@ namespace GP02.EditorTools
         /// <summary>逃がさなかったか所の数。</summary>
         public int SkippedRegions => LowGainRegions + TooFarRegions + TightRegions;
 
+        /// <summary>
+        /// 外へ逃がして、深さは減ったのに、直す範囲のか所の数が増えたときだけ付ける1行（空なら足さない）。
+        /// 浅い所を押し出すと、そのまわりに新しく浅い所が出るため、数だけを見ると「悪くなった」と見える。
+        /// 効いたかの判定は深さで行っている（<see cref="PoseEscapeEffect.Improved"/>）ので、数が増えても、戻していなければ効いている。
+        /// </summary>
+        public static string DescribeNewShallow(bool reverted, bool rechecked, int regionsBefore, int regionsAfter, float depthBeforeMm, float depthAfterMm)
+        {
+            if (reverted || !rechecked || regionsAfter <= regionsBefore) return "";
+            string depth = depthAfterMm < depthBeforeMm
+                ? L10n.Tr($"逃がした所の深さは減りました（{depthBeforeMm:F1} → {depthAfterMm:F1} mm）。", $"The places moved outward are shallower ({depthBeforeMm:F1} → {depthAfterMm:F1} mm). ")
+                : "";
+            return depth + L10n.Tr($"そのまわりに、浅い所が新しく出ています（か所 {regionsBefore} → {regionsAfter}）。「おすすめの直し方」を見て、続けてください。",
+                $"New shallow places appeared around them (places {regionsBefore} → {regionsAfter}). Check \"Suggested fixes\" and continue.");
+        }
+
+        /// <summary><see cref="DescribeNewShallow(bool, bool, int, int, float, float)"/> を、この結果の数字で作る。</summary>
+        public string DescribeNewShallow()
+        {
+            return DescribeNewShallow(Reverted, Rechecked, ScopeRegionsBefore, ScopeRegionsAfter, PushedDepthBefore * 1000f, PushedDepthAfter * 1000f);
+        }
+
         public override string ToString()
         {
             return (Reverted ? "効かなかったので戻した / " : "") + $"直す範囲: {(IncludesLargePoses ? "すべてのポーズ" : "よく使うポーズ")}（貫通したポーズ {ScopePosesBefore} → {ScopePosesAfter}、か所 {ScopeRegionsBefore} → {ScopeRegionsAfter}）" +
@@ -426,6 +467,12 @@ namespace GP02.EditorTools
         /// <summary>3. 体どうしの重なりの所の数（服では直せない）。</summary>
         public int OverlapRegions;
 
+        /// <summary>
+        /// 前回の「外へ逃がす」が効いたあとの、新しい結果にも浅い所があるときの一言（無ければ空）。くり返し押してよいことを伝える。
+        /// 効かずに戻した直後は勧めないので空。
+        /// </summary>
+        public string RepeatEscapeHint = "";
+
         /// <summary>勧める直し方が無い（直す範囲に突き抜けが無い、または外へ逃がしても効かず、ウェイトが原因の所も無い）。</summary>
         public bool NothingToDo => EscapeRegions == 0 && WeightRegions == 0;
 
@@ -437,6 +484,8 @@ namespace GP02.EditorTools
             if (result == null || !result.HasBody || result.Summary == null) return null;
             bool reverted = lastEscape != null && lastEscape.Reverted && lastEscape.Before == result && lastEscape.IncludesLargePoses == result.IncludesLargePoses;
             int escapable = result.EscapePlan != null ? result.EscapePlan.PushedRegions : 0;
+            // 外へ逃がしたあとの新しい結果（調べ直した結果）が、今の結果のときだけ
+            bool afterEscape = lastEscape != null && lastEscape.After == result && lastEscape.IncludesLargePoses == result.IncludesLargePoses;
             return new PoseFixAdvice
             {
                 CommonClear = result.CommonClear,
@@ -446,7 +495,18 @@ namespace GP02.EditorTools
                 RevertedEscapeRegions = reverted ? escapable : 0,
                 WeightRegions = result.WeightCausedRegionCount,
                 OverlapRegions = result.FixOverlapRegionCount,
+                RepeatEscapeHint = DescribeRepeatHint(reverted, afterEscape && lastEscape.Rechecked, escapable),
             };
+        }
+
+        /// <summary>
+        /// 外へ逃がしたあとの結果に、まだ浅い所（shallowRegions）があるときの一言。
+        /// 効かずに戻した直後（lastReverted）や、逃がしたあとの結果ではないとき（afterEscape が false）は空。
+        /// </summary>
+        public static string DescribeRepeatHint(bool lastReverted, bool afterEscape, int shallowRegions)
+        {
+            if (lastReverted || !afterEscape || shallowRegions <= 0) return "";
+            return L10n.Tr("まだ浅い所があれば、もう一度押せます", "If shallow places remain, you can press it again");
         }
     }
 }
