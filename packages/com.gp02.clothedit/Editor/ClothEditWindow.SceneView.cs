@@ -17,9 +17,6 @@ namespace GP02.EditorTools
         readonly List<Vector3> _heatDots = new List<Vector3>();
         readonly List<float> _heatValues = new List<float>();
         readonly List<KeyValuePair<string, string>> _shortcutLines = new List<KeyValuePair<string, string>>();
-        GUIStyle _hintStyle;
-        GUIStyle _keyStyle;
-        GUIStyle _helpStyle;
         double _radiusChangedAt = double.NegativeInfinity;
 
         // Shift＋ドラッグの矩形で、ピン留め・解除、点の選択・解除をまとめて行う
@@ -34,7 +31,6 @@ namespace GP02.EditorTools
         // 届かないときの線と一言。届かない状態が少し続いてから出す（動かし始めの一瞬の遅れで点滅しないように）
         bool _reachShown;
         double _reachOutSince = double.PositiveInfinity;
-        GUIStyle _reachStyle;
 
         // 減り方の同心円を出す道具（重みのある道具だけ。ピンと選ぶ道具は円の内側すべて）
         static bool UsesFalloffRings(ClothEditMode mode) => mode == ClothEditMode.Grab || mode == ClothEditMode.Rotate || mode == ClothEditMode.Scale || mode == ClothEditMode.Relax;
@@ -176,6 +172,10 @@ namespace GP02.EditorTools
             sceneView.wantsMouseMove = true;
             bool selecting = _controller.Mode == ClothEditMode.Select;
 
+            // 札の「×」と札の上のクリックを、先に受ける（布の操作・ハンドルより上に見えるため）。使ったイベントは、ここで終わり
+            DoCardClicks(sceneView);
+            if (e.type == EventType.Used) return;
+
             if (e.type == EventType.Layout)
             {
                 // クリックでオブジェクトの選択が変わらないようにする。ハンドルは、これより近いコントロールとして先に当たる
@@ -196,7 +196,7 @@ namespace GP02.EditorTools
                     DoSelectionHandles(e);
                     DrawSelectionCount(sceneView);
                 }
-                DrawHint();
+                DrawCards(sceneView);
                 return;
             }
 
@@ -322,7 +322,7 @@ namespace GP02.EditorTools
             }
         }
 
-        // 矩形の中の粒子をピン留め（解除）する
+        // 四角で囲んだ中の点をピン留め（解除）する
         void ApplyPinRect(SceneView sceneView)
         {
             if (!TryGetRectCamera(sceneView, out Camera camera, out Rect viewport)) return;
@@ -331,8 +331,8 @@ namespace GP02.EditorTools
             int changed = _controller.PinInRect(camera.projectionMatrix * camera.worldToCameraMatrix, cameraTransform.position, cameraTransform.forward,
                 camera.orthographic, viewport, pinned);
             sceneView.ShowNotification(new GUIContent(pinned
-                ? L10n.Tr($"{changed} 粒子をピン留めしました", $"Pinned {changed} particles")
-                : L10n.Tr($"{changed} 粒子のピンを外しました", $"Unpinned {changed} particles")), 1.0);
+                ? L10n.Tr($"{changed} 点をピン留めしました", $"Pinned {changed} points")
+                : L10n.Tr($"{changed} 点のピンを外しました", $"Unpinned {changed} points")), 1.0);
         }
 
         // ---- 重ね描き ----
@@ -342,7 +342,7 @@ namespace GP02.EditorTools
         {
             switch (mode)
             {
-                case ClothEditMode.Pin: return pinErase ? new Color(0.9f, 0.9f, 0.2f, 1f) : new Color(1f, 0.3f, 0.2f, 1f);
+                case ClothEditMode.Pin: return pinErase ? new Color(0.9f, 0.9f, 0.2f, 1f) : ClothEditHelp.PinToolColor;
                 case ClothEditMode.Unpin: return new Color(0.9f, 0.9f, 0.2f, 1f);
                 case ClothEditMode.Rotate: return new Color(0.8f, 0.5f, 1f, 1f);
                 case ClothEditMode.Scale: return new Color(0.4f, 1f, 0.5f, 1f);
@@ -383,7 +383,7 @@ namespace GP02.EditorTools
             if (session.PinnedCount > 0)
             {
                 session.GetPinnedPositions(_pinDots, MaxPinDots);
-                Handles.color = new Color(1f, 0.3f, 0.2f, 1f);
+                Handles.color = ClothEditHelp.PinColor;
                 for (int i = 0; i < _pinDots.Count; i++) Dot(_pinDots[i], 0.015f);
             }
             DrawPenetrationDots(session);
@@ -460,7 +460,7 @@ namespace GP02.EditorTools
             Color color;
             switch (_rectPurpose)
             {
-                case RectPurpose.Pin: color = new Color(1f, 0.3f, 0.2f); break;
+                case RectPurpose.Pin: color = ClothEditHelp.PinToolColor; break;
                 case RectPurpose.Unpin: color = new Color(0.9f, 0.9f, 0.2f); break;
                 case RectPurpose.Select: color = ClothEditHelp.SelectedColor; break;
                 default: color = new Color(0.6f, 0.8f, 1f); break;
@@ -471,80 +471,6 @@ namespace GP02.EditorTools
             EditorGUI.DrawRect(new Rect(rect.xMin, rect.yMax - Edge, rect.width, Edge), color);
             EditorGUI.DrawRect(new Rect(rect.xMin, rect.yMin, Edge, rect.height), color);
             EditorGUI.DrawRect(new Rect(rect.xMax - Edge, rect.yMin, Edge, rect.height), color);
-        }
-
-        // シーンビューの左上に出す案内と、ショートカット一覧
-        void DrawHint()
-        {
-            if (_hintStyle == null)
-            {
-                _hintStyle = new GUIStyle(EditorStyles.helpBox)
-                {
-                    fontSize = 12,
-                    alignment = TextAnchor.MiddleLeft,
-                    padding = new RectOffset(8, 8, 4, 4),
-                };
-                _keyStyle = new GUIStyle(EditorStyles.boldLabel) { fontSize = 11, alignment = TextAnchor.MiddleLeft };
-                _helpStyle = new GUIStyle(EditorStyles.label) { fontSize = 11, alignment = TextAnchor.MiddleLeft };
-            }
-
-            string text = ClothEditHelp.GetHint(_controller.Mode, _controller.IsDragging, _controller.IsSettling, _controller.SelectionCount, _controller.PinEraseMode);
-            text += PoseCheckHint();
-            if (_controller.IsComparing)
-            {
-                float blend = _controller.ShowOriginal || _controller.HoldOriginal ? 0f : _controller.CompareBlend;
-                text += "\n" + (blend <= 0f
-                    ? L10n.Tr("表示中: 元の形（編集前）", "Showing: original shape (before editing)")
-                    : L10n.Tr($"表示中: 元と編集中の中間（編集中 {blend * 100f:F0}%）", $"Showing: blend of original and edited ({blend * 100f:F0}% edited)"));
-            }
-
-            var content = new GUIContent(text);
-            Vector2 size = _hintStyle.CalcSize(content);
-            Handles.BeginGUI();
-            if (_rectDragging) DrawRectSelection();
-            GUI.Label(new Rect(10f, 10f, size.x, size.y + 4f), content, _hintStyle);
-
-            // 届かないときの一言（案内の下）
-            float below = 10f + size.y + 12f;
-            if (_reachShown)
-            {
-                if (_reachStyle == null)
-                {
-                    _reachStyle = new GUIStyle(_hintStyle) { fontStyle = FontStyle.Bold };
-                    _reachStyle.normal.textColor = new Color(1f, 0.8f, 0.45f);
-                }
-                var reachContent = new GUIContent(ClothEditReach.Message());
-                Vector2 reachSize = _reachStyle.CalcSize(reachContent);
-                Color previousBackground = GUI.backgroundColor;
-                GUI.backgroundColor = ClothEditReach.LineColor;
-                GUI.Label(new Rect(10f, below - 4f, reachSize.x, reachSize.y + 4f), reachContent, _reachStyle);
-                GUI.backgroundColor = previousBackground;
-                below += reachSize.y + 8f;
-            }
-
-            if (_showShortcuts)
-            {
-                ClothEditHelp.GetShortcutLines(_shortcutLines);
-                float keyWidth = 0f, textWidth = 0f;
-                for (int i = 0; i < _shortcutLines.Count; i++)
-                {
-                    keyWidth = Mathf.Max(keyWidth, _keyStyle.CalcSize(new GUIContent(_shortcutLines[i].Key)).x);
-                    textWidth = Mathf.Max(textWidth, _helpStyle.CalcSize(new GUIContent(_shortcutLines[i].Value)).x);
-                }
-                const float RowHeight = 18f;
-                float width = keyWidth + textWidth + 32f;
-                float height = _shortcutLines.Count * RowHeight + 12f + RowHeight;
-                float top = below;
-                GUI.Box(new Rect(10f, top, width, height), GUIContent.none, _hintStyle);
-                GUI.Label(new Rect(18f, top + 4f, width - 16f, RowHeight), L10n.Tr("ショートカット（F1 で閉じる）", "Shortcuts (F1 to close)"), _keyStyle);
-                for (int i = 0; i < _shortcutLines.Count; i++)
-                {
-                    float y = top + 6f + RowHeight * (i + 1);
-                    GUI.Label(new Rect(18f, y, keyWidth + 4f, RowHeight), _shortcutLines[i].Key, _keyStyle);
-                    GUI.Label(new Rect(18f + keyWidth + 12f, y, textWidth + 8f, RowHeight), _shortcutLines[i].Value, _helpStyle);
-                }
-            }
-            Handles.EndGUI();
         }
     }
 }

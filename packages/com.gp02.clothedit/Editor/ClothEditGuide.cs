@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace GP02.EditorTools
 {
     /// <summary>手順の案内の、1つの手順の状態。</summary>
@@ -78,26 +80,58 @@ namespace GP02.EditorTools
             }
         }
 
+        /// <summary>手順の見出しから、「（任意）」を除いた短いもの。折りたたんだ案内の「次: …」の1行に使う。</summary>
+        public static string ShortTitle(int step)
+        {
+            switch (step)
+            {
+                case 2: return L10n.Tr("3. 動かさない所をピン留め", "3. Pin what should not move");
+                default: return Title(step);
+            }
+        }
+
+        /// <summary>今やる手順（状態が <see cref="GuideStepState.Current"/> の手順）の番号。すべて済んでいれば -1。</summary>
+        public static int CurrentStep(IReadOnlyList<GuideStepState> states)
+        {
+            for (int i = 0; i < StepCount && i < states.Count; i++)
+            {
+                if (states[i] == GuideStepState.Current) return i;
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// 手順の区切りを折りたたんでいても出す、今の手順の1行（「次: 3. 動かさない所をピン留め」）。
+        /// すべて済んでいれば「✓ 手順はすべて済みました」。
+        /// </summary>
+        public static string NextLine(IReadOnlyList<GuideStepState> states)
+        {
+            int step = CurrentStep(states);
+            return step < 0
+                ? L10n.Tr("✓ 手順はすべて済みました", "✓ All steps are done")
+                : L10n.Tr("次: ", "Next: ") + ShortTitle(step);
+        }
+
         /// <summary>手順の説明（今やる手順に出す）。</summary>
         public static string Detail(int step)
         {
             switch (step)
             {
                 case 0:
-                    return L10n.Tr("Hierarchy で衣装のオブジェクトを選ぶと、自動で対象に入ります（右クリックの「GP02 で布を編集」なら、そのまま編集が始まります）。",
-                        "Select the clothing object in the Hierarchy and it becomes the target automatically (right-click > \"GP02 で布を編集\" (Edit cloth with GP02) starts editing right away).");
+                    return L10n.Tr("Hierarchyで衣装のオブジェクトを選ぶと、自動で対象に入ります（右クリックの「GP02 で布を編集」なら、そのまま編集が始まります）。アバター全体を選んだときは、窓に出る「この中の衣装」から選べます。",
+                        "Select the clothing object in the Hierarchy and it becomes the target automatically (right-click > \"GP02 で布を編集\" (Edit cloth with GP02) starts editing right away). If you select the whole avatar, pick from \"Outfits in this object\" in the window.");
                 case 1:
-                    return L10n.Tr("下の大きな「編集を開始」を押します。衣装が粒子になるまで数秒かかります。",
-                        "Press the big \"Start Editing\" button below. It takes a few seconds to turn the clothing into particles.");
+                    return L10n.Tr("下の大きな「編集を開始」を押します。衣装を編集できる状態にするまで、数秒かかります。",
+                        "Press the big \"Start Editing\" button below. It takes a few seconds to get the clothing ready for editing.");
                 case 2:
-                    return L10n.Tr("シーンビューで P キー（ピン留め）を押し、ウエストなど動かしたくない所を塗ります。Ctrl+ドラッグで外す、Shift+ドラッグで矩形、ダブルクリックで部品全体も留められます。",
-                        "In the Scene view press P (Pin) and paint what should stay, such as the waist. Ctrl+Drag removes, Shift+Drag pins a rectangle and double-click a whole part.");
+                    return L10n.Tr("「服の付け根（ウエスト・首まわりなど）を自動でピン留め」を押すと、一周まとめて留められます。手で留めるなら、シーンビューで P キー（ピン留め）を押して、動かしたくない所を塗ります（Ctrl+ドラッグで外す、Shift+ドラッグで四角く囲んで留める、ダブルクリックで部品全体）。",
+                        "Press \"Auto-Pin the Clothing's Roots\" to pin the waist, neckline and similar places all the way around. To pin by hand, press P (Pin) in the Scene view and paint what should stay (Ctrl+Drag removes, Shift+Drag pins everything inside a box, double-click a whole part).");
                 case 3:
-                    return L10n.Tr("W キー（つまむ）で、布をドラッグして引っ張ります。手を離すと形が落ち着きます。Ctrl+Z で戻せます。",
+                    return L10n.Tr("Wキー（つまむ）で、布をドラッグして引っ張ります。手を離すと形が落ち着きます。Ctrl+Z で戻せます。",
                         "Press W (Grab) and drag the cloth. It settles when you release. Ctrl+Z undoes.");
                 default:
-                    return L10n.Tr("「保存」の区切りで名前を決め、「シェイプキーとして保存」を押します。Inspector で重みを動かして確かめます。",
-                        "In the Save section enter a name and press \"Save as Shape Key\". Move the weight in the Inspector to check it.");
+                    return L10n.Tr("上の「保存」ボタン（または下の「保存」の区切り）を押します。Inspector で重みを動かして確かめます。",
+                        "Press the Save button above (or use the Save section below). Move the weight in the Inspector to check it.");
             }
         }
     }

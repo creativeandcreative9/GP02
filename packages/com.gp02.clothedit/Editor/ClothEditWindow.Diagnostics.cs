@@ -33,7 +33,13 @@ namespace GP02.EditorTools
             var editingItems = new List<TargetWarning>();
             ClothEditWarnings.CollectEditing(_controller, editingItems);
             var items = new List<(TargetWarning Item, Renderer Owner)>();
-            for (int i = 0; i < _warnings.Count; i++) items.Add((_warnings[i], i < _warningOwners.Count ? _warningOwners[i] : _target));
+            bool editing = _controller.IsEditing;
+            for (int i = 0; i < _warnings.Count; i++)
+            {
+                // シェイプキーの重み・体のメッシュのようだ、は、編集を始める前の点検だけで出す（編集中は、直せないので出さない）
+                if (editing && !ClothEditWarnings.IsShownWhileEditing(_warnings[i].Kind)) continue;
+                items.Add((_warnings[i], i < _warningOwners.Count ? _warningOwners[i] : _target));
+            }
             foreach (TargetWarning item in editingItems) items.Add((item, null));
 
             _diagnostics.Clear();
@@ -47,6 +53,16 @@ namespace GP02.EditorTools
                     _diagnosticOwners.Add(owner);
                 }
             }
+        }
+
+        /// <summary>今の診断の一覧（テスト用。対象ごとの点検と編集中の点検を作り直してから返す）。</summary>
+        internal IReadOnlyList<TargetWarning> CurrentDiagnostics()
+        {
+            _warningsDirty = true;
+            RefreshTargetWarnings();
+            _diagnosticsAt = double.NegativeInfinity;
+            RefreshDiagnostics();
+            return _diagnostics;
         }
 
         void DrawDiagnosticsSection()
@@ -114,6 +130,10 @@ namespace GP02.EditorTools
             string prefix = $"[{item.SeverityLabel}] ";
             if (owner != null && CollectTargets().Count > 1) prefix += owner.name + ": ";
             EditorGUILayout.HelpBox(prefix + item.Message, item.Severity);
+            // 体のメッシュのようです: 衣装の候補を、押して対象にできるボタンで出す
+            if (item.Kind == TargetWarningKind.LikelyBody && !_controller.IsEditing) DrawOutfitSuggestions(owner != null ? owner : _target);
+            // ピンが無い: 付け根を自動でピン留めするボタン
+            if (item.Kind == TargetWarningKind.NoPins && _controller.IsEditing) DrawAutoPinButton();
             if (!item.CanAutoFix) return;
             bool blockedWhileEditing = item.Fix == TargetWarningFix.ResetBlendShapeWeights && _controller.IsEditing;
             using (new EditorGUI.DisabledScope(blockedWhileEditing || (item.Fix == TargetWarningFix.InstallBurst && BurstInstaller.IsInstalling)))
@@ -149,7 +169,8 @@ namespace GP02.EditorTools
             }
             _warningsDirty = true;
             _diagnosticsAt = double.NegativeInfinity;
-            if (!string.IsNullOrEmpty(message)) ShowNotification(new GUIContent(message));
+            // 通知は短く、詳しい文は結果の欄に残す（結果の欄は編集中の見出しの下に出るので、編集を始める前は通知だけ）
+            if (!string.IsNullOrEmpty(message)) Report(L10n.Tr("直しました", "Fixed"), message);
             SceneView.RepaintAll();
         }
     }

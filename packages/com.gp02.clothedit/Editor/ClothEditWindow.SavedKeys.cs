@@ -4,9 +4,11 @@ using UnityEngine;
 
 namespace GP02.EditorTools
 {
-    // 「保存」の区切りの、保存したシェイプキーの簡単な一覧。名前・重み・「布で再編集」・削除と、「詳しい一覧を開く」。
+    // 「保存」の区切りの、保存したシェイプキーの簡単な一覧。名前・「布で再編集」・削除と、「詳しい一覧を開く」。
     // 保存したものを確かめるために、シェイプキーの一覧のウィンドウへ行き来しなくてよいようにする。詳しい操作は一覧のウィンドウで行う。
-    // 重みは、その場で確かめるためのもの（データの「プレビューの重み」は触らない）。動かすと、編集中の形に橙の半透明で、保存した形を重ねて見せる。
+    // かんたん表示は、レンダラーの実際の重みを「反映中（100）」「反映していない（0）」の言葉で出す（インスペクターの重みと同じもの）。
+    // くわしく表示では、「重ねて見る」スライダーも出す。これは、編集中の形に、保存した形を橙の半透明で重ねて見るためのもので、
+    // レンダラーの重みとも、データの「プレビューの重み」とも別（どちらも触らない）。
     public sealed partial class ClothEditWindow
     {
         const int MaxSavedKeyRows = 6;
@@ -59,28 +61,50 @@ namespace GP02.EditorTools
             }
         }
 
-        // 1行: 名前、重み、布で再編集、削除。データを変えて、この描画を打ち切る必要があるとき true
+        // 保存したシェイプキー1つの、レンダラー（編集中の衣装）での実際の重み。メッシュに入っていなければ false。
+        // メッシュの BlendShape の名前は、書き出しの前置き・後置きを付けたもの
+        internal bool TryGetAppliedWeight(GP02ShapeKeys component, ShapeKeyEntry entry, out float weight)
+        {
+            weight = 0f;
+            Renderer target = _controller != null ? _controller.Target : null;
+            if (!(target is SkinnedMeshRenderer skinned) || skinned.sharedMesh == null || entry == null) return false;
+            int index = skinned.sharedMesh.GetBlendShapeIndex(ShapeKeyBuildOptions.FromComponent(component).Decorate(entry.Name));
+            if (index < 0) return false;
+            weight = skinned.GetBlendShapeWeight(index);
+            return true;
+        }
+
+        /// <summary>保存したシェイプキーが、衣装に反映されているかの言葉。「反映中（100）」「反映していない（0）」「反映していない（メッシュに未書き出し）」。</summary>
+        internal static string AppliedWeightLabel(bool inMesh, float weight)
+        {
+            if (!inMesh) return L10n.Tr("反映していない（未書き出し）", "Not applied (not exported)");
+            return weight > 0f
+                ? L10n.Tr($"反映中（{weight:0.#}）", $"Applied ({weight:0.#})")
+                : L10n.Tr("反映していない（0）", "Not applied (0)");
+        }
+
+        // 1行: 名前、反映のようす、布で再編集、削除。くわしく表示は、もう1行に「重ねて見る」スライダー。データを変えて、この描画を打ち切る必要があるとき true
         bool DrawSavedKeyRow(GP02ShapeKeyData data, GP02ShapeKeys component, ShapeKeyEntry entry, int firstVertexCount)
         {
             bool isActive = ShapeKeyClothEdit.ActiveComponent == component && ShapeKeyClothEdit.ActiveEntryName == entry.Name;
+            bool overlay = Shows(ClothEditUiItem.SavedKeyOverlay);
             using (new EditorGUILayout.HorizontalScope())
             {
-                GUILayout.Label(new GUIContent(entry.Name, entry.Name + "\n" + L10n.Tr("重みを動かすと、保存した形を橙の半透明で重ねて見せます（確かめるためだけで、データの重みは変わりません）",
-                    "Moving the weight overlays the saved shape in translucent orange (just to check it; the weight in the data is unchanged)")),
-                    isActive ? EditorStyles.boldLabel : EditorStyles.label, GUILayout.MinWidth(48f));
+                GUILayout.Label(new GUIContent(entry.Name, entry.Name), isActive ? EditorStyles.boldLabel : EditorStyles.label, GUILayout.MinWidth(48f));
                 GUILayout.FlexibleSpace();
 
-                _keyWeights.TryGetValue(entry, out float weight);
-                bool canPreview = data.SourceMesh != null && data.SourceMesh.vertexCount == firstVertexCount;
-                using (new EditorGUI.DisabledScope(!canPreview || entry.Frames.Count == 0))
-                {
-                    EditorGUI.BeginChangeCheck();
-                    float newWeight = EditorGUILayout.Slider(weight, 0f, 100f, GUILayout.Width(120f));
-                    if (EditorGUI.EndChangeCheck()) SetKeyWeight(data, entry, newWeight);
-                }
+                bool inMesh = TryGetAppliedWeight(component, entry, out float applied);
+                bool on = inMesh && applied > 0f;
+                Color previous = GUI.contentColor;
+                if (on) GUI.contentColor = EditorGUIUtility.isProSkin ? new Color(0.45f, 0.9f, 0.5f, 1f) : new Color(0.1f, 0.5f, 0.15f, 1f);
+                GUILayout.Label(new GUIContent(AppliedWeightLabel(inMesh, applied),
+                    L10n.Tr("衣装に入っているシェイプキーの、実際の重みです。インスペクターの「Blend Shapes」で 0〜100 に変えられます（100 で保存した形、0 で元の形）",
+                        "The actual weight of this shape key on the outfit. Change it in the Inspector's Blend Shapes, 0 to 100 (100 is the saved shape, 0 the original)")),
+                    EditorStyles.miniLabel);
+                GUI.contentColor = previous;
 
                 if (GUILayout.Button(new GUIContent(L10n.Tr("布で再編集", "Re-edit"),
-                    L10n.Tr("この形を読み込んで、続きを布として編集します（直したら、同じ名前で上書き保存できます）", "Loads this shape so you can keep editing it as cloth (then overwrite it under the same name)")), EditorStyles.miniButton, GUILayout.Width(66f)))
+                    L10n.Tr("この形を読み込んで、続きを布として編集します（直したら、同じ名前で上書き保存できます）", "Loads this shape so you can keep editing it as cloth (then overwrite it under the same name)")), EditorStyles.miniButton, GUILayout.Width(78f)))
                 {
                     ReEditSavedKey(component, entry);
                     return true;
@@ -89,6 +113,23 @@ namespace GP02.EditorTools
                     EditorStyles.miniButton, GUILayout.Width(52f)))
                 {
                     return DeleteSavedKey(data, entry);
+                }
+            }
+
+            if (!overlay) return false;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(14f);
+                _keyWeights.TryGetValue(entry, out float weight);
+                bool canPreview = data.SourceMesh != null && data.SourceMesh.vertexCount == firstVertexCount;
+                using (new EditorGUI.DisabledScope(!canPreview || entry.Frames.Count == 0))
+                {
+                    EditorGUI.BeginChangeCheck();
+                    float newWeight = EditorGUILayout.Slider(new GUIContent(L10n.Tr("重ねて見る", "Overlay"),
+                        L10n.Tr("動かすと、編集中の形に、保存した形を橙の半透明で重ねて見せます。確かめるためだけで、衣装の重みもデータの重みも変わりません",
+                            "Moving it overlays the saved shape on the edited shape in translucent orange. Only for checking; neither the outfit's weight nor the weight in the data changes")),
+                        weight, 0f, 100f);
+                    if (EditorGUI.EndChangeCheck()) SetKeyWeight(data, entry, newWeight);
                 }
             }
             return false;
@@ -139,7 +180,7 @@ namespace GP02.EditorTools
 
         void ReEditSavedKey(GP02ShapeKeys component, ShapeKeyEntry entry)
         {
-            if (ShapeKeyClothEdit.Begin(_controller, component, entry, out string message)) Toast(message);
+            if (ShapeKeyClothEdit.Begin(_controller, component, entry, out string message)) Report(L10n.Tr("読み込みました", "Loaded"), message);
             else EditorUtility.DisplayDialog("GP02", message, "OK");
         }
 

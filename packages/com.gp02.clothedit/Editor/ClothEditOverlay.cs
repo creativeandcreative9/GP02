@@ -189,7 +189,7 @@ namespace GP02.EditorTools
                 owner.OverlayPinErase);
 
             Set(_symmetry, L10n.Tr("対称", "Symmetry"),
-                L10n.Tr("対称編集のオン／オフ。オンにすると、反対側にも鏡に映したように働きます（軸などは編集ウィンドウの「対称」で決めます）",
+                L10n.Tr("対称編集のオン／オフ。オンにすると、左右の反対側にも同じように働きます（軸などは編集ウィンドウの「対称」で決めます）",
                     "Symmetric editing on / off. When on, tools also act mirrored on the opposite side (set the axis in the Symmetry section of the window)"),
                 settings.SymmetryEnabled);
             bool displayToggles = ClothEditView.Shows(ClothEditUiItem.OverlayDisplayToggles);

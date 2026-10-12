@@ -31,9 +31,13 @@ namespace GP02.EditorTools
         /// <summary>このウィンドウの操作の部品（テスト用）。</summary>
         internal ClothEditController Controller => _controller;
 
+        /// <summary>最後に出した通知の文（テスト用。通知は短くする約束を確かめる）。</summary>
+        internal string LastToast { get; private set; } = "";
+
         // ウィンドウに一言出す。まだ表示されていないウィンドウ（テストなど）では出せないので、失敗しても続ける
         void Toast(string text)
         {
+            LastToast = text;
             try
             {
                 ShowNotification(new GUIContent(text));
@@ -71,6 +75,7 @@ namespace GP02.EditorTools
         void OnBeforeAssemblyReload()
         {
             StashNow();
+            ClothEditToolHandles.Restore(this);   // 再読み込みをまたいで、Unity の道具のハンドルを隠したままにしない
         }
 
         // 取っておきを探し直す。対象が変わったとき・プレイモードから戻ったとき・ウィンドウを開いたとき・保存や破棄のあと
@@ -272,6 +277,9 @@ namespace GP02.EditorTools
             _stashedSession = null;
             _controller.End();
             ShapeKeyClothEdit.Clear();
+            ClearResult();
+            SyncToolHandles();   // Unity の道具のハンドルを、元に戻す
+            _candidatesDirty = true;
             RefreshStashInfo(true);
             Repaint();
             return true;
@@ -282,6 +290,9 @@ namespace GP02.EditorTools
         // 編集していないときに、ヒエラルキーで衣装を選んだら、それを対象にする
         void OnHierarchySelectionChanged()
         {
+            _candidatesDirty = true;
+            _pickHint = null;
+            Repaint();
             if (_controller == null || _controller.IsEditing) return;
             TrySetTargetsFromSelection();
         }
@@ -318,10 +329,22 @@ namespace GP02.EditorTools
         internal static void StartFromSelection(GameObject[] selection)
         {
             List<Renderer> cloth = ClothEditStartMenu.FindCloth(selection);
-            if (cloth.Count == 0) return;
+            if (cloth.Count == 0 && ClothEditStartMenu.FindCandidates(selection).Count == 0) return;
             var window = GetWindow<ClothEditWindow>(L10n.Tr("GP02 布の編集", "GP02 Cloth Edit"));
             window.minSize = new Vector2(300f, 360f);
-            window.BeginFromRenderers(cloth);
+            if (cloth.Count > 0)
+            {
+                window.BeginFromRenderers(cloth);
+                return;
+            }
+            // アバター全体のように、衣装そのものではないものを選んだ: 編集は始めず、窓に「この中の衣装」の一覧を出す
+            if (!window._controller.IsEditing)
+            {
+                window._candidatesDirty = true;
+                window._pickHint = L10n.Tr("編集する衣装を、下の「この中の衣装」から選んでください。", "Pick the outfit to edit from \"Outfits in this object\" below.");
+                window._foldTarget = true;
+                window.Repaint();
+            }
         }
 
         /// <summary>

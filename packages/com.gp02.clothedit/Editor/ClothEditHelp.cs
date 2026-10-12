@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using UnityEditor;
 using UnityEngine;
 
 namespace GP02.EditorTools
@@ -6,8 +7,38 @@ namespace GP02.EditorTools
     /// <summary>シーンビューの案内の文章。今の道具と状態に合わせた操作説明と、ショートカット一覧。</summary>
     public static class ClothEditHelp
     {
-        /// <summary>EditorPrefs のキー。初めて編集を始めたときにショートカット一覧を自動で出したかを覚える。</summary>
+        /// <summary>
+        /// EditorPrefs のキー。シーンビューの小さな札（編集を始めると出る、3つの操作と「F1: すべての操作」）を「×」で閉じたかを覚える。
+        /// 閉じたら、次からは出さない（全部のショートカット一覧は、「?」・F1・道具バーでいつでも出し入れできる）。
+        /// </summary>
         public const string ShownOncePrefKey = "GP02.ShortcutHelpShown";
+
+        /// <summary>小さな札を、もう閉じたか。</summary>
+        public static bool IsStartCardDismissed() => EditorPrefs.GetBool(ShownOncePrefKey, false);
+
+        /// <summary>小さな札を閉じたことを覚える（次からは出さない）。</summary>
+        public static void DismissStartCard() => EditorPrefs.SetBool(ShownOncePrefKey, true);
+
+        /// <summary>ショートカット一覧を出し入れするキーの表示（Edit &gt; Shortcuts で変えていればそのキー。割り当てが無ければ「?」ボタン）。</summary>
+        public static string HelpKey()
+        {
+            string key = ClothEditShortcutBindings.GetKeyLabel(ClothEditShortcutBindings.IdToggleHelp, "F1");
+            return key.Length > 0 ? key : "?";
+        }
+
+        /// <summary>
+        /// 小さな札の行。初めて使う人が、まず覚える3つの操作。最後の1行（<see cref="StartCardMore"/>）は、全部の一覧への案内。
+        /// </summary>
+        public static void GetStartCardLines(List<string> result)
+        {
+            result.Clear();
+            result.Add(L10n.Tr("ドラッグ: 布をつまむ", "Drag: grab the cloth"));
+            result.Add(L10n.Tr("Alt+ドラッグ: 視点を回す", "Alt+Drag: orbit the view"));
+            result.Add(L10n.Tr("Ctrl+Z: 1つ戻す", "Ctrl+Z: undo one step"));
+        }
+
+        /// <summary>小さな札の、全部の一覧への案内の行。</summary>
+        public static string StartCardMore() => HelpKey() + L10n.Tr(": すべての操作", ": all controls");
 
         /// <summary>
         /// 伸びのヒートマップの色。0% は緑、<see cref="ClothEditSettings.HeatmapYellow"/> で黄、<see cref="ClothEditSettings.HeatmapRed"/> 以上で赤。間は線形に補う。
@@ -62,6 +93,60 @@ namespace GP02.EditorTools
 
         /// <summary>対称の相手のいない点の色（目立つ赤紫）。</summary>
         public static Color UnmatchedMirrorColor => new Color(1f, 0.1f, 0.9f, 1f);
+
+        /// <summary>
+        /// ピン留めの点の色（濃い青）。貫通の点（赤、白い縁）・選んだ点（橙）・ブラシの範囲の点（水色から黄色。小さくて半透明）と見分けられるよう、
+        /// 濃い青にして、ブラシの範囲の点より大きく描く。
+        /// </summary>
+        public static Color PinColor => new Color(0.05f, 0.22f, 0.95f, 1f);
+
+        /// <summary>ピン留めの道具の円・四角の色（<see cref="PinColor"/> を少し明るくして、細い線でも見やすいようにしたもの）。</summary>
+        public static Color PinToolColor => new Color(0.25f, 0.45f, 1f, 1f);
+
+        /// <summary>伸びの大きさの段階（かんたん表示の状態の行に、数字の代わりに言葉と色で出す）。</summary>
+        public enum StretchLevel
+        {
+            /// <summary>ほぼ無し（緑）。</summary>
+            None,
+
+            /// <summary>少し（黄）。</summary>
+            Slight,
+
+            /// <summary>大きい（赤）。</summary>
+            Large,
+        }
+
+        /// <summary>
+        /// 最大の伸び（0.1 で 10%）の段階。境目は伸びのヒートマップと同じで、<see cref="ClothEditSettings.HeatmapYellow"/> 未満は「ほぼ無し」、
+        /// <see cref="ClothEditSettings.HeatmapRed"/> 未満は「少し」、それ以上は「大きい」。数でない値（NaN）は「ほぼ無し」。
+        /// </summary>
+        public static StretchLevel GetStretchLevel(float stretch)
+        {
+            if (!(stretch >= ClothEditSettings.HeatmapYellow)) return StretchLevel.None;
+            return stretch < ClothEditSettings.HeatmapRed ? StretchLevel.Slight : StretchLevel.Large;
+        }
+
+        /// <summary>伸びの段階の言葉（「ほぼ無し」「少し」「大きい」）。</summary>
+        public static string StretchLevelName(StretchLevel level)
+        {
+            switch (level)
+            {
+                case StretchLevel.Slight: return L10n.Tr("少し", "slight");
+                case StretchLevel.Large: return L10n.Tr("大きい", "large");
+                default: return L10n.Tr("ほぼ無し", "none");
+            }
+        }
+
+        /// <summary>伸びの段階の色（緑・黄・赤）。文字に使うので、暗い背景（Pro スキン）と明るい背景で、読みやすい濃さを変える。</summary>
+        public static Color StretchLevelColor(StretchLevel level, bool darkBackground)
+        {
+            switch (level)
+            {
+                case StretchLevel.Slight: return darkBackground ? new Color(1f, 0.82f, 0.2f, 1f) : new Color(0.65f, 0.45f, 0f, 1f);
+                case StretchLevel.Large: return darkBackground ? new Color(1f, 0.4f, 0.35f, 1f) : new Color(0.8f, 0.1f, 0.1f, 1f);
+                default: return darkBackground ? new Color(0.35f, 0.85f, 0.4f, 1f) : new Color(0.1f, 0.5f, 0.15f, 1f);
+            }
+        }
 
         /// <summary>3D カーソルの色。</summary>
         public static Color CursorColor => new Color(1f, 0.25f, 0.25f, 1f);
@@ -167,17 +252,17 @@ namespace GP02.EditorTools
                     return L10n.Tr($"拡大縮小（{key}）: 布をクリックして横にドラッグすると、クリックした点を中心に大きく・小さくなります（0.2〜3倍）",
                         $"Scale ({key}): click the cloth and drag sideways to scale around the clicked point (0.2x to 3x)");
                 case ClothEditMode.Pin:
-                    return L10n.Tr($"ピン留め（{key}）: 塗った所を固定します。動かしたくない所（ウエストなど）に使います。Ctrl+ドラッグで外す、Shift+ドラッグで矩形、ダブルクリックで部品ごと（Ctrl で外す）。「塗ると外す」をオンにすると、ドラッグで外します",
-                        $"Pin ({key}): paint to fix an area so it never moves, such as the waist. Ctrl+Drag removes, Shift+Drag selects a rectangle, double-click a whole part (Ctrl removes). Turn on \"Paint to erase\" to remove by dragging");
+                    return L10n.Tr($"ピン留め（{key}）: 塗った所を固定します。動かしたくない所（ウエストなど）に使います。Ctrl+ドラッグで外す、Shift+ドラッグで四角く囲んで留める、ダブルクリックで部品ごと（Ctrl で外す）。「塗ると外す」をオンにすると、ドラッグで外します",
+                        $"Pin ({key}): paint to fix an area so it never moves, such as the waist. Ctrl+Drag removes, Shift+Drag pins everything inside a box, double-click a whole part (Ctrl removes). Turn on \"Paint to erase\" to remove by dragging");
                 case ClothEditMode.Unpin:
-                    return L10n.Tr($"ピン留め＋外す（{key}）: ピン留めの道具で「塗ると外す」をオンにしたものです。ドラッグで塗った所のピンを外し、Ctrl+ドラッグで留めます。Shift+ドラッグで矩形、ダブルクリックで部品ごと",
-                        $"Pin + Erase ({key}): the Pin tool with \"Paint to erase\" on. Drag to remove the pins you paint over, Ctrl+Drag to add them. Shift+Drag for a rectangle, double-click for a whole part");
+                    return L10n.Tr($"ピン留め＋外す（{key}）: ピン留めの道具で「塗ると外す」をオンにしたものです。ドラッグで塗った所のピンを外し、Ctrl+ドラッグで留めます。Shift+ドラッグで四角く囲んで、ダブルクリックで部品ごと",
+                        $"Pin + Erase ({key}): the Pin tool with \"Paint to erase\" on. Drag to remove the pins you paint over, Ctrl+Drag to add them. Shift+Drag for a box, double-click for a whole part");
                 case ClothEditMode.Relax:
-                    return L10n.Tr($"元に戻すブラシ（{key}）: 塗った所を元の形へ近づけます。強さは「ブラシ」の区切りで決めます",
-                        $"Restore Brush ({key}): paint to bring an area back toward its original shape. Set the strength in the Brush section");
+                    return L10n.Tr($"元に戻すブラシ（{key}）: 塗った所を元の形へ近づけます。強さは、くわしく表示の「ブラシ」の区切りで決めます",
+                        $"Restore Brush ({key}): paint to bring an area back toward its original shape. Set the strength in the Brush section of the Detailed view");
                 case ClothEditMode.Select:
-                    return L10n.Tr($"選んで動かす（{key}）: ドラッグで点を塗って選び（Ctrl で外す、Shift+ドラッグで矩形、ダブルクリックで部品ごと）、出てきたハンドルで動かす・回す・拡大縮小します。もう一度 {key} で前の道具に戻ります",
-                        $"Select & Move ({key}): drag to paint points to select (Ctrl to deselect, Shift+Drag for a rectangle, double-click for a whole part), then move / rotate / scale them with the handle. Press {key} again to go back to the previous tool");
+                    return L10n.Tr($"選んで動かす（{key}）: ドラッグで点を塗って選び（Ctrl で外す、Shift+ドラッグで四角く囲んで、ダブルクリックで部品ごと）、出てきたハンドルで動かす・回す・拡大縮小します。もう一度 {key} で前の道具に戻ります",
+                        $"Select & Move ({key}): drag to paint points to select (Ctrl to deselect, Shift+Drag for a box, double-click for a whole part), then move / rotate / scale them with the handle. Press {key} again to go back to the previous tool");
                 default:
                     return L10n.Tr($"つまむ（{key}）: 布をドラッグして、つまんだ所を引っ張ります。周りの布も伸びずに付いてきます。Shift で精密操作",
                         $"Grab ({key}): drag the cloth to pull the grabbed area. The cloth around follows without stretching. Shift for fine control");
@@ -201,75 +286,50 @@ namespace GP02.EditorTools
             }
         }
 
-        /// <summary>シーンビューの左上に出す案内（改行つき）。1行目が状態と今の道具の操作、2行目が共通の操作。「選んで動かす」は操作が多いので、2行に分ける。</summary>
+        /// <summary>
+        /// シーンビューの左上に出す案内。今の道具の一番大事な操作と「F1: 操作の一覧」だけの、短い文にする（細かい操作はショートカット一覧へ）。
+        /// 1行。「選んで動かす」だけは、選ぶ操作と動かす操作の2行。
+        /// </summary>
         /// <param name="selectionCount">選んでいる点の数（「選んで動かす」の案内を、選ぶ前と選んだあとで変える）</param>
         /// <param name="pinErase">ピン留めの道具で「塗ると外す」がオンか（案内の、ドラッグと Ctrl+ドラッグの意味が逆になる）</param>
         public static string GetHint(ClothEditMode mode, bool dragging, bool settling, int selectionCount = 0, bool pinErase = false)
         {
-            string common = L10n.Tr("Ctrl+ホイール / [ ]: ブラシ半径　C(押す): 元の形　Alt+ドラッグ: 視点移動　F1: ショートカット一覧",
-                "Ctrl+Wheel / [ ]: brush radius   C (hold): original shape   Alt+Drag: orbit   F1: shortcuts");
+            string more = L10n.Tr($"　{HelpKey()}: 操作の一覧", $"   {HelpKey()}: all controls");
 
-            string first;
             if (dragging && mode == ClothEditMode.Select)
             {
-                first = L10n.Tr("GP02 選んだ点を動かしています: 離すと仕上げます / Shift: ゆっくり / Ctrl: 刻み / Esc: 取り消し",
-                    "GP02 Moving the selection: release to settle / Shift: slow / Ctrl: snap / Esc: cancel");
+                return L10n.Tr("選んだ点を動かしています: 離すと仕上げます（Esc: 取り消し）", "Moving the selection: release to settle (Esc: cancel)");
             }
-            else if (dragging)
+            if (dragging)
             {
-                first = mode == ClothEditMode.Rotate ? L10n.Tr("GP02 回しています: 横に動かす / Ctrl: 15°刻み / Shift: 精密 / 離すと仕上げ / Esc: 取り消し",
-                        "GP02 Rotating: drag sideways / Ctrl: 15-degree steps / Shift: fine / release to settle / Esc: cancel")
-                    : mode == ClothEditMode.Scale ? L10n.Tr("GP02 拡大縮小しています: 横に動かす（0.2〜3倍）/ Shift: 精密 / 離すと仕上げ / Esc: 取り消し",
-                        "GP02 Scaling: drag sideways (0.2x to 3x) / Shift: fine / release to settle / Esc: cancel")
-                    : L10n.Tr("GP02 つまんでいます: 離すと仕上げます / Shift: 精密 / Esc: 取り消し",
-                        "GP02 Grabbing: release to settle / Shift: fine / Esc: cancel");
+                return mode == ClothEditMode.Rotate ? L10n.Tr("回しています: 離すと仕上げます（Esc: 取り消し）", "Rotating: release to settle (Esc: cancel)")
+                    : mode == ClothEditMode.Scale ? L10n.Tr("拡大縮小しています: 離すと仕上げます（Esc: 取り消し）", "Scaling: release to settle (Esc: cancel)")
+                    : L10n.Tr("つまんでいます: 離すと仕上げます（Esc: 取り消し）", "Grabbing: release to settle (Esc: cancel)");
             }
-            else if (settling)
+            if (settling) return L10n.Tr("仕上げ中です（Esc: 取り消し）", "Settling (Esc: cancel)");
+
+            string name = $"{ToolName(mode)} ({ToolKey(mode)})";
+            switch (mode)
             {
-                first = L10n.Tr("GP02 仕上げ中: Esc で取り消し", "GP02 Settling: Esc to cancel");
+                case ClothEditMode.Rotate:
+                    return L10n.Tr($"{name}: 布をクリックして、横にドラッグで回す{more}", $"{name}: click the cloth, then drag sideways to rotate{more}");
+                case ClothEditMode.Scale:
+                    return L10n.Tr($"{name}: 布をクリックして、横にドラッグで大きさを変える{more}", $"{name}: click the cloth, then drag sideways to resize{more}");
+                case ClothEditMode.Pin:
+                case ClothEditMode.Unpin:
+                    return pinErase || mode == ClothEditMode.Unpin
+                        ? L10n.Tr($"{name}: ドラッグで外す（Ctrl+ドラッグで留める）{more}", $"{name}: drag to remove pins (Ctrl+Drag to pin){more}")
+                        : L10n.Tr($"{name}: ドラッグで動かさない所を塗る（Ctrl+ドラッグで外す）{more}", $"{name}: drag to paint what should not move (Ctrl+Drag to remove){more}");
+                case ClothEditMode.Relax:
+                    return L10n.Tr($"{name}: ドラッグで元の形へ近づける{more}", $"{name}: drag to bring the cloth back to its original shape{more}");
+                case ClothEditMode.Select:
+                    return L10n.Tr($"{name}: ドラッグで点を選ぶ", $"{name}: drag to select points") + "\n"
+                        + (selectionCount > 0
+                            ? L10n.Tr($"{selectionCount:N0} 点を選択中: ハンドルをドラッグで動かす{more}", $"{selectionCount:N0} selected: drag the handle to move{more}")
+                            : L10n.Tr($"選ぶと出てくるハンドルで動かす{more}", $"A handle appears once you select; drag it to move{more}"));
+                default:
+                    return L10n.Tr($"{name}: 布をドラッグして動かす{more}", $"{name}: drag the cloth to move it{more}");
             }
-            else
-            {
-                string name = $"{ToolName(mode)} ({ToolKey(mode)})";
-                switch (mode)
-                {
-                    case ClothEditMode.Rotate:
-                        first = L10n.Tr($"GP02 {name}: 布をクリックして、横にドラッグで回す（クリックした点が中心）",
-                            $"GP02 {name}: click the cloth and drag sideways to rotate (around the clicked point)");
-                        break;
-                    case ClothEditMode.Scale:
-                        first = L10n.Tr($"GP02 {name}: 布をクリックして、横にドラッグで拡大縮小（クリックした点が中心）",
-                            $"GP02 {name}: click the cloth and drag sideways to scale (around the clicked point)");
-                        break;
-                    case ClothEditMode.Pin:
-                    case ClothEditMode.Unpin:
-                        // シーンビューの幅に収まるよう短くする（詳しい説明は、道具のツールチップ）
-                        first = pinErase || mode == ClothEditMode.Unpin
-                            ? L10n.Tr($"GP02 {name}: ドラッグで外す / Ctrl+ドラッグ: 留める / Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと",
-                                $"GP02 {name}: drag to remove / Ctrl+Drag: pin / Shift+Drag: rectangle / Double-click: whole part")
-                            : L10n.Tr($"GP02 {name}: ドラッグで留める / Ctrl+ドラッグ: 外す / Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと",
-                                $"GP02 {name}: drag to pin / Ctrl+Drag: remove / Shift+Drag: rectangle / Double-click: whole part");
-                        break;
-                    case ClothEditMode.Relax:
-                        first = L10n.Tr($"GP02 {name}: 左ドラッグで塗った所を元の形へ近づける（離すと仕上げ）",
-                            $"GP02 {name}: drag to bring the painted area back toward its original shape (settles on release)");
-                        break;
-                    case ClothEditMode.Select:
-                        first = L10n.Tr($"GP02 {name}: ドラッグで塗って選ぶ（Ctrl: 外す）/ Shift+ドラッグ: 矩形 / ダブルクリック: 部品ごと",
-                                $"GP02 {name}: drag to paint-select (Ctrl: deselect) / Shift+Drag: rectangle / Double-click: whole part")
-                            + "\n" + (selectionCount > 0
-                                ? L10n.Tr($"{selectionCount:N0} 点を選択中: ハンドルで動かす（Shift: ゆっくり / Ctrl: 刻み）/ W E R: ハンドルの種類 / Esc: 解除 / Q: 戻る",
-                                    $"{selectionCount:N0} selected: drag the handle (Shift: slow / Ctrl: snap) / W E R: handle type / Esc: clear / Q: back")
-                                : L10n.Tr("空の所をクリック: 解除 / 選ぶとハンドルが出る（W E R: 移動・回転・拡大縮小）/ Esc: 解除 / Q: 戻る",
-                                    "Click empty space: clear / A handle appears once selected (W E R: move, rotate, scale) / Esc: clear / Q: back"));
-                        break;
-                    default:
-                        first = L10n.Tr($"GP02 {name}: 左ドラッグで布をつまんで動かす / Shift: 精密 / Esc: 取り消し",
-                            $"GP02 {name}: drag to grab and move the cloth / Shift: fine / Esc: cancel");
-                        break;
-                }
-            }
-            return first + "\n" + common;
         }
 
         /// <summary>ショートカット一覧（キー、説明）。</summary>
@@ -287,11 +347,11 @@ namespace GP02.EditorTools
             Add("T", "元に戻すブラシ", "Restore Brush");
             Add(L10n.Tr("Shift+ドラッグ", "Shift+Drag"), "動きを 1/5 にする（精密操作）", "Move at 1/5 speed (fine control)");
             Add(L10n.Tr("Ctrl+ドラッグ（ピン）", "Ctrl+Drag (Pin)"), "塗った所のピンを外す（「塗ると外す」がオンなら、留める）", "Remove the pins you paint over (adds them when Paint to erase is on)");
-            Add(L10n.Tr("Shift+ドラッグ（ピン）", "Shift+Drag (Pin)"), "矩形の中をまとめてピン留め（Ctrl+Shift で外す）", "Pin everything inside a rectangle (Ctrl+Shift to remove)");
-            Add(L10n.Tr("ダブルクリック（ピン）", "Double-click (Pin)"), "その部品（島）全体をピン留め（Ctrl で外す）", "Pin the whole part (island) (Ctrl to remove)");
+            Add(L10n.Tr("Shift+ドラッグ（ピン）", "Shift+Drag (Pin)"), "四角で囲んだ中をまとめてピン留め（Ctrl+Shift で外す）", "Pin everything inside a box you drag (Ctrl+Shift to remove)");
+            Add(L10n.Tr("ダブルクリック（ピン）", "Double-click (Pin)"), "その部品全体をピン留め（Ctrl で外す）", "Pin the whole part (Ctrl to remove)");
             Add(L10n.Tr("ドラッグ（選ぶ）", "Drag (Select)"), "ブラシ半径で塗って選ぶ（Ctrl で外す）", "Paint-select with the brush radius (Ctrl to deselect)");
-            Add(L10n.Tr("Shift+ドラッグ（選ぶ）", "Shift+Drag (Select)"), "矩形で選ぶ（Ctrl+Shift で外す）", "Select inside a rectangle (Ctrl+Shift to deselect)");
-            Add(L10n.Tr("ダブルクリック（選ぶ）", "Double-click (Select)"), "その部品（島）ごと選ぶ（Ctrl で外す）", "Select the whole part (island) (Ctrl to deselect)");
+            Add(L10n.Tr("Shift+ドラッグ（選ぶ）", "Shift+Drag (Select)"), "四角で囲んで選ぶ（Ctrl+Shift で外す）", "Select inside a box you drag (Ctrl+Shift to deselect)");
+            Add(L10n.Tr("ダブルクリック（選ぶ）", "Double-click (Select)"), "その部品ごと選ぶ（Ctrl で外す）", "Select the whole part (Ctrl to deselect)");
             Add(L10n.Tr("空の所をクリック（選ぶ）", "Click empty space (Select)"), "選択を解除", "Clear the selection");
             Add(L10n.Tr("ハンドルのドラッグ", "Drag the handle"), "選んだ点を動かす（Shift でゆっくり、Ctrl で刻み）", "Move the selected points (Shift to slow down, Ctrl to snap)");
             Add("F", "マウスを横に動かしてブラシ半径を変える（選んで動かす中は、なめらかさの半径）。クリックか F で確定、Esc か右クリックで取り消し",
@@ -305,7 +365,7 @@ namespace GP02.EditorTools
             Add("Esc", "ドラッグ・仕上げ中の操作を取り消す（何もしていなければ、選択を解除）", "Cancel the stroke being dragged or settled (clears the selection when idle)");
             Add("Ctrl+Z / Ctrl+Y", "1操作ずつ戻す・やり直す", "Undo / redo one operation at a time");
             Add(L10n.Tr("Alt+ドラッグ", "Alt+Drag"), "視点を動かす", "Orbit the view");
-            Add("F1", "この一覧を出す・隠す", "Show / hide this list");
+            Add("F1", "この一覧を出す・隠す（右上の × でも閉じられます）", "Show / hide this list (the × at its top right also closes it)");
             Add("Edit > Shortcuts", "「GP02」の項目で、キーを変えられます", "Change the keys under \"GP02\"");
         }
     }

@@ -111,7 +111,7 @@ namespace GP02.EditorTools
 
             if (_settings.SymmetryEnabled)
             {
-                EditorGUILayout.HelpBox(L10n.Tr("対称がオンです。反対側は自動で鏡に映して動くので、選ばなくてよいです。",
+                EditorGUILayout.HelpBox(L10n.Tr("対称がオンです。反対側は自動で左右反対に動くので、選ばなくてよいです。",
                     "Symmetry is on. The opposite side moves mirrored automatically, so you do not need to select it."), MessageType.Info);
             }
             if (count > 0 && _selectionHasPinned)
@@ -170,7 +170,7 @@ namespace GP02.EditorTools
                 (int)_settings.SelectionFalloff, FalloffPresetNames());
 
             _settings.SelectThroughOcclusion = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("隠れた点も選ぶ", "Select Hidden Points"),
-                L10n.Tr("矩形で選ぶとき、他の布に隠れた点や裏側の点も選びます。オフなら、画面に見えている点だけを選びます",
+                L10n.Tr("四角で囲んで選ぶとき、他の布に隠れた点や裏側の点も選びます。オフなら、画面に見えている点だけを選びます",
                     "When selecting with a rectangle, also selects points hidden behind other cloth and on the back side. When off, only visible points are selected")),
                 _settings.SelectThroughOcclusion);
             _settings.ShowSelectionWeights = EditorGUILayout.Toggle(new GUIContent(L10n.Tr("範囲の色分け", "Show Range Colors"),
@@ -224,13 +224,13 @@ namespace GP02.EditorTools
                 if (GUILayout.Button(new GUIContent(L10n.Tr("広げる", "Grow"), L10n.Tr("選んだ点の周りの1周ぶんを足します（同じ部品の中だけ）", "Adds one ring of neighbors around the selection (within the same part)")))) _controller.GrowSelection();
                 if (GUILayout.Button(new GUIContent(L10n.Tr("狭める", "Shrink"), L10n.Tr("選んだ点の縁の1周ぶんを外します（同じ部品の中だけ）", "Removes the outer ring of the selection (within the same part)")))) _controller.ShrinkSelection();
                 if (GUILayout.Button(new GUIContent(L10n.Tr("左右の反対側も選ぶ", "Select Mirror Side"),
-                    L10n.Tr("選んだ点を鏡に映した反対側の点も選びます。鏡の面は「対称」の軸とずれで決まります（対称がオフでも使えます）。対称がオンなら、動かすときに反対側は自動で付いてくるので、選ばなくてもかまいません",
+                    L10n.Tr("選んだ点を鏡に映した反対側の点も選びます。左右の中心は「対称」の軸とずれで決まります（対称がオフでも使えます）。対称がオンなら、動かすときに反対側は自動で付いてくるので、選ばなくてもかまいません",
                         "Also selects the mirrored points on the opposite side. The mirror plane comes from the axis and offset in Symmetry (works even when symmetry is off). With symmetry on, the opposite side follows automatically when you move, so you do not need this"))))
                 {
                     if (_controller.MirrorSelection() == 0)
                     {
-                        ShowNotification(new GUIContent(L10n.Tr("反対側に新しく選べる点がありません（「対称」の軸とずれを確かめてください）",
-                            "No new points on the opposite side (check the axis and offset in Symmetry)")));
+                        Report(L10n.Tr("新しく選べる点がありません", "No new points to select"),
+                            L10n.Tr("反対側に新しく選べる点がありません（「対称」の軸とずれを確かめてください）", "No new points on the opposite side (check the axis and offset in Symmetry)"), MessageType.Warning);
                     }
                 }
             }
@@ -290,15 +290,16 @@ namespace GP02.EditorTools
         {
             if (ClothEditSelectionNumeric.IsIdentity(_numericMove, _numericRotate, _numericScale))
             {
-                ShowNotification(new GUIContent(L10n.Tr("動きが入っていません（移動 0・回転 0・拡大 100%）", "No motion entered (move 0, rotate 0, scale 100%)")));
+                Report(L10n.Tr("動きが入っていません", "No motion entered"),
+                    L10n.Tr("動きが入っていません（移動 0・回転 0・拡大 100%）", "No motion entered (move 0, rotate 0, scale 100%)"), MessageType.Warning);
                 return;
             }
             ClothEditSelectionNumeric.ToWorld(_controller.HandleRotation, _numericMove, _numericRotate, _numericScale,
                 out Vector3 translation, out Quaternion rotation, out Vector3 scale);
             if (!_controller.ApplySelectionTransform(translation, rotation, scale))
             {
-                ShowNotification(new GUIContent(L10n.Tr("動きませんでした（選んだ点がすべてピン留めされているか、動きが小さすぎます）",
-                    "Nothing moved (all selected points are pinned, or the motion is too small)")));
+                Report(L10n.Tr("動きませんでした", "Nothing moved"),
+                    L10n.Tr("動きませんでした（選んだ点がすべてピン留めされているか、動きが小さすぎます）", "Nothing moved (all selected points are pinned, or the motion is too small)"), MessageType.Warning);
             }
             SceneView.RepaintAll();
         }
