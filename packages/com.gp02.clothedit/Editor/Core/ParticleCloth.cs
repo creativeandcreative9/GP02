@@ -202,6 +202,171 @@ namespace GP02.Core
         }
 
         /// <summary>
+        /// まとめた後の頂点の位置 targetWelded から粒子の位置を作り、<see cref="DeformWelded"/> で頂点に戻したときに
+        /// targetWelded に近くなるよう直す（<see cref="ParticlePositionsFromWelded"/> の改良版）。
+        /// 重心座標の補間だけだと、頂点は近くの粒子の重み付き平均で動くので、頂点 → 粒子 → 頂点の往復で形が少しなまる（1〜3mm）。
+        /// 1回の反復では、(1) 頂点ごとの残りの差を、頂点に結びつけた粒子へ結びつけの重みで割り戻し（結びつけの転置なので、頂点に見えない粒子のでこぼこは足さない）、
+        /// (2) 伸びの制約を半分の強さで1回ずつ静止状態の長さへ寄せる。(2) が無いと、頂点には合っても、頂点の間の粒子が引っ張られて伸びが増えるため。
+        /// (2) を入れた結果が下の条件に合わないとき（形そのものが伸びていて、寄せると頂点から離れるときなど）は、(1) だけの結果を試す。
+        /// 反復は、頂点の差の最大が減り、かつ粒子の最大の伸びが「補間だけの粒子」「頂点の形そのもの（メッシュの辺）」「<see cref="FitStretchAllowance"/>」の一番大きいものを超えないときだけ採り、
+        /// そうでなければそこで止める（頂点が粒子より粗くて合わせきれない所や、布が大きく伸びた形で、粒子を引っ張りすぎないように）。
+        /// </summary>
+        /// <param name="iterations">反復の上限（0 なら <see cref="ParticlePositionsFromWelded"/> と同じ）</param>
+        /// <param name="iterationsDone">採った反復の回数</param>
+        /// <returns>結果の粒子の位置での、頂点の位置の差の最大（メートル）</returns>
+        public float FitParticlesToWelded(ReadOnlySpan<Vector3> targetWelded, Vector3[] particlePositions, int iterations, out int iterationsDone)
+        {
+            if (iterations < 0) throw new ArgumentOutOfRangeException(nameof(iterations));
+            ParticlePositionsFromWelded(targetWelded, particlePositions);
+            iterationsDone = 0;
+
+            int weldedCount = Topology.Positions.Length;
+            int particleCount = particlePositions.Length;
+            var welded = new Vector3[weldedCount];
+            DeformWelded(particlePositions, welded);
+            float residual = MaxDistance(targetWelded, welded);
+            if (iterations == 0 || residual == 0f) return residual;
+
+            float stretchLimit = MathF.Max(FitStretchAllowance, MathF.Max(MeasureMaxStretch(particlePositions), MeasureMaxEdgeStretch(targetWelded)));
+            var candidate = new Vector3[particleCount];
+            var candidateWelded = new Vector3[weldedCount];
+            var sumX = new float[particleCount];
+            var sumY = new float[particleCount];
+            var sumZ = new float[particleCount];
+            var weightSum = new float[particleCount];
+            for (int k = 0; k < iterations; k++)
+            {
+                Array.Clear(sumX, 0, particleCount);
+                Array.Clear(sumY, 0, particleCount);
+                Array.Clear(sumZ, 0, particleCount);
+                Array.Clear(weightSum, 0, particleCount);
+                for (int w = 0; w < weldedCount; w++)
+                {
+                    float dx = targetWelded[w].X - welded[w].X, dy = targetWelded[w].Y - welded[w].Y, dz = targetWelded[w].Z - welded[w].Z;
+                    for (int b = _bindOffsets[w]; b < _bindOffsets[w + 1]; b++)
+                    {
+                        int i = _bindParticles[b];
+                        float weight = _bindWeights[b];
+                        sumX[i] += weight * dx;
+                        sumY[i] += weight * dy;
+                        sumZ[i] += weight * dz;
+                        weightSum[i] += weight;
+                    }
+                }
+                // 伸びを寄せた候補を先に試し、採れなければ（形そのものが伸びていて、寄せると頂点から離れるときなど）、寄せない候補を試す
+                bool accepted = false;
+                for (int attempt = 0; attempt < 2 && !accepted; attempt++)
+                {
+                    for (int i = 0; i < particleCount; i++)
+                    {
+                        Vector3 p = particlePositions[i];
+                        float s = weightSum[i];
+                        candidate[i] = s > 0f ? new Vector3(p.X + FitStep * sumX[i] / s, p.Y + FitStep * sumY[i] / s, p.Z + FitStep * sumZ[i] / s) : p;
+                    }
+                    if (attempt == 0) RelaxStretch(candidate, FitRelaxation);
+
+                    DeformWelded(candidate, candidateWelded);
+                    float next = MaxDistance(targetWelded, candidateWelded);
+                    if (next >= residual * FitRequiredProgress || MeasureMaxStretch(candidate) > stretchLimit) continue;
+                    Array.Copy(candidate, particlePositions, particleCount);
+                    Array.Copy(candidateWelded, welded, weldedCount);
+                    residual = next;
+                    accepted = true;
+                }
+                if (!accepted) break;
+                iterationsDone++;
+            }
+            return residual;
+        }
+
+        /// <summary>
+        /// <see cref="FitParticlesToWelded"/> で、粒子の最大の伸びがこれ（0.02 なら 2%）以下なら、補間だけより増えても反復を採る。
+        /// 伸びの小さい形（外へ逃がした形など）は、補間だけだとなまって伸びがさらに小さく見積もられ、頂点に合わせるわずかな伸びも採れなくなるため。
+        /// 仕上げの許容（既定 1%）の 2 倍で、次に触ったときの仕上げで戻る程度の伸び
+        /// </summary>
+        public const float FitStretchAllowance = 0.02f;
+
+        // FitParticlesToWelded の、頂点の差を割り戻す歩幅（1 より少し大きいと収束が速い。2 未満なら差は増えない）
+        const float FitStep = 1.5f;
+        // FitParticlesToWelded の、伸びの制約を静止状態の長さへ寄せる強さ（1 で一度に寄せきる）
+        const float FitRelaxation = 0.5f;
+        // FitParticlesToWelded で、反復を採るのに必要な頂点の差の減り方（前の 98% 未満になること）
+        const float FitRequiredProgress = 0.98f;
+
+        // 伸びの制約を、静止状態の長さへ strength の割合だけ寄せる（制約の順に1回。ガウス・ザイデル）
+        void RelaxStretch(Vector3[] positions, float strength)
+        {
+            int[] pairs = Model.StretchPairs;
+            float[] rest = Model.StretchRestLengths;
+            for (int k = 0; k < rest.Length; k++)
+            {
+                int a = pairs[2 * k], b = pairs[2 * k + 1];
+                Vector3 pa = positions[a], pb = positions[b];
+                float dx = pb.X - pa.X, dy = pb.Y - pa.Y, dz = pb.Z - pa.Z;
+                float length = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+                if (length < 1e-9f) continue;
+                float c = 0.5f * strength * (length - rest[k]) / length;
+                positions[a] = new Vector3(pa.X + c * dx, pa.Y + c * dy, pa.Z + c * dz);
+                positions[b] = new Vector3(pb.X - c * dx, pb.Y - c * dy, pb.Z - c * dz);
+            }
+        }
+
+        /// <summary>
+        /// 粒子の位置での、伸びの制約の最大の伸び（0.1 なら 10%。縮みは 0 とみなす）。
+        /// ソルバーの <see cref="ClothSolver.MeasureMaxStretch"/> と同じ測り方を、布全体で行う。
+        /// </summary>
+        public float MeasureMaxStretch(ReadOnlySpan<Vector3> particlePositions)
+        {
+            if (particlePositions.Length != Model.ParticleCount) throw new ArgumentException("粒子数が一致しません。", nameof(particlePositions));
+            int[] pairs = Model.StretchPairs;
+            float[] rest = Model.StretchRestLengths;
+            float max = 0f;
+            for (int k = 0; k < rest.Length; k++)
+            {
+                Vector3 a = particlePositions[pairs[2 * k]], b = particlePositions[pairs[2 * k + 1]];
+                float dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;
+                max = MathF.Max(max, MathF.Sqrt(dx * dx + dy * dy + dz * dz) / rest[k] - 1f);
+            }
+            return max;
+        }
+
+        /// <summary>
+        /// まとめた後の頂点の位置での、メッシュの辺の最大の伸び（静止状態の辺の長さに対する割合、0.1 なら 10%。縮みは 0 とみなす）。
+        /// 頂点の形そのものが、布をどれだけ伸ばしているかの目安。
+        /// </summary>
+        public float MeasureMaxEdgeStretch(ReadOnlySpan<Vector3> weldedPositions)
+        {
+            if (weldedPositions.Length != Topology.Positions.Length) throw new ArgumentException("頂点数が一致しません。", nameof(weldedPositions));
+            int[] triangles = Topology.Triangles;
+            Vector3[] rest = Topology.Positions;
+            float max = 0f;
+            for (int t = 0; t < triangles.Length; t += 3)
+            {
+                for (int e = 0; e < 3; e++)
+                {
+                    int a = triangles[t + e], b = triangles[t + (e + 1) % 3];
+                    float rx = rest[a].X - rest[b].X, ry = rest[a].Y - rest[b].Y, rz = rest[a].Z - rest[b].Z;
+                    float restLength = MathF.Sqrt(rx * rx + ry * ry + rz * rz);
+                    if (restLength < 1e-6f) continue;
+                    float dx = weldedPositions[a].X - weldedPositions[b].X, dy = weldedPositions[a].Y - weldedPositions[b].Y, dz = weldedPositions[a].Z - weldedPositions[b].Z;
+                    max = MathF.Max(max, MathF.Sqrt(dx * dx + dy * dy + dz * dz) / restLength - 1f);
+                }
+            }
+            return max;
+        }
+
+        static float MaxDistance(ReadOnlySpan<Vector3> a, Vector3[] b)
+        {
+            float max = 0f;
+            for (int i = 0; i < b.Length; i++)
+            {
+                float dx = a[i].X - b[i].X, dy = a[i].Y - b[i].Y, dz = a[i].Z - b[i].Z;
+                max = MathF.Max(max, dx * dx + dy * dy + dz * dz);
+            }
+            return MathF.Sqrt(max);
+        }
+
+        /// <summary>
         /// other が、この布と同じ粒子（数・乗っている三角形・静止状態の位置が tolerance メートル以内）を持つか。
         /// 同じメッシュから同じ位置で作り直した布なら同じになる。粒子の位置の記録（Undo など）を、作り直した布にそのまま使えるかを確かめる。
         /// </summary>

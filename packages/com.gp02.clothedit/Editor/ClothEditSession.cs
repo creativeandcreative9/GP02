@@ -1851,7 +1851,8 @@ namespace GP02.EditorTools
 
         /// <summary>
         /// メッシュ空間の差分（<see cref="GetMeshSpaceDeltas"/> の逆）を、編集中の形として読み込む。
-        /// 差分を頂点ごとの行列でワールドへ直し、まとめた後の頂点の位置にして、粒子の位置は三角形の重心座標で補間して決める。
+        /// 差分を頂点ごとの行列でワールドへ直し、まとめた後の頂点の位置にして、粒子の位置は三角形の重心座標で補間して決め、
+        /// 頂点に戻したときの差が小さくなるよう直す（<see cref="ParticleCloth.FitParticlesToWelded"/>）。
         /// 既存のシェイプキーを取り込んで、布として続きを編集するのに使う。ピン留めは変えず、つまみは外れる。
         /// 粒子の Undo の記録（<see cref="WriteState"/>）は、呼び出し側（コントローラー）が操作の前後で取る。
         /// 頂点数が合わなければ何もせず false。
@@ -1875,6 +1876,16 @@ namespace GP02.EditorTools
             return LoadDeltas(all);
         }
 
+        // 差分を読み込むとき、頂点 → 粒子の補間の誤差を粒子へ戻して直す反復の上限（ParticleCloth.FitParticlesToWelded）。
+        // テスト用のタイツ・スカートでは、7〜8 回で頂点の差の最大が 2.3mm から 0.1mm 台になり、それ以上はほとんど減らない
+        const int LoadFitIterations = 8;
+
+        /// <summary>最後の差分の読み込みで、粒子の位置を直した反復の回数（確認用）。</summary>
+        internal int LastLoadFitIterations { get; private set; }
+
+        /// <summary>最後の差分の読み込みのあとの、目標の頂点の位置との差の最大（メートル、確認用）。</summary>
+        internal float LastLoadResidual { get; private set; }
+
         bool LoadDeltas(Vector3[] deltas)
         {
             // まとめる前の頂点が同じ位置に複数あるとき（継ぎ目）は、ワールドの差分を平均する
@@ -1896,7 +1907,9 @@ namespace GP02.EditorTools
             for (int w = 0; w < weldedCount; w++) target[w] = count[w] > 0 ? _toposRest[w] + sum[w] / count[w] : _toposRest[w];
 
             var particles = new NVector3[ParticleCount];
-            _cloth.ParticlePositionsFromWelded(target, particles);
+            // 重心座標で補間するだけだと、頂点に戻したときに形が 1〜3mm なまるので、その差を粒子へ戻して直す（伸びは増やさない範囲で）
+            LastLoadResidual = _cloth.FitParticlesToWelded(target, particles, LoadFitIterations, out int fitDone);
+            LastLoadFitIterations = fitDone;
 
             _grabParticle = -1;
             _grabSet = null;

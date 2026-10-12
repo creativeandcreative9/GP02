@@ -22,9 +22,10 @@ namespace GP02.Tests
         const string TempFolder = "Assets/GP02_WeightFixCarryTestTemp";
 
         // 引き継いだ形のメッシュ空間の差分が、引き継ぐ前とどれだけ違ってよいか（メートル。1回引き継ぐごと）。
-        // 「シェイプキーを布で再編集」の往復のテスト（ShapeKeyLibraryTests.Session_GetThenLoadMeshSpaceDeltasReproducesTheShape）の、差分の許容と同じ。
-        // 2回引き継ぐ（適用して、Ctrl+Z で戻す）ときは、その 1.5 倍まで
-        const float DeltaTolerance = 0.004f;
+        // 読み込むときに粒子の位置を頂点に合わせて直す（ParticleCloth.FitParticlesToWelded）ので、実測は
+        // テスト用のタイツ（差分の最大 34.6 mm）で 0.08〜0.17 mm（直す前は 1.2〜2.5 mm）、外へ逃がしたスカート（5.5 mm）で 0.08 mm（直す前は 0.82 mm）。
+        // その2倍余り。2回引き継ぐ（適用して、Ctrl+Z で戻す）ときは、その 1.5 倍まで（実測 0.12〜0.28 mm）
+        const float DeltaTolerance = 0.0004f;
 
         readonly List<Object> _created = new List<Object>();
         readonly List<ClothEditController> _controllers = new List<ClothEditController>();
@@ -385,6 +386,7 @@ namespace GP02.Tests
             Assert.That(_unsavedAsked, Is.EqualTo(0), "保存の確認は出ない");
             Assert.That(report.CarriedUnsaved, Is.True);
             Assert.That(c.HasUnsavedEdits, Is.True, "適用のあとに、保存していない編集が消えた");
+            Debug.Log($"[GP02計測] 外へ逃がした形を引き継いだときの、粒子の位置の直し込み {c.Session.LastLoadFitIterations} 回、頂点の差の最大 {c.Session.LastLoadResidual * 1000f:F2} mm");
             AssertSameDeltas(escapedDeltas, c.Session.GetMeshSpaceDeltas(), "外へ逃がした形（ウェイトを適用したあと）");
             Assert.That(c.IsPoseCheckStale, Is.False, "適用のあとに、結果が古くなった");
             Assert.That(skirt.sharedMesh, Is.Not.SameAs(original), "ウェイトを入れたメッシュに差し替わる");
