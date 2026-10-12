@@ -5,8 +5,9 @@ using UnityEngine;
 
 namespace GP02.EditorTools
 {
-    // 動作チェックの第2段の画面: 「ウェイトを体に寄せる」（かんたん表示では、ウェイトが原因の貫通があるときのボタン1つ。押すと確認の前後を出してから適用。
-    // くわしく表示では強さ・半径・確認・適用・データから外す）と、手持ちの AnimationClip の欄（くわしく表示）
+    // 動作チェックの第2段の画面: 「ウェイトを体に寄せる」と、手持ちの AnimationClip の欄（くわしく表示）。
+    // かんたん表示では、ボタンは「おすすめの直し方」の行に出し（押すと確認の前後を出してから適用）、ここには確認した候補と前回の結果だけを出す。
+    // くわしく表示では、ここに強さ・半径・確認・適用・候補を捨てる・データから外すを出す
     public sealed partial class ClothEditWindow
     {
         [SerializeField] bool _foldPoseClips;
@@ -21,6 +22,15 @@ namespace GP02.EditorTools
             int recorded = detailed ? _controller.RecordedWeightEditVertexCount : 0;
             if (weightRegions == 0 && preview == null && last == null && recorded == 0) return;
 
+            if (!detailed)
+            {
+                // かんたん表示: ボタンは「おすすめの直し方」にあるので、確認した候補（ダイアログでやめたとき）と前回の結果だけ
+                DrawWeightFixCandidate(preview, false);
+                DrawLastWeightFix(last);
+                if (!string.IsNullOrEmpty(_controller.LastWeightFixError)) EditorGUILayout.HelpBox(_controller.LastWeightFixError, MessageType.Warning);
+                return;
+            }
+
             EditorGUILayout.Space(2f);
             EditorGUILayout.LabelField(L10n.Tr("ウェイトを体に寄せる", "Fit Weights to Body"), EditorStyles.boldLabel);
             if (weightRegions > 0 && result.WeightPlan != null)
@@ -32,98 +42,55 @@ namespace GP02.EditorTools
                     "The outfit's bone influences (weights) differ from the body's, so moving outward does not fix them. The body's weights are copied to the outfit there."), EditorStyles.wordWrappedMiniLabel);
             }
 
-            if (detailed)
+            EditorGUI.BeginChangeCheck();
+            float strength = EditorGUILayout.Slider(new GUIContent(L10n.Tr("強さ（%）", "Strength (%)"),
+                L10n.Tr("元のウェイトと体のウェイトを混ぜる割合。100% なら体のウェイトそのもの（体にぴったり付いていく。タイツ・袖向き）。スカートを太ももに強く寄せると、座ったときに布が脚に貼り付いて伸びることがあるので、確認の「体から離れた所の布の伸び」を見て下げてください",
+                    "How much of the body's weights to mix in. 100% uses the body's weights as they are (follows the body exactly; suits tights and sleeves). Pulling a skirt strongly to the thighs can make the cloth stick to the legs and stretch when sitting, so lower it while watching \"stretch of the cloth away from the body\" in the check")),
+                _settings.WeightFixStrength * 100f, 0f, 100f);
+            float radius = EditorGUILayout.Slider(new GUIContent(L10n.Tr("周りへの広がり（cm）", "Feather (cm)"),
+                L10n.Tr("寄せる所から周りへ、混ぜる割合をなめらかに減らす半径（布に沿って測ります）。小さいと、境目でウェイトが急に変わって段が出ることがあります",
+                    "Radius over which the mix fades out around the fixed places (measured along the cloth). Too small can leave a step where the weights change suddenly")),
+                _settings.WeightFixRadius * 100f, 0f, ClothEditSettings.MaxWeightFixRadius * 100f);
+            if (EditorGUI.EndChangeCheck())
             {
-                EditorGUI.BeginChangeCheck();
-                float strength = EditorGUILayout.Slider(new GUIContent(L10n.Tr("強さ（%）", "Strength (%)"),
-                    L10n.Tr("元のウェイトと体のウェイトを混ぜる割合。100% なら体のウェイトそのもの（体にぴったり付いていく。タイツ・袖向き）。スカートを太ももに強く寄せると、座ったときに布が脚に貼り付いて伸びることがあるので、確認の「体から離れた所の布の伸び」を見て下げてください",
-                        "How much of the body's weights to mix in. 100% uses the body's weights as they are (follows the body exactly; suits tights and sleeves). Pulling a skirt strongly to the thighs can make the cloth stick to the legs and stretch when sitting, so lower it while watching \"stretch of the cloth away from the body\" in the check")),
-                    _settings.WeightFixStrength * 100f, 0f, 100f);
-                float radius = EditorGUILayout.Slider(new GUIContent(L10n.Tr("周りへの広がり（cm）", "Feather (cm)"),
-                    L10n.Tr("寄せる所から周りへ、混ぜる割合をなめらかに減らす半径（布に沿って測ります）。小さいと、境目でウェイトが急に変わって段が出ることがあります",
-                        "Radius over which the mix fades out around the fixed places (measured along the cloth). Too small can leave a step where the weights change suddenly")),
-                    _settings.WeightFixRadius * 100f, 0f, ClothEditSettings.MaxWeightFixRadius * 100f);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    _settings.WeightFixStrength = strength * 0.01f;
-                    _settings.WeightFixRadius = radius * 0.01f;
-                    _settingsDirty = true;
-                }
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    using (new EditorGUI.DisabledScope(!_controller.CanPreviewWeightFix || _controller.IsBusy))
-                    {
-                        if (GUILayout.Button(new GUIContent(L10n.Tr("確認（試す）", "Check (Try)"),
-                            L10n.Tr("体のウェイトを写した候補で、もう一度ポーズを試して、前後の件数・深さ・伸びを出します。シーンもアセットも、まだ変えません",
-                                "Tries the poses again with the candidate weights and shows the counts, depth and stretch before and after. Nothing in the scene or the assets changes yet"))))
-                        {
-                            PreviewWeightFixFromWindow(false);
-                            GUIUtility.ExitGUI();
-                        }
-                    }
-                    using (new EditorGUI.DisabledScope(!_controller.CanApplyWeightFix || _controller.IsBusy))
-                    {
-                        if (GUILayout.Button(new GUIContent(L10n.Tr("適用", "Apply"),
-                            L10n.Tr("確認した候補のウェイトを、衣装のメッシュに入れ、シェイプキーのデータにも記録します（書き出しとアップロード時の適用でも入ります）。Ctrl+Z の 1 回で戻せます",
-                                "Puts the checked candidate weights into the outfit's mesh and records them in the shape key data (also used when exporting and at upload). One Ctrl+Z undoes it"))))
-                        {
-                            ApplyWeightFixFromWindow();
-                            GUIUtility.ExitGUI();
-                        }
-                    }
-                    using (new EditorGUI.DisabledScope(preview == null))
-                    {
-                        if (GUILayout.Button(new GUIContent(L10n.Tr("候補を捨てる", "Discard"), L10n.Tr("確認した候補を捨てます（何も変えません）", "Discards the checked candidate (nothing changes)")), GUILayout.Width(90f)))
-                        {
-                            _controller.DiscardWeightFixPreview();
-                        }
-                    }
-                }
+                _settings.WeightFixStrength = strength * 0.01f;
+                _settings.WeightFixRadius = radius * 0.01f;
+                _settingsDirty = true;
             }
-            else
+            using (new EditorGUILayout.HorizontalScope())
             {
                 using (new EditorGUI.DisabledScope(!_controller.CanPreviewWeightFix || _controller.IsBusy))
                 {
-                    if (GUILayout.Button(new GUIContent(L10n.Tr("ウェイトを体に寄せる", "Fit Weights to Body"),
-                        L10n.Tr("ウェイトが原因の所の服に、体のウェイトを写します。先に候補でもう一度ポーズを試して、前後の件数と伸びを見せてから、適用するかを聞きます。Ctrl+Z の 1 回で戻せます",
-                            "Copies the body's weights to the outfit where the weights cause penetration. It first tries the poses again with the candidate and shows the counts and stretch before and after, then asks whether to apply. One Ctrl+Z undoes it"))))
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("確認（試す）", "Check (Try)"),
+                        L10n.Tr("体のウェイトを写した候補で、もう一度ポーズを試して、前後の件数・深さ・伸びを出します。シーンもアセットも、まだ変えません",
+                            "Tries the poses again with the candidate weights and shows the counts, depth and stretch before and after. Nothing in the scene or the assets changes yet"))))
                     {
-                        PreviewWeightFixFromWindow(true);
+                        PreviewWeightFixFromWindow(false);
                         GUIUtility.ExitGUI();
+                    }
+                }
+                using (new EditorGUI.DisabledScope(!_controller.CanApplyWeightFix || _controller.IsBusy))
+                {
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("適用", "Apply"),
+                        L10n.Tr("確認した候補のウェイトを、衣装のメッシュに入れ、シェイプキーのデータにも記録します（シェイプキーの一覧の「メッシュに反映」とアップロード時の適用でも入ります）。Ctrl+Z の 1 回で戻せます",
+                            "Puts the checked candidate weights into the outfit's mesh and records them in the shape key data (also used by \"Apply to Mesh\" in the shape key list and at upload). One Ctrl+Z undoes it"))))
+                    {
+                        ApplyWeightFixFromWindow();
+                        GUIUtility.ExitGUI();
+                    }
+                }
+                using (new EditorGUI.DisabledScope(preview == null))
+                {
+                    if (GUILayout.Button(new GUIContent(L10n.Tr("候補を捨てる", "Discard"), L10n.Tr("確認した候補を捨てます（何も変えません）", "Discards the checked candidate (nothing changes)")), GUILayout.Width(90f)))
+                    {
+                        _controller.DiscardWeightFixPreview();
                     }
                 }
             }
 
-            if (preview != null)
-            {
-                if (_controller.IsWeightFixPreviewStale)
-                {
-                    EditorGUILayout.HelpBox(L10n.Tr("確認のあとに形が変わったので、この候補は適用できません。もう一度確認してください。", "The shape changed after the check, so this candidate cannot be applied. Check again."), MessageType.Warning);
-                }
-                else
-                {
-                    EditorGUILayout.LabelField(L10n.Tr("候補: ", "Candidate: ") + preview.Describe(), EditorStyles.wordWrappedMiniLabel);
-                    if (!detailed)
-                    {
-                        using (new EditorGUI.DisabledScope(!_controller.CanApplyWeightFix || _controller.IsBusy))
-                        {
-                            if (GUILayout.Button(L10n.Tr("この候補を適用", "Apply This Candidate")))
-                            {
-                                ApplyWeightFixFromWindow();
-                                GUIUtility.ExitGUI();
-                            }
-                        }
-                    }
-                }
-            }
-            if (last != null && last.Preview != null)
-            {
-                EditorGUILayout.LabelField(L10n.Tr($"前回のウェイトを体に寄せる: 頂点 {last.ChangedVertices}、貫通したポーズ {last.Preview.PosesBefore} → {last.Preview.PosesAfter}、か所 {last.Preview.RegionsBefore} → {last.Preview.RegionsAfter}" +
-                        (last.DiscardedUnsaved ? "（保存していない形を戻したので、もう一度チェックしてください）" : ""),
-                    $"Last weight fit: {last.ChangedVertices} vertices, poses with penetration {last.Preview.PosesBefore} → {last.Preview.PosesAfter}, places {last.Preview.RegionsBefore} → {last.Preview.RegionsAfter}" +
-                        (last.DiscardedUnsaved ? " (the unsaved shape was reset, so run the check again)" : "")), EditorStyles.wordWrappedMiniLabel);
-            }
-            if (detailed && recorded > 0)
+            DrawWeightFixCandidate(preview, true);
+            DrawLastWeightFix(last);
+            if (recorded > 0)
             {
                 using (new EditorGUILayout.HorizontalScope())
                 {
@@ -141,6 +108,45 @@ namespace GP02.EditorTools
                 }
             }
             if (!string.IsNullOrEmpty(_controller.LastWeightFixError)) EditorGUILayout.HelpBox(_controller.LastWeightFixError, MessageType.Warning);
+        }
+
+        // 確認した候補（前後の数）。かんたん表示では「この候補を適用」も出す（確認のダイアログでやめたあとに、あとから適用できるように）
+        void DrawWeightFixCandidate(WeightFixPreview preview, bool detailed)
+        {
+            if (preview == null) return;
+            if (_controller.IsWeightFixPreviewStale)
+            {
+                EditorGUILayout.HelpBox(L10n.Tr("確認のあとに形が変わったので、この候補は適用できません。もう一度確認してください。", "The shape changed after the check, so this candidate cannot be applied. Check again."), MessageType.Warning);
+                return;
+            }
+            EditorGUILayout.LabelField(L10n.Tr("ウェイトを体に寄せる候補: ", "Candidate for Fit Weights to Body: ") + preview.Describe(), EditorStyles.wordWrappedMiniLabel);
+            if (detailed) return;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                using (new EditorGUI.DisabledScope(!_controller.CanApplyWeightFix || _controller.IsBusy))
+                {
+                    if (GUILayout.Button(L10n.Tr("この候補を適用", "Apply This Candidate")))
+                    {
+                        ApplyWeightFixFromWindow();
+                        GUIUtility.ExitGUI();
+                    }
+                }
+                if (GUILayout.Button(new GUIContent(L10n.Tr("やめる", "Discard"), L10n.Tr("確認した候補を捨てます（何も変えません）", "Discards the checked candidate (nothing changes)")), GUILayout.Width(70f)))
+                {
+                    _controller.DiscardWeightFixPreview();
+                }
+            }
+        }
+
+        // 前回の「ウェイトを体に寄せる」の結果（窓に残す。通知は短くしている）
+        void DrawLastWeightFix(WeightFixReport last)
+        {
+            if (last == null || last.Preview == null) return;
+            WeightFixPreview p = last.Preview;
+            EditorGUILayout.LabelField(L10n.Tr($"前回のウェイトを体に寄せる: 頂点 {last.ChangedVertices}、{p.ScopeLabel}の突き抜け {p.RegionsBefore} → {p.RegionsAfter} か所（{p.PosesBefore} → {p.PosesAfter} ポーズ）" +
+                    (last.DiscardedUnsaved ? "（保存していない形を戻したので、もう一度チェックしてください）" : ""),
+                $"Last weight fit: {last.ChangedVertices} vertices, poke-through in {p.ScopeLabel} {p.RegionsBefore} → {p.RegionsAfter} place(s) ({p.PosesBefore} → {p.PosesAfter} poses)" +
+                    (last.DiscardedUnsaved ? " (the unsaved shape was reset, so run the check again)" : "")), EditorStyles.wordWrappedMiniLabel);
         }
 
         // 候補を作って調べ直す。ask なら、前後を見せて適用するかを聞く（かんたん表示）
@@ -186,8 +192,8 @@ namespace GP02.EditorTools
                 EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
                 return;
             }
-            Toast(L10n.Tr($"ウェイトを体に寄せました（頂点 {report.ChangedVertices}）。貫通したポーズ {report.Preview.PosesBefore} → {report.Preview.PosesAfter}",
-                $"Fitted the weights to the body ({report.ChangedVertices} vertices). Poses with penetration {report.Preview.PosesBefore} → {report.Preview.PosesAfter}"));
+            // 窓の真ん中の通知は短く（前後の数は、窓の結果の欄に残る）
+            Toast(L10n.Tr("ウェイトを体に寄せました", "Fitted the weights"));
         }
 
         void RemoveWeightFixFromWindow()
@@ -200,7 +206,7 @@ namespace GP02.EditorTools
             }
             if (!ConfirmRebuildForWeights(out bool discard)) return;
             if (!_controller.RemoveWeightFix(discard)) EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
-            else Toast(L10n.Tr("ウェイトの変更を外しました。もう一度チェックしてください", "Removed the weight change. Run the check again"));
+            else Toast(L10n.Tr("ウェイトの変更を外しました", "Removed the weight change"));
             SceneView.RepaintAll();
         }
 

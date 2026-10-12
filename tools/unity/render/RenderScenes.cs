@@ -602,8 +602,9 @@ public static class RenderScenes
     // ---- 動作チェック（Humanoid のテスト用アバターに、いろいろなポーズを付けて貫通を調べる） ----
     // pose_check.png: 1段目 スカート（T ポーズ・座る・左足を上げる・しゃがむ。赤い点が突き抜けた所）、
     //                 2段目 タイツ（座る・しゃがむ）と袖（腕を体の前で曲げる・腕を下ろす）の近くから、
-    //                 3段目 服を別のアーマチュアにしたアバターで座る・腕を上げる、編集の姿勢での最悪の深さの色分け（スカート・タイツ。黄 1mm → 赤 1cm）
-    // pose_escape.png: 「元のポーズで外へ逃がす」の前後（スカート: しゃがむ（半分）・お辞儀（半分）・編集の姿勢。左が前、右が後）
+    //                 3段目 服を別のアーマチュアにしたアバターで座る・腕を上げる、編集の姿勢での最悪の深さの色分け（スカート: よく使うポーズだけ（既定）・すべてのポーズ）、
+    //                 4段目 同じ色分け（タイツ: よく使うポーズだけ・すべてのポーズ。黄 1mm → 赤 1cm）
+    // pose_escape.png: 「元のポーズで外へ逃がす」の前後（スカート: しゃがむ（途中まで）・お辞儀（途中まで）・編集の姿勢。左が前、右が後。大きく動くポーズも直す範囲に入れる）
     // ポーズはアバターの複製に付け、BakeMesh で取り出して描く（-executeMethod では SkinnedMeshRenderer の描画が更新されないため）。
     // ログに、ポーズごとの結果・時間・外へ逃がした前後の件数を出す
 
@@ -630,7 +631,11 @@ public static class RenderScenes
             skirtResult = RunAndLog(controller, "スカート");
             shots.Add(ShotPose(camera, "pose_skirt_0_tpose", controller, null));
             foreach (string id in new[] { "sit", "leg_forward_l", "squat" }) shots.Add(ShotPose(camera, "pose_skirt_" + id, controller, FindEntry(skirtResult, id)));
+            // 色分けは、既定ではよく使うポーズだけ。「大きく動くポーズも直す」なら、座るなども入る
             depthShots.Add(ShotDepth(camera, "pose_skirt_depth", controller));
+            controller.Settings.FixLargePoses = true;
+            controller.ApplyPoseFixScope();
+            depthShots.Add(ShotDepth(camera, "pose_skirt_depth_all", controller));
         }
         finally
         {
@@ -649,6 +654,9 @@ public static class RenderScenes
             camera.transform.LookAt(new Vector3(0f, 0.45f, 0.1f));
             foreach (string id in new[] { "sit", "squat" }) shots.Add(ShotPose(camera, "pose_tights_" + id, controller, FindEntry(result, id)));
             depthShots.Add(ShotDepth(camera, "pose_tights_depth", controller));
+            controller.Settings.FixLargePoses = true;
+            controller.ApplyPoseFixScope();
+            depthShots.Add(ShotDepth(camera, "pose_tights_depth_all", controller));
         }
         finally
         {
@@ -695,7 +703,7 @@ public static class RenderScenes
             ("squat", 0.5f, new Vector3(0.55f, 0.95f, 1.25f), new Vector3(0f, 0.55f, 0.1f)),
             ("bow", 0.5f, new Vector3(1.0f, 1.2f, 0.9f), new Vector3(0f, 0.85f, 0f)),
         };
-        controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
+        controller = new ClothEditController(new ClothEditSettings { FixLargePoses = true }) { BrushRadius = 0.05f, InfluenceRadius = 0.3f };
         try
         {
             if (!controller.TryStart(FindSkinned(escapeRoot, TestAvatarMenu.SkirtName), out string error)) throw new InvalidOperationException(error);
@@ -739,7 +747,8 @@ public static class RenderScenes
     // weight_fit.png: 「ウェイトを体に寄せる」の前後。左から 寄せる前・強さ 100%（既定）・強さ 50%。赤い点は貫通、紫の点は体どうしの重なり（服では直せない所）
     //   1段目 タイツのしゃがむ（ひざ）、2段目 タイツの座る、3段目 袖の腕を体の前で曲げる（ひじ）、4段目 スカートの座る、5段目 スカートのしゃがむ、
     //   6段目 スカートのしゃがむを前の低い所から（脚のあいだの布）
-    //   スカートを強く寄せると、体から離れた布が脚に貼り付いて伸びることがあるので、目で確かめる（ログには伸びの目安を出す）
+    //   スカートを強く寄せると、体から離れた布が脚に貼り付いて伸びることがあるので、目で確かめる（ログには伸びの目安を出す）。
+    //   座る・しゃがむを直すので、「大きく動くポーズも直す」をオンにする
     static void WeightFitScenes()
     {
         const string folder = "Assets/GP02_RenderWeightFit";
@@ -772,7 +781,7 @@ public static class RenderScenes
             foreach (float strength in new[] { 1f, 0.5f })
             {
                 GameObject root = TestAvatarMenu.CreateInScene(null);
-                var controller = new ClothEditController(new ClothEditSettings()) { BrushRadius = 0.05f, InfluenceRadius = 0.3f, RecordToData = false, SaveFolder = folder };
+                var controller = new ClothEditController(new ClothEditSettings { FixLargePoses = true }) { BrushRadius = 0.05f, InfluenceRadius = 0.3f, RecordToData = false, SaveFolder = folder };
                 try
                 {
                     if (!controller.TryStart(FindSkinned(root, garment), out string error)) throw new InvalidOperationException(error);
@@ -841,7 +850,7 @@ public static class RenderScenes
         var timer = System.Diagnostics.Stopwatch.StartNew();
         PoseCheckResult result = controller.RunPoseCheck();
         if (result == null) throw new InvalidOperationException(controller.LastPoseCheckError);
-        Debug.Log($"[GP02描画] 動作チェック（{label}、{timer.ElapsedMilliseconds} ms、{ClothEditSession.DescribeAcceleration(controller.Session.Solver.Kernel)}）: {result.DescribeSummary()} / 基準 {result.Baseline} / {result.BodyDescription}");
+        Debug.Log($"[GP02描画] 動作チェック（{label}、{timer.ElapsedMilliseconds} ms、{ClothEditSession.DescribeAcceleration(controller.Session.Solver.Kernel)}）: {result.DescribeSummary()} / {result.DescribeCommon()} / {result.DescribeLarge()} / 基準 {result.Baseline} / {result.BodyDescription}");
         foreach (PoseCheckEntry entry in result.Entries)
         {
             if (entry.Result.IsPenetrating) Debug.Log($"[GP02描画]   {entry.Name}: {entry.Result}");

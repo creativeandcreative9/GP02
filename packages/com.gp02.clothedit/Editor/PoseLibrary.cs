@@ -5,6 +5,21 @@ using UnityEngine;
 namespace GP02.EditorTools
 {
     /// <summary>
+    /// 動作チェックのポーズの種類。結果の文を分けて出し、直す範囲（<see cref="ClothEditSettings.FixLargePoses"/>）を決める。
+    /// </summary>
+    public enum PoseCategory
+    {
+        /// <summary>よく使うポーズ（歩く・腕・お辞儀・反る・ひねる・首・横に倒す）。手持ちの AnimationClip のコマもこちら。</summary>
+        Common = 0,
+
+        /// <summary>
+        /// 大きく動くポーズ（座る・しゃがむ・足を前に上げる・足を横に開く）。スカートなどでは突き抜けるのが普通
+        /// （VRChat では揺れもの（PhysBone）で動かすことが多い）ので、既定では直す範囲に入れない。
+        /// </summary>
+        Large = 1,
+    }
+
+    /// <summary>
     /// 動作チェックで試すポーズ。Humanoid の筋肉の名前（<see cref="HumanTrait.MuscleName"/>）と、その値（-1〜1）で決める。
     /// 書いていない筋肉は、基準（編集中の今の姿勢）のまま。
     /// </summary>
@@ -18,9 +33,18 @@ namespace GP02.EditorTools
         /// <summary>筋肉の名前と、ポーズでの値（全部のとき）。</summary>
         public readonly (string Muscle, float Value)[] Muscles;
 
+        /// <summary>ポーズの種類（よく使う・大きく動く）。</summary>
+        public readonly PoseCategory Category;
+
         public PosePreset(string id, string nameJa, string nameEn, params (string Muscle, float Value)[] muscles)
+            : this(id, PoseCategory.Common, nameJa, nameEn, muscles)
+        {
+        }
+
+        public PosePreset(string id, PoseCategory category, string nameJa, string nameEn, params (string Muscle, float Value)[] muscles)
         {
             Id = id;
+            Category = category;
             _nameJa = nameJa;
             _nameEn = nameEn;
             Muscles = muscles;
@@ -29,11 +53,14 @@ namespace GP02.EditorTools
         /// <summary>画面の言語に合わせた名前。</summary>
         public string Name => L10n.Tr(_nameJa, _nameEn);
 
+        /// <summary>大きく動くポーズか（<see cref="PoseCategory.Large"/>）。</summary>
+        public bool IsLargeMotion => Category == PoseCategory.Large;
+
         public override string ToString() => Id;
     }
 
     /// <summary>
-    /// 動作チェックのポーズの一覧（15個）と、筋肉の値の作り方。
+    /// 動作チェックのポーズの一覧（15個。大きく動くもの 5 個、よく使うもの 10 個）と、筋肉の値の作り方。
     /// 値は、Unity の筋肉の向き（値が負のほうが名前の前の語。例えば「Upper Leg Front-Back」は負が前、-1 で約 120°）に合わせて、
     /// 関節が自然に曲がる範囲で決めた（座る: 太もも 90°・ひざ 90° が Front-Back -0.667・Stretch -0.125）。
     /// </summary>
@@ -53,16 +80,16 @@ namespace GP02.EditorTools
 
         static readonly PosePreset[] Presets =
         {
-            new PosePreset("sit", "座る", "Sit",
+            new PosePreset("sit", PoseCategory.Large, "座る", "Sit",
                 Join(Both("Upper Leg Front-Back", -0.667f), Both("Lower Leg Stretch", -0.125f), Both("Upper Leg In-Out", 0.1f))),
-            new PosePreset("squat", "しゃがむ", "Squat",
+            new PosePreset("squat", PoseCategory.Large, "しゃがむ", "Squat",
                 Join(Both("Upper Leg Front-Back", -1f), Both("Lower Leg Stretch", -0.9f), Both("Upper Leg In-Out", 0.35f), Both("Foot Up-Down", -0.3f),
                     One("Spine Front-Back", -0.5f), One("Chest Front-Back", -0.3f))),
-            new PosePreset("leg_forward_l", "左足を前に上げる", "Raise Left Leg",
+            new PosePreset("leg_forward_l", PoseCategory.Large, "左足を前に上げる", "Raise Left Leg",
                 Join(One("Left Upper Leg Front-Back", -0.6f), One("Left Lower Leg Stretch", 0.25f))),
-            new PosePreset("leg_forward_r", "右足を前に上げる", "Raise Right Leg",
+            new PosePreset("leg_forward_r", PoseCategory.Large, "右足を前に上げる", "Raise Right Leg",
                 Join(One("Right Upper Leg Front-Back", -0.6f), One("Right Lower Leg Stretch", 0.25f))),
-            new PosePreset("legs_apart", "足を横に開く", "Legs Apart",
+            new PosePreset("legs_apart", PoseCategory.Large, "足を横に開く", "Legs Apart",
                 Both("Upper Leg In-Out", 0.75f)),
             new PosePreset("walk", "歩く（前後）", "Walk (Stride)",
                 Join(One("Left Upper Leg Front-Back", -0.1f), One("Left Lower Leg Stretch", 0.7f),
@@ -92,6 +119,12 @@ namespace GP02.EditorTools
 
         /// <summary>ポーズの一覧（並びは画面に出す順）。</summary>
         public static IReadOnlyList<PosePreset> All => Presets;
+
+        /// <summary>大きく動くポーズのまとめた呼び名（結果の文に出す）。</summary>
+        public static string LargeMotionLabel => L10n.Tr("大きく動くポーズ（座る・しゃがむ・足を上げる・開く）", "Big-motion poses (sit, squat, raise a leg, legs apart)");
+
+        /// <summary>よく使うポーズのまとめた呼び名（結果の文に出す）。</summary>
+        public static string CommonLabel => L10n.Tr("よく使うポーズ", "Everyday poses");
 
         static Dictionary<string, int> _muscleIndex;
 

@@ -86,10 +86,10 @@ namespace GP02.EditorTools
 
             // 元のメッシュそのものを上書きしてしまわないよう、元と同じなら前回の書き出しとはみなさない
             Mesh previous = component.ExportedMesh != source ? component.ExportedMesh : null;
-            Mesh result = SaveMeshAsset(built, previous, folder, "GP02 " + L10n.Tr("メッシュに書き出す", "Export to mesh"));
+            Mesh result = SaveMeshAsset(built, previous, folder, "GP02 " + L10n.Tr("メッシュに反映", "Apply to mesh"));
             AssignMesh(renderer, result, "GP02 " + L10n.Tr("メッシュを割り当て", "Assign mesh"));
             if (bones != null) AssignBones(renderer, bones, "GP02 " + L10n.Tr("ボーンを合わせる", "Fit bones"));
-            Undo.RecordObject(component, "GP02 " + L10n.Tr("書き出したメッシュの記録", "Record exported mesh"));
+            Undo.RecordObject(component, "GP02 " + L10n.Tr("反映したメッシュの記録", "Record exported mesh"));
             component.ExportedMesh = result;
             EditorUtility.SetDirty(component);
             AssetDatabase.SaveAssets();

@@ -16,12 +16,12 @@ namespace GP02.EditorTools
             EditorGUI.BeginChangeCheck();
             var mode = (ShapeKeyApplyMode)EditorGUILayout.Popup(
                 new GUIContent(L10n.Tr("適用のしかた", "Apply mode"),
-                    L10n.Tr("メッシュに書き出す: 書き出したメッシュをシーンのレンダラーに割り当てます。\nビルド時に適用: シーンは元のメッシュのまま、アバターのビルド時だけ BlendShape を足したメッシュに差し替えます（NDMF が必要）",
+                    L10n.Tr("メッシュに反映する: シェイプキーを入れたメッシュを、シーンのレンダラーに付けます（布の編集の保存でも入ります）。\nビルド時に適用: シーンは元のメッシュのまま、アバターのビルド時だけ BlendShape を足したメッシュに差し替えます（NDMF が必要）",
                         "Export to mesh: the exported mesh is assigned to the renderer in the scene.\nApply at build: the scene keeps the original mesh, and the avatar build swaps in a mesh with the BlendShapes (needs NDMF)")),
                 (int)component.ApplyMode,
                 new[]
                 {
-                    new GUIContent(L10n.Tr("メッシュに書き出す", "Export to mesh")),
+                    new GUIContent(L10n.Tr("メッシュに反映する", "Apply to mesh")),
                     new GUIContent(L10n.Tr("ビルド時に適用（NDMF）", "Apply at build (NDMF)")),
                 });
             if (EditorGUI.EndChangeCheck())
@@ -61,7 +61,7 @@ namespace GP02.EditorTools
                 if (!NonDestructiveSupport.IsAvailable)
                 {
                     EditorGUILayout.HelpBox(L10n.Tr(
-                        "NDMF が無いので、ビルド時の自動適用は行われません。『メッシュに書き出す』を使ってください。",
+                        "NDMF が無いので、ビルド時の自動適用は行われません。『メッシュに反映する』を使ってください。",
                         "NDMF is not installed, so the shape keys are not applied automatically at build. Use \"Export to mesh\" instead."), MessageType.Warning);
                 }
                 else
@@ -74,14 +74,14 @@ namespace GP02.EditorTools
                 if (renderer != null && ShapeKeyExporter.GetMeshState(component, renderer) == MeshState.Exported)
                 {
                     EditorGUILayout.HelpBox(L10n.Tr(
-                        "レンダラーは今、書き出したメッシュを使っています。ビルド時は元のメッシュから作り直すので問題ありませんが、シーンで元の形に戻すなら『元のメッシュに戻す』を押してください。",
+                        "レンダラーは今、シェイプキーを反映したメッシュを使っています。ビルド時は元のメッシュから作り直すので問題ありませんが、シーンで元の形に戻すなら『元のメッシュに戻す』を押してください。",
                         "The renderer uses the exported mesh now. The build starts from the original mesh, so this is fine, but press \"Restore the original mesh\" to see the original shape in the scene."), MessageType.None);
                 }
             }
             else
             {
                 EditorGUILayout.HelpBox(L10n.Tr(
-                    "VRChat にアップロードするときは、NDMF が入っていればこのコンポーネントはビルド時に自動で取り除かれます。NDMF が無い場合は、『メッシュに書き出す』を済ませてから、このコンポーネントを外してください。",
+                    "VRChat にアップロードするときは、NDMF が入っていればこのコンポーネントはビルド時に自動で取り除かれます。NDMF が無い場合は、メッシュに反映済みであることを確かめてから、このコンポーネントを外してください。",
                     "When uploading to VRChat, this component is removed automatically at build if NDMF is installed. Without NDMF, export to the mesh first and then remove this component."), MessageType.None);
             }
         }

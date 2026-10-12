@@ -60,7 +60,7 @@ namespace GP02.EditorTools
                 {
                     EditorGUILayout.LabelField(L10n.Tr("表示だけ並べ替えています（データの並びは変わりません）", "Only the display is sorted (the data order is unchanged)"), EditorStyles.miniLabel);
                     if (GUILayout.Button(new GUIContent(L10n.Tr("この並びで確定", "Apply this order"),
-                        L10n.Tr("今の並べ替えを、データの並びにします（書き出す BlendShape の順番も変わります）", "Make this order the data order (the BlendShape order of the export changes too)")), EditorStyles.miniButton, GUILayout.Width(110f)))
+                        L10n.Tr("今の並べ替えを、データの並びにします（メッシュに入れる BlendShape の順番も変わります）", "Make this order the data order (the BlendShape order in the mesh changes too)")), EditorStyles.miniButton, GUILayout.Width(110f)))
                     {
                         Run(() =>
                         {
@@ -106,7 +106,7 @@ namespace GP02.EditorTools
             EditorGUI.showMixedValue = marked > 0 && marked < selected.Count;
             EditorGUI.BeginChangeCheck();
             bool prebake = EditorGUILayout.ToggleLeft(new GUIContent(L10n.Tr("素体に焼き込む（BlendShape にしない）", "Bake into the base (no BlendShape)"),
-                L10n.Tr("書き出し・ビルド時の適用で、このシェイプキーを BlendShape にせず、先に指定の重みで素体の形に焼き込みます。印を外して書き出し直せば素体は元に戻ります（一覧では青い背景）",
+                L10n.Tr("メッシュへの反映・ビルド時の適用で、このシェイプキーを BlendShape にせず、先に指定の重みで素体の形に焼き込みます。印を外して反映し直せば素体は元に戻ります（一覧では青い背景）",
                     "On export and on build, this shape key is not made a BlendShape: it is baked into the base at the given weight first. Remove the mark and export again to get the base back (blue in the list)")),
                 marked == selected.Count && marked > 0);
             bool changed = EditorGUI.EndChangeCheck();
