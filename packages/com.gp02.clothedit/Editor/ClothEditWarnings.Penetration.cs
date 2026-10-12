@@ -16,8 +16,8 @@ namespace GP02.EditorTools
                 $"The body pokes through the cloth in {report.RegionCount} place(s) (up to {report.MaxDepth * 1000f:F1} mm). \"Fix Penetration\" pushes the cloth out of the body while keeping its length.");
             if (report.PinnedCount > 0)
             {
-                message += L10n.Tr($" うち {report.PinnedCount} 粒子はピン留めなので動かせません。直す前に、そこのピンを外してください。",
-                    $" {report.PinnedCount} of the particles are pinned and cannot move; unpin them before fixing.");
+                message += L10n.Tr($" うち {report.PinnedCount} 点はピン留めなので動かせません。直す前に、そこのピンを外してください。",
+                    $" {report.PinnedCount} of the points are pinned and cannot move; unpin them before fixing.");
             }
             result.Add(new TargetWarning(TargetWarningKind.Penetration, MessageType.Warning, message));
         }

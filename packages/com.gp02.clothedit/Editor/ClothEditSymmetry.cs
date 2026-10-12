@@ -26,6 +26,20 @@ namespace GP02.EditorTools
             return top;
         }
 
+        /// <summary>
+        /// アバターの根元（レンダラーの親をたどって最初に見つかる、Animator のある Transform）。見つからなければ null
+        /// （<see cref="FindAvatarRoot"/> と違い、一番上の親での代わりはしない）。服の付け根の自動ピン留めで、高さの向きと縦の軸を決めるのに使う。
+        /// </summary>
+        public static Transform FindAnimatorRoot(Transform renderer)
+        {
+            if (renderer == null) return null;
+            for (Transform t = renderer.parent; t != null; t = t.parent)
+            {
+                if (t.GetComponent<Animator>() != null) return t;
+            }
+            return null;
+        }
+
         /// <summary>軸のローカル座標での向き。</summary>
         public static Vector3 LocalAxis(SymmetryAxis axis)
         {

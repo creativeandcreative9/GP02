@@ -51,6 +51,9 @@ namespace GP02.EditorTools
 
         /// <summary>体が布を突き抜けている（編集中に最後に調べた結果）。</summary>
         Penetration,
+
+        /// <summary>体（素体・顔）のメッシュのようだ（服ではない物を選んだかもしれない。<see cref="BodyMeshGuess"/>）。</summary>
+        LikelyBody,
     }
 
     /// <summary>診断の「直す」ボタンでできること。</summary>
@@ -128,7 +131,7 @@ namespace GP02.EditorTools
             {
                 case TargetWarningFix.EnableReadWrite: return L10n.Tr("Read/Write を有効にする", "Enable Read/Write");
                 case TargetWarningFix.ResetBlendShapeWeights: return L10n.Tr("重みを 0 にする", "Set Weights to 0");
-                case TargetWarningFix.FitMirrorPlane: return L10n.Tr("鏡の面を自動で合わせる", "Auto-Fit Mirror Plane");
+                case TargetWarningFix.FitMirrorPlane: return L10n.Tr("左右の中心を自動で合わせる", "Auto-Fit Mirror Plane");
                 case TargetWarningFix.InstallBurst: return L10n.Tr("Burst を入れる", "Install Burst");
                 default: return "";
             }
@@ -147,6 +150,34 @@ namespace GP02.EditorTools
             }
             items.Clear();
             items.AddRange(sorted);
+        }
+
+        /// <summary>
+        /// 編集中の診断にも出す注意か。編集を始める前の点検だけで出すもの（シェイプキーの重み・体のメッシュのようだ）は false。
+        /// 編集中は、重みを 0 に戻す「直す」が使えず（重みを変えると編集が作り直される）、体のメッシュを選んでいても今さら選び直せないため。
+        /// </summary>
+        public static bool IsShownWhileEditing(TargetWarningKind kind)
+        {
+            return kind != TargetWarningKind.BlendShapeWeights && kind != TargetWarningKind.LikelyBody;
+        }
+
+        /// <summary>
+        /// GP02 が保存したシェイプキー（その衣装の <see cref="GP02ShapeKeys"/> のデータに記録されているもの）の、メッシュでの名前
+        /// （書き出しの前置き・後置きを付けたもの）を names に入れる（先に空にしない）。保存すると、メッシュに入れて重みを 100 にするので、
+        /// 「シェイプキーの重みが 0 でない」の注意から除くのに使う。
+        /// </summary>
+        public static void CollectSavedShapeNames(Renderer target, ICollection<string> names)
+        {
+            if (target == null) return;
+            GP02ShapeKeys component = target.GetComponent<GP02ShapeKeys>();
+            if (component == null || component.Data == null) return;
+            ShapeKeyBuildOptions options = ShapeKeyBuildOptions.FromComponent(component);
+            foreach (ShapeKeyEntry entry in component.Data.Entries)
+            {
+                if (entry == null || string.IsNullOrEmpty(entry.Name)) continue;
+                names.Add(entry.Name);
+                names.Add(options.Decorate(entry.Name));
+            }
         }
 
         /// <summary>頂点がこれ以上だと、編集の開始に数秒かかる。</summary>
@@ -175,6 +206,14 @@ namespace GP02.EditorTools
                         "A prefab asset itself cannot be edited. Select the instance placed in the scene.")));
             }
 
+            // 体（素体・顔）のメッシュのようなら、服ではない物を選んだのかもしれない（編集は止めない）。衣装の候補は、窓が一覧にして出す
+            if (ClothEditStartMenu.IsLikelyBody(target))
+            {
+                result.Add(new TargetWarning(TargetWarningKind.LikelyBody, MessageType.Warning,
+                    L10n.Tr($"「{target.name}」は体のメッシュのようです。服を編集するときは、服のオブジェクトを選んでください。",
+                        $"\"{target.name}\" looks like a body mesh. To edit clothes, select the clothing object.")));
+            }
+
             if (target is MeshRenderer)
             {
                 result.Add(new TargetWarning(TargetWarningKind.MeshRenderer, MessageType.Info,
@@ -186,7 +225,7 @@ namespace GP02.EditorTools
             if (mesh != null && !mesh.isReadable)
             {
                 result.Add(new TargetWarning(TargetWarningKind.Unreadable, MessageType.Warning,
-                    L10n.Tr("このメッシュは Read/Write が無効です。エディタ上では編集できます。メッシュを読めない他のツールと組み合わせるなら、有効にしてください（ボタンで直せます）。",
+                    L10n.Tr("この衣装のメッシュは Read/Write が無効です。エディタ上では編集できます。メッシュを読めない他のツールと組み合わせるなら、有効にしてください（ボタンで直せます）。",
                         "This mesh has Read/Write disabled. You can edit it in the editor. Enable it if you combine this with other tools that need to read the mesh (the button fixes it)."),
                     TargetWarningFix.EnableReadWrite));
             }
@@ -215,7 +254,7 @@ namespace GP02.EditorTools
             if (scale.x * scale.y * scale.z < 0f)
             {
                 result.Add(new TargetWarning(TargetWarningKind.NegativeScale, MessageType.Warning,
-                    L10n.Tr($"「{target.name}」か親のスケールが負です（裏返し）。面の表裏や鏡の向きが逆になり、「元の形より内側に入らない」が反対に効くことがあります。スケールを正の値にしてください。",
+                    L10n.Tr($"「{target.name}」か親のスケールが負です（裏返し）。面の表裏や左右の向きが逆になり、「元の形より内側に入らない」が反対に効くことがあります。スケールを正の値にしてください。",
                         $"The scale of \"{target.name}\" or a parent is negative (mirrored). Faces and the mirror direction flip, and \"Stay Outside Original Surface\" may work in reverse. Use a positive scale.")));
             }
             float maxScale = Mathf.Max(Mathf.Abs(scale.x), Mathf.Max(Mathf.Abs(scale.y), Mathf.Abs(scale.z)));
@@ -223,19 +262,24 @@ namespace GP02.EditorTools
             if (maxScale > 0f && (maxScale - minScale) > NonUniformScaleTolerance * maxScale)
             {
                 result.Add(new TargetWarning(TargetWarningKind.NonUniformScale, MessageType.Info,
-                    L10n.Tr($"「{target.name}」か親のスケールが軸ごとに違います（{scale.x:0.###}, {scale.y:0.###}, {scale.z:0.###}）。編集はできますが、粒子の 1cm 間隔は見た目の大きさで決まり、保存した差分はメッシュの座標に直して入れます。",
+                    L10n.Tr($"「{target.name}」か親のスケールが軸ごとに違います（{scale.x:0.###}, {scale.y:0.###}, {scale.z:0.###}）。編集はできますが、点の 1cm 間隔は見た目の大きさで決まり、保存した差分はメッシュの座標に直して入れます。",
                         $"The scale of \"{target.name}\" or a parent differs per axis ({scale.x:0.###}, {scale.y:0.###}, {scale.z:0.###}). Editing works, but the 1 cm particle spacing follows the visible size, and saved deltas are converted to mesh coordinates.")));
             }
 
             if (target is SkinnedMeshRenderer skinned && mesh != null)
             {
+                // GP02 が保存したシェイプキーは、保存すると重みが 100 になるのが普通なので、数えない（保存した直後に、壊れたように見えないため）
+                var saved = new HashSet<string>();
+                CollectSavedShapeNames(target, saved);
                 int nonZero = 0;
                 string first = null;
                 for (int k = 0; k < mesh.blendShapeCount; k++)
                 {
                     if (Mathf.Abs(skinned.GetBlendShapeWeight(k)) <= 1e-4f) continue;
+                    string shapeName = mesh.GetBlendShapeName(k);
+                    if (saved.Contains(shapeName)) continue;
                     nonZero++;
-                    if (first == null) first = mesh.GetBlendShapeName(k);
+                    if (first == null) first = shapeName;
                 }
                 if (nonZero > 0)
                 {
@@ -264,7 +308,7 @@ namespace GP02.EditorTools
             if (sharing > 0)
             {
                 result.Add(new TargetWarning(TargetWarningKind.SharedMesh, MessageType.Info,
-                    L10n.Tr($"同じメッシュを、ほかのレンダラーも使っています（{sharing} 個）。保存はメッシュの複製に入れるので、ほかのレンダラーの見た目は変わりません。同じ形にしたいときは、保存したメッシュをそちらにも割り当ててください。",
+                    L10n.Tr($"同じメッシュを、ほかのオブジェクトも使っています（{sharing} 個）。保存はメッシュの複製に入れるので、ほかのオブジェクトの見た目は変わりません。同じ形にしたいときは、保存したメッシュをそちらにも割り当ててください。",
                         $"Other renderers ({sharing}) also use the same mesh. Saving goes into a copy of the mesh, so their appearance does not change. Assign the saved mesh to them too if they should match.")));
             }
         }
@@ -306,7 +350,7 @@ namespace GP02.EditorTools
             if (session.PinnedCount == 0)
             {
                 result.Add(new TargetWarning(TargetWarningKind.NoPins, MessageType.Info,
-                    L10n.Tr("ピンが1つもありません。布全体が動きやすく、つまんだ所から遠くまで引っ張られます。動かしたくない所（ウエストや肩など）をピン留めしてください。",
+                    L10n.Tr("ピンが1つもありません。布全体が動きやすく、つまんだ所から遠くまで引っ張られます。動かしたくない所（ウエストや肩など）をピン留めしてください（「服の付け根を自動でピン留め」が便利です）。",
                         "There are no pins. The whole cloth moves easily and is dragged far from where you grab. Pin the parts that should not move (such as the waist or shoulders).")));
             }
 
@@ -316,7 +360,7 @@ namespace GP02.EditorTools
                 if (ratio > ClothEditSettings.UnmatchedMirrorWarnRatio)
                 {
                     result.Add(new TargetWarning(TargetWarningKind.UnmatchedMirror, MessageType.Warning,
-                        L10n.Tr($"対称の相手のいない点が {ratio * 100f:F0}% あります。その点をつまんでも、反対側は動きません。衣装が中心からずれているなら「鏡の面を自動で合わせる」、左右で形が違うなら「鏡像を探す許容距離」を広げてください。",
+                        L10n.Tr($"左右の相手のいない点が {ratio * 100f:F0}% あります。その点をつまんでも、反対側は動きません。衣装が中心からずれているなら「左右の中心を自動で合わせる」を押してください（左右で形が違うときは、くわしく表示の「鏡像を探す許容距離」を広げます）。",
                             $"{ratio * 100f:F0}% of the points have no mirror partner. Grabbing them does not move the opposite side. If the outfit is off-center, use Auto-Fit Mirror Plane; if the sides differ in shape, widen the mirror tolerance."),
                         TargetWarningFix.FitMirrorPlane));
                 }

@@ -201,7 +201,7 @@ namespace GP02.EditorTools
         public ClothEditSession(IReadOnlyList<Renderer> renderers, ParticleCloth cloth)
         {
             if (renderers == null) throw new ArgumentNullException(nameof(renderers));
-            if (renderers.Count == 0) throw new ArgumentException(L10n.Tr("対象のレンダラーがありません。", "There are no target renderers."), nameof(renderers));
+            if (renderers.Count == 0) throw new ArgumentException(L10n.Tr("対象の衣装がありません。", "There are no target renderers."), nameof(renderers));
             _parts = new Part[renderers.Count];
             _renderers = new Renderer[renderers.Count];
             var timer = Stopwatch.StartNew();

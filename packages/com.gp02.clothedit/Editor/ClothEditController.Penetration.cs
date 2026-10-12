@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using GP02.Core;
 using UnityEditor;
 using UnityEngine;
@@ -19,6 +20,40 @@ namespace GP02.EditorTools
 
         /// <summary>調べたあとに形が変わったか（<see cref="LastPenetration"/> が古いかもしれない）。</summary>
         public bool IsPenetrationStale => _session != null && _session.IsPenetrationStale;
+
+        // ---- 操作を確定するたびの、自動の調べ直し ----
+        // 体があれば、操作の仕上げが終わるたび（つまむ・回す・選んで動かす・元に戻すブラシ・ピン留め・外へ逃がす・貫通を直す・すべて元に戻す）と、
+        // Undo / Redo のあとに、貫通を調べ直す。調べるのは約 0.1 秒なので、操作の邪魔にならない。
+        // 1回の調べるのに 0.3 秒より長くかかる衣装（2回続けて）では、自動をやめる（「調べ直す」を押してもらう。画面は、古いという表示を出す）。
+
+        /// <summary>自動で調べ直すのをやめる、1回の調べるのにかかる時間（秒）。</summary>
+        public const double AutoPenetrationMaxSeconds = 0.3;
+
+        // 自動で調べ直す間隔の下限（秒）。Tick から見つけるときに、続けて何度も調べないため
+        const double AutoPenetrationMinInterval = 0.2;
+
+        int _slowAutoPenetration;         // 続けて 0.3 秒を超えた回数。2 回でやめる
+        bool _autoPenetrationOff;
+        double _lastAutoPenetrationAt = double.NegativeInfinity;
+
+        /// <summary>
+        /// 操作を確定するたびに、貫通を自動で調べ直しているか。体が無いとき、または、調べるのに時間がかかりすぎて自動をやめたときは false。
+        /// </summary>
+        public bool IsAutoPenetrationCheck => _session != null && _session.Body != null && !_autoPenetrationOff;
+
+        /// <summary>
+        /// 最後に調べた結果が、今の形・ピン・余白と合っていないか。形が変わった（<see cref="IsPenetrationStale"/>）、ピンの数が変わった、
+        /// 設定の余白が変わった、のどれか。まだ調べていなければ false。
+        /// </summary>
+        public bool NeedsPenetrationRefresh
+        {
+            get
+            {
+                PenetrationReport report = LastPenetration;
+                if (_session == null || report == null) return false;
+                return _session.IsPenetrationStale || _session.IsPenetrationPinStale || Mathf.Abs(report.Margin - _settings.PenetrationMargin) > 1e-6f;
+            }
+        }
 
         /// <summary>設定（余白など）に従った、貫通の検出と押し出しの設定。</summary>
         public PenetrationOptions BuildPenetrationOptions() => _settings.BuildPenetrationOptions();
@@ -88,13 +123,58 @@ namespace GP02.EditorTools
         // Undo / Redo で形が戻ったら、調べた結果も今の形で調べ直す（直したのを戻すと、赤い点がまた出る）。OnUndoRedoPerformed から呼ぶ
         void RedetectPenetrationIfStale()
         {
-            if (_session == null || _session.Body == null || _session.LastPenetration == null || !_session.IsPenetrationStale) return;
+            if (_session == null || _session.Body == null || _session.LastPenetration == null || !NeedsPenetrationRefresh) return;
             _session.DetectPenetration(BuildPenetrationOptions());
+        }
+
+        // 操作を確定した（CommitOperation）あと、結果が合わなくなっていれば、自動で調べ直す
+        void AutoDetectPenetrationAfterCommit()
+        {
+            if (!IsAutoPenetrationCheck || !NeedsPenetrationRefresh) return;
+            AutoDetectPenetration();
+        }
+
+        // Tick から: 確定のあとではない形の変化（外へ逃がしたのを取り消したなど）も、手を止めている間に見つけて調べ直す
+        void TickAutoPenetration(double now)
+        {
+            if (!IsAutoPenetrationCheck || IsBusy || _opOpen || _pointerDown || !NeedsPenetrationRefresh) return;
+            if (now - _lastAutoPenetrationAt < AutoPenetrationMinInterval) return;
+            _lastAutoPenetrationAt = now;
+            AutoDetectPenetration();
+        }
+
+        void AutoDetectPenetration()
+        {
+            var timer = Stopwatch.StartNew();
+            PenetrationReport report = _session.DetectPenetration(BuildPenetrationOptions());
+            NoteAutoPenetrationTime(timer.Elapsed.TotalSeconds);
+            ClothEditLog.Info("[GP02] " + _session.DescribeTargets() + ": 貫通を調べ直しました。" + report);
+            Notify();
+        }
+
+        // 自動で調べ直すのにかかった時間を記録する。0.3 秒を超えるのが2回続いたら、自動をやめる（テストから時間を渡せるよう、分けてある）
+        internal void NoteAutoPenetrationTime(double seconds)
+        {
+            if (seconds > AutoPenetrationMaxSeconds)
+            {
+                if (++_slowAutoPenetration >= 2 && !_autoPenetrationOff)
+                {
+                    _autoPenetrationOff = true;
+                    ClothEditLog.Info($"[GP02] 貫通を調べるのに {seconds * 1000.0:F0} ms かかったので、自動で調べ直すのをやめました（「調べ直す」で調べられます）");
+                }
+            }
+            else
+            {
+                _slowAutoPenetration = 0;
+            }
         }
 
         // 編集を始めたとき（保存後の作り直しも）に1回調べる（StartSession から呼ぶ）
         void DetectPenetrationOnStart()
         {
+            _autoPenetrationOff = false;
+            _slowAutoPenetration = 0;
+            _lastAutoPenetrationAt = double.NegativeInfinity;
             PenetrationReport report = _session.DetectPenetration(BuildPenetrationOptions());
             if (report.HasBody) ClothEditLog.Info("[GP02] " + _session.DescribeTargets() + ": " + report);
         }

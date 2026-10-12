@@ -454,14 +454,14 @@ namespace GP02.EditorTools
         {
             if (renderer == null)
             {
-                return L10n.Tr("対象が指定されていません。「対象」に、布の SkinnedMeshRenderer（または MeshFilter 付きの MeshRenderer）を指定してください。",
-                    "No target is set. Set the cloth's SkinnedMeshRenderer (or a MeshRenderer with a MeshFilter) as the target.");
+                return L10n.Tr("対象が指定されていません。Hierarchy で衣装を選ぶか、「対象」に衣装を入れてください。",
+                    "No target is set. Select the outfit in the Hierarchy, or set it as the target (a SkinnedMeshRenderer, or a MeshRenderer with a MeshFilter).");
             }
             Mesh mesh = GetMesh(renderer);
             if (mesh == null)
             {
-                return L10n.Tr($"「{renderer.name}」にメッシュが設定されていません。メッシュを持つ SkinnedMeshRenderer か、MeshFilter 付きの MeshRenderer を指定してください。",
-                    $"\"{renderer.name}\" has no mesh. Choose a SkinnedMeshRenderer that has a mesh, or a MeshRenderer with a MeshFilter.");
+                return L10n.Tr($"「{renderer.name}」にはメッシュがありません。メッシュのある衣装を指定してください。",
+                    $"\"{renderer.name}\" has no mesh. Choose an outfit that has a mesh (a SkinnedMeshRenderer, or a MeshRenderer with a MeshFilter).");
             }
             if (ClothEditSession.CountTriangles(mesh) == 0)
             {
@@ -624,7 +624,7 @@ namespace GP02.EditorTools
             if (reuseCloth != null && !ClothEditSession.IsClothCompatible(_targets, reuseCloth)) reuseCloth = null;
             try
             {
-                if (ShowProgress) EditorUtility.DisplayProgressBar("GP02", L10n.Tr("メッシュを粒子にしています…", "Converting the mesh to particles..."), 0.5f);
+                if (ShowProgress) EditorUtility.DisplayProgressBar("GP02", L10n.Tr("衣装を準備しています…", "Getting the outfit ready..."), 0.5f);
                 _session = new ClothEditSession(_targets, reuseCloth);
             }
             catch (ArgumentException ex)
@@ -2053,6 +2053,7 @@ namespace GP02.EditorTools
         {
             if (!EnsureAlive()) return;
             TickPoseCheck(now);
+            TickAutoPenetration(now);
             if (!_dragging && !_settling) return;
             // 動かしていないうちは計算しない（クリックしただけで形が変わらないように）
             if (_dragging && !_moved) return;
@@ -2122,6 +2123,7 @@ namespace GP02.EditorTools
             }
             _session.WriteState(_state);
             Undo.IncrementCurrentGroup();
+            AutoDetectPenetrationAfterCommit();
         }
 
         void RevertRecords(int group)

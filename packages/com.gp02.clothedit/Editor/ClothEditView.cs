@@ -105,6 +105,9 @@ namespace GP02.EditorTools
         /// <summary>保存: 保存したシェイプキーの簡単な一覧。</summary>
         SavedKeyList,
 
+        /// <summary>保存したシェイプキーの一覧の「重ねて見る」スライダー（編集中の形に、保存した形を橙の半透明で重ねて見る。かんたん表示では、レンダラーの実際の重みを言葉で出す）。</summary>
+        SavedKeyOverlay,
+
         /// <summary>詳細設定の区切り（曲がりやすさ・仕上げ・高速化など）。</summary>
         AdvancedSettings,
 

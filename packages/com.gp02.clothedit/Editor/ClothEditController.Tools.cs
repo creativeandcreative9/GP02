@@ -169,7 +169,7 @@ namespace GP02.EditorTools
             }
             _settings.SymmetryOffset = localOffset;
             ApplySettings();
-            message = L10n.Tr($"鏡の面を合わせました（中心のずれ {localOffset * 100f:F1}cm、鏡に映して重なった割合 {matched * 100f:F0}%）。",
+            message = L10n.Tr($"左右の中心を合わせました（中心のずれ {localOffset * 100f:F1}cm、鏡に映して重なった割合 {matched * 100f:F0}%）。",
                 $"Fitted the mirror plane (center offset {localOffset * 100f:F1} cm, {matched * 100f:F0}% of the mirrored points overlap).");
             return true;
         }

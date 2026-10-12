@@ -36,6 +36,11 @@ namespace GP02.EditorTools
         /// <summary>調べたあとに形が変わったか（結果が古いかもしれない）。</summary>
         public bool IsPenetrationStale => _penetration != null && _penetrationVersion != _shapeVersion;
 
+        int _penetrationPins = -1;
+
+        /// <summary>調べたあとに、ピン留めの数が変わったか（結果の「うちピン留め N 点」が古いかもしれない）。</summary>
+        public bool IsPenetrationPinStale => _penetration != null && _penetrationPins != _pinnedCount;
+
         // コンストラクターから呼ぶ。ほかのレンダラーを集め、体の表面を作ってソルバーに渡す。集めたものは隙間の測定にも使う
         OtherRendererMeshes PrepareBody()
         {
@@ -103,6 +108,7 @@ namespace GP02.EditorTools
             if (_penetration == null) _penetration = new PenetrationReport();
             _penetrationDetector.Detect(_solver, Body, options, _penetration);
             _penetrationVersion = _shapeVersion;
+            _penetrationPins = _pinnedCount;
             return _penetration;
         }
 
@@ -121,6 +127,7 @@ namespace GP02.EditorTools
             PenetrationFixResult result = PenetrationFixer.Fix(_penetrationDetector, _solver, Body, options, _penetration);
             UpdateCurrentShape();
             _penetrationVersion = _shapeVersion;
+            _penetrationPins = _pinnedCount;
             LastPenetrationFix = result;
             return result;
         }

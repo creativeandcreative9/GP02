@@ -28,11 +28,19 @@ namespace GP02.EditorTools
             return distance >= WarnDistance && distance >= WarnRatio * pulled;
         }
 
-        /// <summary>シーンビューに出す一言。</summary>
-        public static string Message()
+        /// <summary>
+        /// シーンビューに出す一言。今の画面でできることを言う。かんたん表示は、「選んで動かす（Q）」の「形だけ動かす」だけ
+        /// （「伸びやすさ」の設定は、かんたん表示に無いので出さない）。くわしく表示は、伸びやすさにも触れる。
+        /// </summary>
+        /// <param name="detailed">くわしく表示か</param>
+        public static string Message(bool detailed = false)
         {
-            return L10n.Tr("布の長さが足りません — 形だけ動かすか、伸びやすさを上げると届きます",
-                "The cloth is not long enough — move the shape only, or raise Stretchiness, to reach");
+            string q = ClothEditHelp.ToolKey(ClothEditMode.Select);
+            return detailed
+                ? L10n.Tr($"布の長さが足りず、ここで止まりました。選んで動かす（{q}）の『形だけ動かす』か、詳細設定の『伸びやすさ』を上げると届きます",
+                    $"The cloth is not long enough, so it stopped here. Select & Move ({q}) with \"Shape only\", or a higher Stretchiness in Advanced, reaches farther")
+                : L10n.Tr($"布の長さが足りず、ここで止まりました。選んで動かす（{q}）の『形だけ動かす』なら届きます",
+                    $"The cloth is not long enough, so it stopped here. Select & Move ({q}) with \"Shape only\" can reach it");
         }
     }
 }

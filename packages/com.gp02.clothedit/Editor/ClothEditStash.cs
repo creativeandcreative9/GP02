@@ -451,8 +451,8 @@ namespace GP02.EditorTools
             }
             if (record.ParticleCount != session.ParticleCount)
             {
-                reason = L10n.Tr($"粒子の数が前回と違います（前回 {record.ParticleCount:N0}、今 {session.ParticleCount:N0}）。衣装の形が変わったようです。",
-                    $"The particle count differs from last time (then {record.ParticleCount:N0}, now {session.ParticleCount:N0}). The outfit seems to have changed.");
+                reason = L10n.Tr($"点の数が前回と違います（前回 {record.ParticleCount:N0}、今 {session.ParticleCount:N0}）。衣装の形が変わったようです。",
+                    $"The point count differs from last time (then {record.ParticleCount:N0}, now {session.ParticleCount:N0}). The outfit seems to have changed.");
                 return false;
             }
             NVector3[] rest = session.Cloth.Model.RestPositions;
