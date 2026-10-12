@@ -1180,7 +1180,10 @@ namespace GP02.Tests
                 Assert.That(en, Is.Not.EqualTo(ja));
             }
             L10n.Language = UiLanguage.Japanese;
-            Assert.That(ClothEditHelp.GetHint(ClothEditMode.Rotate, true, false), Does.Contain("15°"));
+            // 案内は短い1行（細かい操作は、ショートカット一覧と道具のツールチップ）。つまんでいる間は、取り消しのキーを出す
+            Assert.That(ClothEditHelp.GetHint(ClothEditMode.Rotate, true, false), Does.Contain("回して").And.Contain("Esc"));
+            Assert.That(ClothEditHelp.GetHint(ClothEditMode.Rotate, false, false), Does.Contain("横にドラッグ"));
+            Assert.That(ClothEditHelp.ToolTip(ClothEditMode.Rotate), Does.Contain("15°"), "15°刻みは、ツールチップに残してある");
             Assert.That(ClothEditHelp.GetHint(ClothEditMode.Grab, false, true), Does.Contain("仕上げ"));
             Assert.That(ClothEditHelp.GetHint(ClothEditMode.Grab, true, false), Does.Contain("つまんで"));
 

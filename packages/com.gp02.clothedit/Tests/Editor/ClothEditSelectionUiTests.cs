@@ -417,12 +417,13 @@ namespace GP02.Tests
         [Test]
         public void Help_SelectMoveHints_ChangeWithTheSelectionAndTheState()
         {
+            // 案内は短く（細かい操作はショートカット一覧へ）。選ぶ前は「点を選ぶ」、選んだあとは「ハンドルで動かす」と選んだ数
             string empty = ClothEditHelp.GetHint(ClothEditMode.Select, false, false, 0);
-            Assert.That(empty, Does.Contain("選んで動かす").And.Contain("Q").And.Contain("矩形").And.Contain("ダブルクリック").And.Contain("Esc").And.Contain("空の所").And.Contain("F1"));
+            Assert.That(empty, Does.Contain("選んで動かす").And.Contain("Q").And.Contain("ドラッグで点を選ぶ").And.Contain("ハンドル").And.Contain("F1"));
             string withSelection = ClothEditHelp.GetHint(ClothEditMode.Select, false, false, 1234);
-            Assert.That(withSelection, Does.Contain("1,234").And.Contain("ハンドル").And.Contain("Shift").And.Contain("Ctrl").And.Contain("W E R"));
+            Assert.That(withSelection, Does.Contain("1,234").And.Contain("ハンドル").And.Contain("F1"));
             Assert.That(withSelection, Is.Not.EqualTo(empty));
-            Assert.That(ClothEditHelp.GetHint(ClothEditMode.Select, true, false, 10), Does.Contain("動かして").And.Not.Contain("つまんで"));
+            Assert.That(ClothEditHelp.GetHint(ClothEditMode.Select, true, false, 10), Does.Contain("動かして").And.Not.Contain("つまんで").And.Contain("Esc"));
             Assert.That(ClothEditHelp.GetHint(ClothEditMode.Select, false, true, 10), Does.Contain("仕上げ"));
             L10n.Language = UiLanguage.English;
             Assert.That(ClothEditHelp.GetHint(ClothEditMode.Select, false, false, 3), Does.Contain("Select & Move").And.Contain("selected"));
@@ -437,7 +438,7 @@ namespace GP02.Tests
                 var lines = new List<KeyValuePair<string, string>>();
                 ClothEditHelp.GetShortcutLines(lines);
                 Assert.That(lines.Exists(l => l.Key == "Q"), Is.True, "Q");
-                Assert.That(lines.Count(l => l.Key.Contains("Shift") && (l.Value.Contains("矩形") || l.Value.Contains("rectangle"))), Is.GreaterThanOrEqualTo(2), "ピン留めと選ぶの矩形");
+                Assert.That(lines.Count(l => l.Key.Contains("Shift") && (l.Value.Contains("四角") || l.Value.Contains("box"))), Is.GreaterThanOrEqualTo(2), "ピン留めと選ぶの、四角で囲む操作");
                 Assert.That(lines.Exists(l => l.Key.Contains("ダブルクリック") || l.Key.Contains("Double-click")), Is.True);
                 Assert.That(lines.Exists(l => l.Key.Contains("ハンドル") || l.Key.Contains("handle")), Is.True);
                 Assert.That(lines.Find(l => l.Key == "W").Value, Does.Contain(language == UiLanguage.Japanese ? "ハンドル" : "handle"));

@@ -568,7 +568,8 @@ namespace GP02.Tests
             L10n.Language = UiLanguage.Japanese;
             var lines = new List<KeyValuePair<string, string>>();
             ClothEditHelp.GetShortcutLines(lines);
-            Assert.That(lines.Exists(l => l.Key.Contains("Shift") && l.Value.Contains("矩形")), Is.True, "矩形でのピン留めがショートカット一覧にある");
+            Assert.That(lines.Exists(l => l.Key.Contains("Shift") && l.Value.Contains("四角")), Is.True, "四角で囲んでのピン留めがショートカット一覧にある");
+            Assert.That(lines.Exists(l => l.Value.Contains("矩形") || l.Value.Contains("島") || l.Value.Contains("粒子")), Is.False, "かんたんに読める言葉にしてある");
         }
 
         // ---- 法線の計算し直し ----

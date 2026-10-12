@@ -246,6 +246,8 @@ namespace GP02.Tests
                 ClothEditUiItem.ShapeKeyBulkEnable, ClothEditUiItem.ShapeKeyGroups, ClothEditUiItem.ShapeKeySolo, ClothEditUiItem.ShapeKeyDetails,
                 ClothEditUiItem.ShapeKeyMoreOperations, ClothEditUiItem.ShapeKeyOperationSettings, ClothEditUiItem.ShapeKeyImport,
                 ClothEditUiItem.ShapeKeyApplyMode, ClothEditUiItem.ShapeKeyExportDetails, ClothEditUiItem.ShapeKeyBackups,
+                // 保存したシェイプキーを「重ねて見る」スライダー（かんたん表示では、反映中かどうかの表示だけ）
+                ClothEditUiItem.SavedKeyOverlay,
             };
             foreach (ClothEditUiItem item in simple) Assert.That(ClothEditView.Shows(item, ClothEditViewMode.Simple), Is.True, item + " はかんたん表示でも出す");
             foreach (ClothEditUiItem item in detailedOnly) Assert.That(ClothEditView.Shows(item, ClothEditViewMode.Simple), Is.False, item + " はくわしく表示だけ");
@@ -490,7 +492,8 @@ namespace GP02.Tests
                 L10n.Language = language;
                 string normal = ClothEditHelp.GetHint(ClothEditMode.Pin, false, false, 0, false);
                 string erase = ClothEditHelp.GetHint(ClothEditMode.Pin, false, false, 0, true);
-                Assert.That(normal, Does.Contain("Ctrl+").And.Contain("Shift+"));
+                // シーンの案内は一番大事な操作だけ（Shift+ の四角囲みは、道具の説明とショートカット一覧にある）
+                Assert.That(normal, Does.Contain("Ctrl+"));
                 Assert.That(erase, Is.Not.EqualTo(normal), "塗ると外すがオンなら、案内が変わる");
                 string tip = ClothEditHelp.ToolTip(ClothEditMode.Pin);
                 Assert.That(tip, Does.Contain("Ctrl+").And.Contain("Shift+"));
@@ -1230,7 +1233,8 @@ namespace GP02.Tests
             Assert.That(ClothEditReach.IsOutOfReach(0.01f, 0.04f), Is.True, "1cm かつ引いた量の2割以上");
             Assert.That(ClothEditReach.IsOutOfReach(0.009f, 0.01f), Is.False, "1cm に満たなければ、割合が大きくても出さない");
             Assert.That(ClothEditReach.IsOutOfReach(0.5f, 0.5f), Is.True);
-            Assert.That(ClothEditReach.Message(), Does.Contain("布の長さが足りません").And.Contain("形だけ動かす").And.Contain("伸びやすさ"));
+            Assert.That(ClothEditReach.Message(), Does.Contain("布の長さが足りず").And.Contain("形だけ動かす"));
+            Assert.That(ClothEditReach.Message(true), Does.Contain("布の長さが足りず").And.Contain("形だけ動かす").And.Contain("伸びやすさ"), "くわしく表示は、伸びやすさにも触れる");
             L10n.Language = UiLanguage.English;
             Assert.That(ClothEditReach.Message(), Does.Contain("not long enough"));
         }
