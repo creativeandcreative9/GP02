@@ -60,7 +60,8 @@ namespace GP02.EditorTools
         Renderer _target;                // 対象（複数のときは最初のもの）
         readonly List<Renderer> _targets = new List<Renderer>();
         ClothEditSession _session;
-        ClothEditState _state;          // Unity の Undo の記録先（セッションごとに作る）
+        ClothEditState _state;          // Unity の Undo の記録先（セッションごとに作る。RebuildSession では引き継ぐ）
+        ClothEditState _carriedState;   // RebuildSession が、作り直す間だけ預ける記録先（StartSession が受け取る）
         float _influenceRadius = 0.3f;
         float _brushRadius = 0.03f;
         bool _disposed;
@@ -674,7 +675,8 @@ namespace GP02.EditorTools
             DetectPenetrationOnStart();
 
             // 作り直した直後の形が、Undo の戻り先の基準になる
-            _state = ClothEditState.Create();
+            _state = _carriedState != null ? _carriedState : ClothEditState.Create();
+            _carriedState = null;
             _session.WriteState(_state);
             _avatarRoot = ClothEditSymmetry.FindAvatarRoot(_target.transform);
             _previewKeyValid = false;
@@ -2201,7 +2203,27 @@ namespace GP02.EditorTools
             // 作り直す前の形（今のセッションの行列で、メッシュ空間の差分にしておく。メッシュのウェイトが変わっても、差分は頂点ごとに同じ意味を持つ）
             bool hadUnsaved = HasUnsavedEdits;
             Vector3[] deltas = keepEdit && hadUnsaved ? _session.GetMeshSpaceDeltas() : null;
-            if (!StartSession(pins, pinIslands, null, null, carry, out _) || deltas == null) return false;
+            // Undo の戻り先の入れ物は、作り直しても引き継ぐ（End が消すと、作り直す前の操作（外へ逃がす・つまむなど）の Ctrl+Z の記録がなくなり、
+            // 作り直したあとに Ctrl+Z を続けても、その形が戻らない）。形を捨てて作り直すときは、前の記録に合わないので引き継がない
+            ClothEditState keptState = keepEdit ? _state : null;
+            if (keptState != null)
+            {
+                _carriedState = keptState;
+                _state = null;
+            }
+            bool started;
+            try { started = StartSession(pins, pinIslands, null, null, carry, out _); }
+            finally
+            {
+                // 使われなかった（作り直せなかった）ときは、ここで片付ける
+                if (_carriedState != null)
+                {
+                    Undo.ClearUndo(_carriedState);
+                    Object.DestroyImmediate(_carriedState);
+                    _carriedState = null;
+                }
+            }
+            if (!started || deltas == null) return false;
 
             if (deltas.Length != _session.VertexCount)
             {

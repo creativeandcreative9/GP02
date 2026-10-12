@@ -330,6 +330,84 @@ namespace GP02.Tests
             Assert.That(c.IsPoseCheckStale, Is.False);
         }
 
+        // ---- 外へ逃がす → ウェイトを体に寄せる ----
+
+        // 大きく動くポーズも直す範囲のスカートで、おすすめの順（外へ逃がす → 続けてウェイトを体に寄せる）に押す。
+        // 外へ逃がした形は保存していない編集で、ウェイトを適用するときの作り直しで引き継がれる。Ctrl+Z の1回目はウェイトだけ、2回目で外へ逃がした形が戻る。
+        [Test]
+        public void EscapeThenFitWeights_CarriesTheEscapedShape_AndEachCtrlZGoesBackOneStep()
+        {
+            GameObject root = CreateAvatar();
+            SkinnedMeshRenderer skirt = Find(root, TestAvatarMenu.SkirtName);
+            Mesh original = skirt.sharedMesh;
+            ClothEditController c = Start(skirt);
+            Assert.That(c.HasUnsavedEdits, Is.False);
+
+            // 1. 動作チェック。外へ逃がせる浅い所が1か所以上ある
+            PoseCheckResult first = c.RunPoseCheck();
+            Assert.That(first, Is.Not.Null, c.LastPoseCheckError);
+            PoseFixAdvice adviceBefore = PoseFixAdvice.From(first, null);
+            Debug.Log($"[GP02計測] 外へ逃がす前: おすすめ 浅い所 {adviceBefore.EscapeRegions}、ウェイトが原因 {adviceBefore.WeightRegions}、直す範囲のか所 {first.FixSummary.TotalRegionCount}（外へ逃がせる所 {first.EscapePlan?.PushedRegions ?? 0}）");
+            Assert.That(adviceBefore.EscapeRegions, Is.GreaterThan(0), $"外へ逃がせる浅い所が無い（浅い所 {adviceBefore.EscapeRegions}、ウェイトが原因 {adviceBefore.WeightRegions}）");
+            Assert.That(c.CanEscapePoseCheck, Is.True, "外へ逃がせない");
+            Assert.That(c.HasUnsavedEdits, Is.False, "チェックだけでは、形は変わらない");
+            int totalBefore = first.FixSummary.TotalRegionCount;
+            Undo.IncrementCurrentGroup();
+
+            // 2. 外へ逃がす
+            PoseEscapeReport escape = c.EscapePoseCheckPenetration();
+            Assert.That(escape, Is.Not.Null, "外へ逃がせなかった");
+            Assert.That(escape.Reverted, Is.False, $"外へ逃がしたが効かなくて元に戻された（直す範囲のか所 {escape.ScopeRegionsBefore} → {escape.ScopeRegionsAfter}）");
+            Assert.That(escape.Rechecked, Is.True, "外へ逃がしたあとに、調べ直していない");
+            Assert.That(c.HasUnsavedEdits, Is.True, "外へ逃がしたのに、保存していない編集が無い");
+            Assert.That(c.LastPoseCheck, Is.Not.SameAs(first), "外へ逃がしたあとの結果が、古い結果のまま");
+            Assert.That(c.LastPoseCheck, Is.SameAs(escape.After));
+            Assert.That(c.IsPoseCheckStale, Is.False, "外へ逃がしたあとの結果が古い");
+            PoseFixAdvice adviceAfterEscape = PoseFixAdvice.From(c.LastPoseCheck, c.LastPoseEscape);
+            int totalAfterEscape = c.LastPoseCheck.FixSummary.TotalRegionCount;
+            Debug.Log($"[GP02計測] 外へ逃がしたあと: 直す範囲のか所 {totalBefore} → {totalAfterEscape}（記録では {escape.ScopeRegionsBefore} → {escape.ScopeRegionsAfter}）、おすすめ 浅い所 {adviceAfterEscape.EscapeRegions}、ウェイトが原因 {adviceAfterEscape.WeightRegions}");
+            Assert.That(totalAfterEscape, Is.LessThan(totalBefore), "外へ逃がしても、か所が減らない");
+            Assert.That(c.WeightCausedRegionCount, Is.GreaterThan(0), "外へ逃がしたあとに、ウェイトが原因の所が残っていない");
+            Assert.That(c.CanPreviewWeightFix, Is.True);
+            Vector3[] escapedDeltas = c.Session.GetMeshSpaceDeltas();
+            float largest = 0f;
+            foreach (Vector3 d in escapedDeltas) largest = Mathf.Max(largest, d.magnitude);
+            Assert.That(largest, Is.GreaterThan(0.002f), "外へ逃がした形が小さすぎて、テストにならない");
+            int weightBefore = c.WeightCausedRegionCount;
+
+            // 3. ウェイトを体に寄せる（確認 → 適用）
+            WeightFixPreview preview = c.PreviewWeightFix();
+            Assert.That(preview, Is.Not.Null, c.LastWeightFixError);
+            Assert.That(c.CanApplyWeightFix, Is.True);
+            Undo.IncrementCurrentGroup();
+            WeightFixReport report = c.ApplyWeightFix();
+            Assert.That(report, Is.Not.Null, c.LastWeightFixError);
+            Assert.That(_unsavedAsked, Is.EqualTo(0), "保存の確認は出ない");
+            Assert.That(report.CarriedUnsaved, Is.True);
+            Assert.That(c.HasUnsavedEdits, Is.True, "適用のあとに、保存していない編集が消えた");
+            AssertSameDeltas(escapedDeltas, c.Session.GetMeshSpaceDeltas(), "外へ逃がした形（ウェイトを適用したあと）");
+            Assert.That(c.IsPoseCheckStale, Is.False, "適用のあとに、結果が古くなった");
+            Assert.That(skirt.sharedMesh, Is.Not.SameAs(original), "ウェイトを入れたメッシュに差し替わる");
+            Debug.Log($"[GP02計測] ウェイトを寄せる: ウェイトが原因 {weightBefore} → {c.WeightCausedRegionCount}（確認では {preview.WeightRegionsBefore} → {preview.WeightRegionsAfter}）、直す範囲のか所 {preview.RegionsBefore} → {preview.RegionsAfter}");
+            Assert.That(c.WeightCausedRegionCount, Is.LessThan(weightBefore), "ウェイトを寄せても、ウェイトが原因の所が減らない");
+
+            // 4. Ctrl+Z の1回目: ウェイトだけが戻り、外へ逃がした形は残る
+            c.UndoLast();
+            Assert.That(skirt.sharedMesh, Is.SameAs(original), "ウェイトが戻らない");
+            Assert.That(c.IsEditing, Is.True);
+            Assert.That(c.HasUnsavedEdits, Is.True, "1回目の Ctrl+Z で、外へ逃がした形も消えた");
+            AssertSameDeltas(escapedDeltas, c.Session.GetMeshSpaceDeltas(), "Ctrl+Z の1回目のあと", 2);
+
+            // 5. Ctrl+Z の2回目: 外へ逃がした形も戻る（外へ逃がすは Undo の1段）
+            c.UndoLast();
+            Assert.That(c.IsEditing, Is.True);
+            float remaining = MaxDistance(new Vector3[escapedDeltas.Length], c.Session.GetMeshSpaceDeltas(), out _);
+            Debug.Log($"[GP02計測] Ctrl+Z の2回目のあと: 元の形との差の最大 {remaining * 1000f:F2} mm、保存していない編集 {c.HasUnsavedEdits}");
+            Assert.That(remaining, Is.LessThan(DeltaTolerance * 1.5f), "2回目の Ctrl+Z で、外へ逃がした形が戻らない");
+            Assert.That(c.HasUnsavedEdits, Is.False, "外へ逃がしたのを戻したので、保存していない編集は無いはず");
+            Assert.That(_unsavedAsked, Is.EqualTo(0));
+        }
+
         // ---- 窓 ----
 
         [Test]
