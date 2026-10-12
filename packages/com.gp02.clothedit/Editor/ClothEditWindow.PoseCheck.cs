@@ -6,9 +6,10 @@ using UnityEngine;
 namespace GP02.EditorTools
 {
     // 動作チェックの画面: ウィンドウの「動作チェック」の区切りと、シーンビューの重ね描き。
-    //  - 区切り: 始める・やめる、結果（よく使うポーズ／大きく動くポーズに分けた2行）、悪い順の上位（大きく動くポーズは別の小さな見出しの下）、
-    //    順に見る・順に再生・元の姿勢に戻る、「大きく動くポーズも直す」「突き抜ける所を色の点で示す」、おすすめの直し方（件数とボタン）、くわしい説明（折りたたみ）。
-    //    くわしく表示では、外へ逃がせる所の内訳・試すポーズの一覧・ポーズごとの結果なども出す
+    //  - 区切り（かんたん表示）: 始める・やめる、結果の見出し（よく使うポーズ）、おすすめの直し方（件数とボタン。いちばん上）、
+    //    大きく動くポーズの1行、突き抜けたポーズの一覧（折りたたみ。悪い順の上位・順に見る・順に再生・元の姿勢に戻る。ポーズを見せている間は開く）、
+    //    「大きく動くポーズも直す」「突き抜ける所を色の点で示す」、くわしい説明（折りたたみ）。
+    //    くわしく表示では、一覧は折りたたまずに出し、外へ逃がせる所の内訳・試すポーズの一覧・ポーズごとの結果なども出す
     //  - シーンビュー: ポーズを見せている間は、そのポーズで突き抜けた所の赤い点。編集の姿勢では、直す範囲のポーズでの最悪の深さで点を色分け
     //    （ほかの操作を始めると消え、区切りのトグルで出し直せる）
     // ほかのファイルからは、区切りの描画・重ね描き・シーンビューのクリックと Esc・案内の文から1行ずつ呼ぶだけにしている
@@ -26,6 +27,7 @@ namespace GP02.EditorTools
 
         [SerializeField] bool _foldPoseCheck = true;
         [SerializeField] bool _foldPoseList;
+        [SerializeField] bool _foldPoseRanked;   // かんたん表示の「突き抜けたポーズの一覧」（開閉だけ。ボタンの有効・無効や他の機能には関わらない）
         [SerializeField] bool _foldPoseEntries;
         [SerializeField] bool _foldPoseExplain;
 
@@ -118,9 +120,12 @@ namespace GP02.EditorTools
                 if (result.CommonClear) EditorGUILayout.LabelField(L10n.Tr("よく使うポーズでは問題ありません ✓", "No problems in everyday poses ✓"), _poseClearStyle);
                 else EditorGUILayout.LabelField(common, _poseHeadlineStyle);
             }
-            string large = result.DescribeLarge();
-            if (large.Length > 0) EditorGUILayout.LabelField(large, EditorStyles.wordWrappedMiniLabel);
-            if (detailed) EditorGUILayout.LabelField(L10n.Tr("すべてのポーズ: ", "All poses: ") + result.DescribeSummary(), EditorStyles.wordWrappedMiniLabel);
+            if (detailed)
+            {
+                string large = result.DescribeLarge();
+                if (large.Length > 0) EditorGUILayout.LabelField(large, EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField(L10n.Tr("すべてのポーズ: ", "All poses: ") + result.DescribeSummary(), EditorStyles.wordWrappedMiniLabel);
+            }
             if (result.Baseline != null && result.Baseline.IsPenetrating)
             {
                 EditorGUILayout.LabelField(L10n.Tr($"今の姿勢でも突き抜けている所（{result.Baseline.RegionCount} か所）は、ここでは数えていません。「貫通を直す」で直せます。",
@@ -131,10 +136,40 @@ namespace GP02.EditorTools
             DrawPoseFixAdvice(result, stale, detailed);
             DrawWeightFixSection(result, stale);
             DrawLastPoseEscape(detailed);
-            DrawRankedPoses(result, detailed);
-            DrawPoseBrowseButtons(result);
+            if (detailed)
+            {
+                DrawRankedPoses(result, true);
+                DrawPoseBrowseButtons(result);
+            }
+            else
+            {
+                // かんたん表示: 大きく動くポーズは1行だけ（長い説明は「くわしい説明」）。悪い順の一覧は折りたたむ
+                string largeShort = result.DescribeLargeShort();
+                if (largeShort.Length > 0) EditorGUILayout.LabelField(largeShort, EditorStyles.wordWrappedMiniLabel);
+                DrawRankedFoldout(result);
+            }
             DrawPoseScopeToggles(result);
             DrawPoseExplanation(result);
+        }
+
+        /// <summary>かんたん表示の、悪い順の一覧の折りたたみの見出し（件数つき。突き抜けたポーズが無ければ、見せるためのボタンの見出し）。</summary>
+        public static string PoseListFoldoutLabel(int count)
+        {
+            return count > 0
+                ? L10n.Tr($"突き抜けたポーズの一覧（{count} 件）", $"Poses with poke-through ({count})")
+                : L10n.Tr("ポーズを順に見る", "Browse the poses");
+        }
+
+        // 悪い順の一覧と、順に見る・順に再生・元の姿勢に戻るの折りたたみ。ポーズを見せている間は、閉じていても開いて出す
+        void DrawRankedFoldout(PoseCheckResult result)
+        {
+            bool showing = _controller.IsPosePreviewActive;
+            bool open = EditorGUILayout.Foldout(_foldPoseRanked || showing, PoseListFoldoutLabel(result.RankForBrowsing().Length), true);
+            // 見せている間は自動で開いているだけなので、持っている開閉の値は変えない（見せ終わったら、利用者の開閉に戻る）
+            if (!showing) _foldPoseRanked = open;
+            if (!open) return;
+            DrawRankedPoses(result, false);
+            DrawPoseBrowseButtons(result);
         }
 
         // 悪い順の上位。直す範囲のポーズを先に、大きく動くポーズ（直さないとき）は別の小さな見出しの下に出す
@@ -286,6 +321,10 @@ namespace GP02.EditorTools
                         }
                     }
                 }
+                if (advice.RepeatEscapeHint.Length > 0)
+                {
+                    EditorGUILayout.LabelField(advice.RepeatEscapeHint, EditorStyles.wordWrappedMiniLabel);
+                }
                 if (advice.RevertedEscapeRegions > 0)
                 {
                     EditorGUILayout.LabelField(L10n.Tr($"浅い所 {advice.RevertedEscapeRegions} か所は、外へ逃がしても減らなかったので、このままで大丈夫です（浅い突き抜けで、見た目にはほとんど出ません）。",
@@ -352,6 +391,9 @@ namespace GP02.EditorTools
             {
                 EditorGUILayout.LabelField(L10n.Tr($"前回の外へ逃がす: {scope}の突き抜け {escape.ScopeRegionsBefore} → {escape.ScopeRegionsAfter} か所（逃がした所の深さの平均 {escape.PushedDepthBefore * 1000f:F1} → {escape.PushedDepthAfter * 1000f:F1} mm）",
                     $"Last move outward: poke-through in {scope} {escape.ScopeRegionsBefore} → {escape.ScopeRegionsAfter} place(s) (average depth at the moved places {escape.PushedDepthBefore * 1000f:F1} → {escape.PushedDepthAfter * 1000f:F1} mm)"), EditorStyles.wordWrappedMiniLabel);
+                // 深さは減ったのに、か所の数が増えたときだけ、「悪くなった」のではないことを一言（浅い所を押し出すと、そのまわりに浅い所が新しく出る）
+                string newShallow = escape.DescribeNewShallow();
+                if (newShallow.Length > 0) EditorGUILayout.LabelField(newShallow, EditorStyles.wordWrappedMiniLabel);
                 if (detailed)
                 {
                     EditorGUILayout.LabelField(L10n.Tr($"すべてのポーズ: 突き抜けたポーズ {escape.PosesBefore} → {escape.PosesAfter}、か所 {escape.RegionsBefore} → {escape.RegionsAfter}",
@@ -373,8 +415,8 @@ namespace GP02.EditorTools
             EditorGUI.indentLevel++;
             EditorGUILayout.LabelField(L10n.Tr("か所の数え方: 同じ所でも、ポーズ（途中まで・最後まで）ごとに1か所と数えます。「途中まで」はポーズの半分まで動かしたところ、「最後まで」はポーズの最後まで動かしたところです。",
                 "How places are counted: the same spot counts once per pose and stage. \"Halfway\" is the pose half done, \"full\" is the whole pose."), EditorStyles.wordWrappedMiniLabel);
-            EditorGUILayout.LabelField(L10n.Tr("浅い所: 編集の姿勢で外へ少し（2cm まで）動かせば、そのポーズで突き抜けなくなる所です。「元のポーズで外へ逃がす」で直します。効かなかったときは自動で元に戻します。",
-                "Shallow places: places that stop poking through in the pose if moved a little (up to 2 cm) outward in the edit pose. Fix them with \"Move Outward in Edit Pose\"; it is undone automatically if it does not help."), EditorStyles.wordWrappedMiniLabel);
+            EditorGUILayout.LabelField(L10n.Tr("浅い所: 編集の姿勢で外へ少し（2cm まで）動かせば、そのポーズで突き抜けなくなる所です。「元のポーズで外へ逃がす」で直します。効かなかったときは自動で元に戻します。浅い所を押し出すと、そのまわりに浅い所が新しく出ることがあるので、まだあれば、もう一度押せます。",
+                "Shallow places: places that stop poking through in the pose if moved a little (up to 2 cm) outward in the edit pose. Fix them with \"Move Outward in Edit Pose\"; it is undone automatically if it does not help. Moving shallow places outward can make new shallow places appear around them, so if any remain, you can press it again."), EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.LabelField(L10n.Tr("ウェイトが原因の所: 服のボーンの割り振り（ウェイト）が体と違うので、外へ逃がしても直らない所です。ひざ・ひじを深く曲げた所、ゆったりしたスカートが座ったときに太ももに抜かれる所、タイツなど体にぴったりで布に余裕の無い所などです。「ウェイトを体に寄せる」で、その所の服に体のウェイトを写して直します（適用の前に、前後の件数を見せて聞きます）。",
                 "Caused by weights: the outfit's bone influences (weights) differ from the body's, so moving outward does not help. For example deeply bent knees and elbows, thighs poking through a loose skirt when sitting, and tight places with no room in the cloth such as tights. \"Fit Weights to Body\" copies the body's weights to the outfit there (it shows the counts before and after and asks before applying)."), EditorStyles.wordWrappedMiniLabel);
             EditorGUILayout.LabelField(L10n.Tr("体どうしの重なり: 腕が腰に入る・ふくらはぎが太ももに入る・お辞儀でおなかが折れ込むなど、体の部品どうしが重なる所です。服がぴったり付いていっても突き抜けるので、服では直せません。突き抜けの数にも、直す対象にも入れていません（ポーズを見ると紫の点で出ます）。",

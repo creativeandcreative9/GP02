@@ -70,6 +70,14 @@ namespace GP02.Tests
                 yield return Pump(10);
                 Shot(window, "posecheck_window_simple_result");
 
+                // 悪い順の一覧は、折りたたんでいる。見出しの開閉だけの値で、開くと一覧と「順に見る」などが出る
+                Assert.That(GetField<bool>(window, "_foldPoseRanked"), Is.False);
+                SetField(window, "_foldPoseRanked", true);
+                yield return Pump(10);
+                Shot(window, "posecheck_window_simple_list");
+                SetField(window, "_foldPoseRanked", false);
+                yield return Pump(5);
+
                 // 「順に見る」の最初のポーズを、シーンで見せる（元のアバターは隠れ、複製がそのポーズになる）
                 int shown = controller.ShowNextPenetratingPose();
                 Assert.That(shown, Is.GreaterThanOrEqualTo(0));
@@ -77,7 +85,10 @@ namespace GP02.Tests
                 sceneView.LookAt(new Vector3(0f, 0.55f, 0.15f), Quaternion.Euler(20f, 200f, 0f), 0.9f);
                 yield return Pump(20);
                 Shot(sceneView, "posecheck_scene_pose");
+                // ポーズを見せている間は、折りたたんでいても自動で開く（開閉の値は変えない）
+                Assert.That(GetField<bool>(window, "_foldPoseRanked"), Is.False);
                 Shot(window, "posecheck_window_showing");
+                Assert.That(GetField<bool>(window, "_foldPoseRanked"), Is.False, "見せている間に描いても、開閉の値は変わらない");
 
                 // 「大きく動くポーズも直す」をオンにすると、調べ直さずに、おすすめの直し方が座るなども数える。色分けの点も出す
                 controller.EndPosePreview();

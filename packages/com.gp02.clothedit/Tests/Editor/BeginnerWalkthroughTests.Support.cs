@@ -364,10 +364,12 @@ namespace GP02.Tests
             SendEventSafe(_scene, new Event { type = EventType.KeyUp, keyCode = key, mousePosition = _sceneMouse });
         }
 
-        // style が null ならボタンの描き方、"*" ならどの描き方でも、それ以外ならその名前の描き方
+        // style が null ならボタンの描き方、"*" ならどの描き方でも、それ以外ならその名前の描き方。text が「^」で始まるときは、その後ろで始まる文字（件数つきの見出しなど）
         DrawnItem FindItem(EditorWindow window, string text, string style)
         {
-            return Dump(window).Find(d => d.Text == text && (style == null ? IsButtonStyle(d.Style) : style == "*" || string.Equals(d.Style, style, StringComparison.OrdinalIgnoreCase)));
+            bool prefix = text.StartsWith("^");
+            string wanted = prefix ? text.Substring(1) : text;
+            return Dump(window).Find(d => (prefix ? d.Text.StartsWith(wanted) : d.Text == wanted) && (style == null ? IsButtonStyle(d.Style) : style == "*" || string.Equals(d.Style, style, StringComparison.OrdinalIgnoreCase)));
         }
 
         static float ScrollY(EditorWindow window) => ((Vector2)GetField(window, "_scroll")).y;
