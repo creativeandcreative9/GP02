@@ -614,6 +614,13 @@ namespace GP02.Tests
             return new Vector2(s.x / ppp + _sceneCal.x, _sceneCal.y - s.y / ppp);
         }
 
+        // シーンビューの GUI の位置（Handles.BeginGUI の中の位置。札や案内の Rect）を、SendEvent に渡す位置にする（CalibrateScene の補正を使う）
+        Vector2 SceneGuiToEvent(Vector2 gui)
+        {
+            float ppp = EditorGUIUtility.pixelsPerPoint;
+            return new Vector2(gui.x + _sceneCal.x, gui.y + _sceneCal.y - _scene.camera.pixelHeight / ppp);
+        }
+
         void SceneMouse(EventType type, Vector2 position, bool shift = false, bool control = false, int clickCount = 1)
         {
             var e = new Event

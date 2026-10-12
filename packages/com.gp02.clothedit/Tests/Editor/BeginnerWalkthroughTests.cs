@@ -82,21 +82,21 @@ namespace GP02.Tests
                 yield return Stage("01", "何も選ばずに「編集を開始」を押そうとする", "何も選ばないまま、大きな「編集を開始」を押してみる。押せるのか、何が出るのか。", S01_StartWithoutTarget());
                 yield return Stage("02", "テスト用のアバターを作り、スカートを選ぶ", "テスト用の Humanoid アバター（メニューで作る）のスカートを、ヒエラルキーで選ぶ。", S02_CreateAvatarAndSelectSkirt());
                 yield return Stage("03", "「編集を開始」を押す", "「編集を開始」を押す。準備にどのくらいかかるか、最初に何が出るか。折りたたまれた手順の案内も開いてみる。", S03_StartEditing());
-                yield return Stage("04", "布の上にマウスを乗せる", "シーンビューが見づらいのでショートカット一覧を閉じてから、スカートの上にマウスを動かしてみる。つまむ道具の円と、範囲の点が出るか。", S04_Hover());
-                yield return Stage("05", "ピン留めに切り替えて、ウエストを塗る", "動かしたくないウエストを、ピン留めの道具で塗る。塗れるのは見えている側だけなので、前を塗ってから、視点を後ろへ回して後ろも塗る。", S05_PinWaist());
+                yield return Stage("04", "布の上にマウスを乗せる", "最初に出た小さな札（3つの操作）を読んで「×」で閉じてから、スカートの上にマウスを動かしてみる。つまむ道具の円と、範囲の点が出るか。", S04_Hover());
+                yield return Stage("05", "ピン留めに切り替えて、ウエストを留める", "動かしたくないウエストを留める。ピン留めの道具に切り替えると出る「服の付け根（ウエスト・首まわりなど）を自動でピン留め」を押し、後ろまで留まったかを、視点を回して確かめる。", S05_PinWaist());
                 yield return Stage("06", "つまむに戻して、裾を外へ引く（途中）", "つまむに戻して、裾をつかんで外へ引く。引いている途中で何が見えるか（届かないときの線と一言も）。", S06_GrabAndPullHem());
                 yield return Stage("07", "手を離して、形が落ち着く", "マウスを離す。形が落ち着くまでどのくらいかかるか。", S07_AfterRelease());
                 yield return Stage("08", "1つ戻す・やり直す", "気に入らないので、窓の「1つ戻す」を押す（Ctrl+Z の代わり）。やり直しも試す。", S08_UndoRedo());
                 yield return Stage("09", "選んで動かす（形だけ動かす）", "裾の前を塗って選び、ハンドルで下へ動かす。「形だけ動かす」で、布の伸びを気にせず長くする。", S09_SelectAndMove());
                 yield return Stage("10", "動作チェックを始める", "座ったり足を上げたりしたときに体が服を突き抜けないか、「動作チェックを始める」で調べる。", S10_MotionCheck());
                 yield return Stage("11", "悪いポーズを見る", "突き抜けたポーズを、「順に見る」でシーンビューに出して確かめる。", S11_ShowBadPose());
-                yield return Stage("12", "元のポーズで外へ逃がす", "「元のポーズで外へ逃がす」で、突き抜けた所の布を外へ動かして直す。", S12_EscapeOutward());
-                yield return Stage("13", "体との貫通（今の姿勢）を調べて直す", "診断の「体との貫通」を見る。スカートを細くしようと内側へ押し込んで食い込ませてから、「調べ直す」「貫通を直す」を押す。", S13_Penetration());
-                yield return Stage("14", "シェイプキーとして保存する", "「シェイプキーとして保存」を押す。保存したあと、一覧・手順の案内・インスペクターに何が出るか。", S14_Save());
+                yield return Stage("12", "おすすめの直し方に従う", "動作チェックの「おすすめの直し方」の、いちばん上のボタンを押して直す（浅い所なら「元のポーズで外へ逃がす」、ウェイトが原因なら「ウェイトを体に寄せる」）。", S12_FollowRecommendation());
+                yield return Stage("13", "体との貫通（今の姿勢）を見て直す", "診断の「体との貫通」を見る。スカートを細くしようと内側へ押し込んで食い込ませると、どう出るか。「貫通を直す」を押す。", S13_Penetration());
+                yield return Stage("14", "保存する", "編集中の見出しの行（「編集を終了」の隣）の「保存」を押す。保存したあと、一覧・手順の案内・インスペクターに何が出るか。", S14_Save());
                 yield return Stage("15", "シェイプキーの一覧のウィンドウ", "メニューから「シェイプキーの一覧」を開いて、保存したものを確かめる。", S15_ShapeKeyList());
                 yield return Stage("16", "「編集を終了」", "「編集を終了」を押す（保存済み）。別の流れで、保存していない変更があるときの確認も見る。", S16_EndEditing());
                 yield return Stage("17", "編集中にウィンドウを閉じて、開き直す", "編集の途中でウィンドウを閉じてしまい、開き直す。「前回の編集が残っています」の帯と「戻す」。", S17_CloseAndReopen());
-                yield return Stage("18", "失敗しやすい例", "アバターそのものを選ぶ、体（Body）を選ぶ、読み書きできないメッシュ、メッシュが無い、保存の名前の間違い、アバターの外の布、を試す。", S18_FailureExamples());
+                yield return Stage("18", "失敗しやすい例", "アバターそのものを選ぶ（中の衣装の一覧から選び直す）、体（Body）を選ぶ、読み書きできないメッシュ、メッシュが無い、保存の名前の間違い、アバターの外の布、を試す。", S18_FailureExamples());
             }
             finally
             {
@@ -156,8 +156,8 @@ namespace GP02.Tests
             L10n.Language = UiLanguage.Japanese;
             EditorPrefs.DeleteKey("GP02.Language");
             ClothEditView.Reload();
-            // コンソールの記録はふだん出さない設定だが、この記録（walkthrough.md）に、操作ごとの計算の結果を残すために出す
-            ClothEditLog.Enabled = true;
+            // コンソールの記録は、利用者と同じく出さない（既定のまま）。画面の見え方を、初めて使う人と同じにするため
+            ClothEditLog.Enabled = false;
             return found == 0 ? "GP02 の EditorPrefs は1つも残っていなかった（空の状態から）。取っておきの編集も空にした" : "GP02 の EditorPrefs " + found + " 件を消した。取っておきの編集も空にした";
         }
 
@@ -323,8 +323,9 @@ namespace GP02.Tests
             ClothEditSession session = C.Session;
             RememberSkirtRest();
             Fact("粒子 " + session.ParticleCount.ToString("N0") + " 個、頂点 " + session.VertexCount.ToString("N0") + "、準備 " + session.PrepareMilliseconds.ToString("F0") + " ms、高速化: " + ClothEditSession.DescribeAccelerationShort(session.Solver.Kernel));
-            Fact("ショートカット一覧を自動で出したか（初めての編集）: " + _cloth.OverlayShortcutsVisible + "。手順の案内の区切りは閉じている: " + !(bool)GetField(_cloth, "_foldGuide"));
-            yield return Snap("03a_start_editing", "「編集を開始」を押した直後。シーンビューの左に案内と、初めてなので自動で出たショートカット一覧。窓には道具・ブラシ・対称・動作チェック・保存などが現れた（手順の案内は折りたたまれている）", 10, _hierarchy);
+            Fact("ショートカットの全部の一覧を自動で出したか（初めての編集）: " + _cloth.OverlayShortcutsVisible + "。小さな札（3つの操作と×）を出したか: " + _cloth.StartCardVisible
+                + "。Unity の道具のハンドルを隠したか（Tools.hidden）: " + Tools.hidden + "。手順の案内の区切りは閉じている: " + !(bool)GetField(_cloth, "_foldGuide"));
+            yield return Snap("03a_start_editing", "「編集を開始」を押した直後。シーンビューの左上に1行の案内と、初めてなので小さな札（3つの操作と×）。Unity の移動の矢印は隠れる。窓には道具・ブラシ・対称・動作チェック・保存などが現れ、手順は畳まれていても「次: …」の1行が出る", 10, _hierarchy);
 
             // 折りたたまれた「手順（今どこまで済んだか）」を開いて読んでみる
             yield return ToggleGuide(true);
@@ -336,14 +337,20 @@ namespace GP02.Tests
 
         IEnumerator S04_Hover()
         {
-            // 初めての編集で自動で出たショートカット一覧が、シーンの左半分を覆っているので、窓の右上の「?」で閉じる
+            Vector3 probe = SkirtPoint(0f, 0.74f);
+            bool calibrated = CalibrateScene(probe);
+            Fact("シーンビューのマウスの位置の補正: " + (calibrated ? "できた（x " + _sceneCal.x.ToString("F1") + "、y " + _sceneCal.y.ToString("F1") + "）" : "できなかった"));
+
+            // 初めての編集で出た小さな札（3つの操作）を読んだので、札の右上の「×」で閉じる
+            if (_cloth.StartCardVisible) yield return CloseStartCard();
+            // 全部の一覧が出ていたら（前の版の動き）、窓の右上の「?」で閉じる
             if (_cloth.OverlayShortcutsVisible)
             {
                 bool clicked = ClickText(_cloth, "?", out string how);
                 yield return Pump(3);
                 if (clicked && !_cloth.OverlayShortcutsVisible)
                 {
-                    Op(Via.Real, "ショートカット一覧がシーンの左半分を覆って見づらいので、窓の右上の" + how);
+                    Op(Via.Real, "ショートカット一覧がシーンを覆って見づらいので、窓の右上の" + how);
                 }
                 else
                 {
@@ -353,10 +360,6 @@ namespace GP02.Tests
                     yield return Pump(2);
                 }
             }
-
-            Vector3 probe = SkirtPoint(0f, 0.74f);
-            bool calibrated = CalibrateScene(probe);
-            Fact("シーンビューのマウスの位置の補正: " + (calibrated ? "できた（x " + _sceneCal.x.ToString("F1") + "、y " + _sceneCal.y.ToString("F1") + "）" : "できなかった"));
             Vector3 target = SurfacePoint(35f, 0.56f);
             yield return HoverAt(target, 4);
             Progress("S04 hover target=" + target + " event=" + ScenePoint(target) + " hit=" + C.HasHover);
@@ -376,31 +379,56 @@ namespace GP02.Tests
             Op(Via.Real, "シーンビューで、スカートの裾に近い所へマウスを動かした（MouseMove）。道具は「つまむ」のまま");
             float error = Vector3.Distance(C.HoverPoint, target);
             Fact("マウスの下の布: " + (C.HasHover ? "当たった（狙った点との差 " + (error * 100f).ToString("F1") + " cm）" : "当たらなかった") + "、範囲の点 " + C.PreviewCount + " 個、ブラシ半径 " + (C.BrushRadius * 100f).ToString("F0") + " cm");
-            yield return Snap("04_hover_grab_tool", "ショートカット一覧を閉じて、スカートの上にマウスを乗せた。つまむ道具の円（水色）と、範囲に入る点（重みで色分け）", 4);
+            yield return Snap("04_hover_grab_tool", "小さな札を「×」で閉じて、スカートの上にマウスを乗せた。つまむ道具の円（水色）と、範囲に入る点（重みで色分け）", 4);
+        }
+
+        // シーンビューの小さな札の「×」をクリックして閉じる。閉じなければ、閉じる処理を直接呼ぶ
+        IEnumerator CloseStartCard()
+        {
+            Rect close = (Rect)GetField(_cloth, "_startCardCloseRect");
+            bool clicked = false;
+            if (close.width > 0f && SceneCalibrated)
+            {
+                Vector2 point = SceneGuiToEvent(close.center);
+                SceneMouse(EventType.MouseMove, point);
+                SceneMouse(EventType.MouseDown, point);
+                SceneMouse(EventType.MouseUp, point);
+                clicked = true;
+                yield return Pump(3);
+            }
+            if (clicked && !_cloth.StartCardVisible)
+            {
+                Op(Via.Real, "シーンビューの左上の小さな札（ドラッグ: 布をつまむ・Alt+ドラッグ: 視点を回す・Ctrl+Z: 1つ戻す）を読んで、札の右上の「×」をクリックして閉じた");
+                Fact("札を閉じたあと、布はつままれていない: " + !(C.IsDragging || C.IsSettling) + "、保存していない編集: " + C.HasUnsavedEdits);
+                yield break;
+            }
+            Op(Via.Real, clicked ? "札の右上の「×」をクリックした → 閉じなかった" : "札の「×」の位置が分からなかった");
+            _cloth.DismissStartCard();
+            Op(Via.Button, "札を閉じる処理 ClothEditWindow.DismissStartCard() を直接呼んだ");
+            yield return Pump(2);
         }
 
         // ---- 05 ----
+
+        const string AutoPinLabel = "服の付け根（ウエスト・首まわりなど）を自動でピン留め";
 
         IEnumerator S05_PinWaist()
         {
             yield return SelectToolByButton(ClothEditMode.Pin);
             yield return HoverAt(SurfacePoint(-35f, 0.935f), 3);
-            yield return Snap("05a_pin_tool_selected", "ピン留めの道具に切り替えた（窓の「ピン留め (P)」を押した）。マウスの円が赤くなる", 4);
+            Fact("「" + AutoPinLabel + "」のボタンの状態: " + ButtonState(_cloth, AutoPinLabel));
+            yield return Snap("05a_pin_tool_selected", "ピン留めの道具に切り替えた（窓の「ピン留め (P)」を押した）。マウスの円の色が変わり、窓の道具の欄に「" + AutoPinLabel + "」のボタンが出る", 4);
 
-            // ウエスト（スカートの上の縁のすぐ下）の前を、左から右へ塗る
-            yield return DragPath(Arc(-80f, 80f, 0.935f, 30), 1);
-            Op(Via.Real, "シーンビューで、ウエスト（スカートの上の縁のすぐ下）の前側を、一方の脇から他方の脇まで、ドラッグして塗った（MouseDown → MouseDrag → MouseUp）");
+            // 塗る代わりに、窓のボタンで、付け根（ウエスト）を一周まとめて留める
+            int before = C.Session.PinnedCount;
+            yield return ClickOrCall(AutoPinLabel, () => C.Session.PinnedCount > before, () => _cloth.AutoPinAnchors(), "ClothEditWindow.AutoPinAnchors()");
             CountPins(C.Session, out int frontPins, out int backPins);
-            Fact("前を塗ったあとのピンの数: " + C.Session.PinnedCount + "（うち、スカートの前半分 " + frontPins + "、後ろ半分 " + backPins + "）");
-            yield return Snap("05b_pinned_front_waist", "ウエストの前側を塗ってピン留めした。赤い点がピン。窓の状態の行のピンの数が増え、手順3が済む", 6);
+            Fact("自動でピン留めしたあとのピンの数: " + C.Session.PinnedCount + "（うち、スカートの前半分 " + frontPins + "、後ろ半分 " + backPins + "）");
+            yield return Snap("05b_pinned_front_waist", "「" + AutoPinLabel + "」を押した。ウエストが一周、青い点でピン留めされる。窓の真ん中に短い通知、窓の上に結果の一言。手順3が済む", 6);
 
-            // 塗れるのは見えている側だけなので、視点を後ろへ回して、後ろ側も塗る
-            yield return ViewTo("後ろから見る（ウエストの後ろ側を塗るため）", new Vector3(0f, 0.72f, 0f), 8f, 0f, FrontSize);
-            yield return DragPath(Arc(100f, 260f, 0.935f, 36), 1);
-            Op(Via.Real, "後ろから見て、ウエストの後ろ側を、ドラッグして塗った");
-            CountPins(C.Session, out frontPins, out backPins);
-            Fact("後ろも塗ったあとのピンの数: " + C.Session.PinnedCount + "（うち、スカートの前半分 " + frontPins + "、後ろ半分 " + backPins + "）");
-            yield return Snap("05c_pinned_back_waist", "後ろから見て、ウエストの後ろ側も塗った。これでウエストが一周ピン留めされた", 6);
+            // 後ろまで留まったかを、視点を後ろへ回して確かめる
+            yield return ViewTo("後ろから見る（ウエストの後ろ側も留まったか確かめる）", new Vector3(0f, 0.72f, 0f), 8f, 0f, FrontSize);
+            yield return Snap("05c_pinned_back_waist", "後ろから見た。塗らなくても、ウエストの後ろ側まで一周ピン留めされている", 6);
         }
 
         // ---- 06 ----
@@ -605,7 +633,7 @@ namespace GP02.Tests
             PoseCheckResult result = C.LastPoseCheck;
             Assert.That(result, Is.Not.Null, "動作チェックの結果が出なかった: " + C.LastPoseCheckError);
             Fact("結果: " + result.DescribeSummary() + "。ポーズ " + result.PoseCount + " × " + result.StageCount + " 段階、突き抜けたポーズ " + result.PenetratingPoseCount + "、体: " + result.BodyDescription);
-            yield return Snap("10c_motion_check_result", "動作チェックの結果。要約と、悪い順の上位3つ、「順に見る」「順に再生」などのボタン。シーンの布には、頂点ごとの最悪の深さの色分けの点が出る", 6);
+            yield return Snap("10c_motion_check_result", "動作チェックの結果。「よく使うポーズ」と「大きく動くポーズ」の2行、悪い順の上位、「順に見る」などのボタンと「おすすめの直し方」。シーンの布には、よく使うポーズで突き抜ける所だけ色の点が出る", 6);
         }
 
         // ---- 11 ----
@@ -632,9 +660,20 @@ namespace GP02.Tests
 
         // ---- 12 ----
 
-        IEnumerator S12_EscapeOutward()
+        IEnumerator S12_FollowRecommendation()
         {
-            Fact("「元のポーズで外へ逃がす」ボタンの状態: " + ButtonState(_cloth, "元のポーズで外へ逃がす") + "。逃がせるか（CanEscapePoseCheck）: " + C.CanEscapePoseCheck);
+            PoseCheckResult check = C.LastPoseCheck;
+            Fact("「おすすめの直し方」の元: 外へ逃がせる浅い所 " + (check != null && check.EscapePlan != null ? check.EscapePlan.PushedRegions : 0) + " か所、ウェイトが原因の所 " + C.WeightCausedRegionCount
+                + " か所、体どうしの重なり " + (check != null ? check.FixOverlapRegionCount : 0) + " か所（直す範囲: " + (C.Settings.FixLargePoses ? "すべてのポーズ" : "よく使うポーズ") + "）");
+            string escapeState = ButtonState(_cloth, "元のポーズで外へ逃がす");
+            string weightState = ButtonState(_cloth, "ウェイトを体に寄せる");
+            Fact("おすすめのボタン: 「元のポーズで外へ逃がす」 " + escapeState + "、「ウェイトを体に寄せる」 " + weightState);
+            if (escapeState != "有効" && weightState == "有効")
+            {
+                yield return FollowWeightFix();
+                yield break;
+            }
+            Fact("「元のポーズで外へ逃がす」ボタンの状態: " + escapeState + "。逃がせるか（CanEscapePoseCheck）: " + C.CanEscapePoseCheck);
             if (C.IsPosePreviewActive)
             {
                 // ポーズを見せたまま押しても、自分で元の姿勢に戻る
@@ -646,23 +685,49 @@ namespace GP02.Tests
             Waited("「元のポーズで外へ逃がす」を押してから終わるまで（逃がして、もう一度調べ直す）", _lastClickMs);
             PoseEscapeReport report = C.LastPoseEscape;
             Fact("結果: " + (report == null ? "なし" : report.Reverted ? "効かなかったので元に戻した" : report.Rechecked ? "逃がした所の深さ（平均） " + (report.PushedDepthBefore * 1000f).ToString("F1") + " → " + (report.PushedDepthAfter * 1000f).ToString("F1") + " mm、貫通したポーズ " + report.PosesBefore + " → " + report.PosesAfter + "、か所 " + report.RegionsBefore + " → " + report.RegionsAfter : "逃がした（調べ直せなかった）"));
-            yield return Snap("12_escape_outward", "「元のポーズで外へ逃がす」を押したあと。窓の真ん中に結果の通知、窓には前後の件数の一言", 1);
+            yield return Snap("12_escape_outward", "「元のポーズで外へ逃がす」を押したあと。窓の真ん中に短い通知、窓には前後の件数の一言", 1);
+        }
+
+        // おすすめの「ウェイトを体に寄せる」を押す。候補でポーズを試した前後を見せて、適用するかを聞かれる（ここでは「適用」）。
+        // 適用すると編集を作り直すので、保存していない編集があれば、先にどうするかを聞かれる。初心者は「保存する」を選ぶ
+        IEnumerator FollowWeightFix()
+        {
+            yield return ViewTo("全体が見える正面", FrontPivot, 8f, 180f, FrontSize + 0.1f);
+            bool unsaved = C.HasUnsavedEdits;
+            if (unsaved) _unsavedAnswers.Enqueue(ClothEditUnsavedChoice.Save);
+            WeightFixReport before = C.LastWeightFix;
+            yield return ClickOrCall("ウェイトを体に寄せる", () => C.LastWeightFix != before, () => Invoke(_cloth, "PreviewWeightFixFromWindow", true), "ClothEditWindow.PreviewWeightFixFromWindow(true)", 2);
+            Waited("「ウェイトを体に寄せる」を押してから終わるまで（候補でポーズを試し、確認のあと適用して、編集を作り直す）", _lastClickMs);
+            if (_unsavedAnswers.Count > 0)
+            {
+                _unsavedAnswers.Clear();
+                Op(Via.Note, "保存していない編集の確認は出なかった（用意した答えは使わずに捨てた）");
+            }
+            else if (unsaved)
+            {
+                Op(Via.Note, "保存していない編集があったので、適用の前に確認が出て、「保存する」を選んだ（編集中の形がシェイプキーとして保存される）");
+            }
+            WeightFixReport report = C.LastWeightFix;
+            Fact("結果: " + (report == null || report == before ? "適用されなかった（" + C.LastWeightFixError + "）" : report.ToString()) + "。編集を続けられる: " + C.IsEditing);
+            Fact("動作チェックの結果: " + (C.LastPoseCheck != null ? C.LastPoseCheck.DescribeSummary() + (C.IsPoseCheckStale ? "（古い）" : "") : "なし"));
+            yield return Snap("12_escape_outward", "おすすめの「ウェイトを体に寄せる」を押したあと（このスカートでは、よく使うポーズに外へ逃がせる浅い所が無く、ウェイトが原因の所を勧められた）。確認のあと適用し、窓に前後の件数", 2);
         }
 
         // ---- 13 ----
 
         IEnumerator S13_Penetration()
         {
+            // ポーズを見せたままなら、窓の「元の姿勢に戻る」で戻る
+            if (C.IsPosePreviewActive)
+            {
+                yield return ClickOrCall("元の姿勢に戻る", () => !C.IsPosePreviewActive, () => C.EndPosePreview(), "ClothEditController.EndPosePreview()");
+            }
             yield return ViewTo("全体が見える正面", FrontPivot, 8f, 180f, FrontSize + 0.1f);
             PenetrationReport report = C.LastPenetration;
             Fact("体との貫通（今の姿勢）の最後の調べ: " + (report == null ? "まだ調べていない" : report.HasBody ? "体が見つかった。突き抜けている所 " + report.RegionCount + " か所（粒子 " + report.PenetratingCount + "）、余白より近い粒子 " + report.CloseCount : "体が見つからない"));
             Fact("「貫通を直す」ボタンの状態: " + ButtonState(_cloth, "貫通を直す") + "、「調べ直す」: " + ButtonState(_cloth, "調べ直す"));
-            yield return Snap("13a_penetration_status", "診断の「体との貫通」（今の姿勢）。動作チェックの色分けの点が残っている", 6);
-
-            // 動作チェックの色分けの点が残って、このあとの赤い点が見分けにくいので、窓のチェックを外す
-            if (ClickText(_cloth, "最悪の深さで色分け（編集の姿勢）", out string how, "*")) Op(Via.Real, "動作チェックの色分けの点が残って見づらいので、窓のチェック" + how + "（外す）");
-            else Op(Via.Real, "動作チェックの色分けのチェックを外そうとしたが、" + how);
-            yield return Pump(3);
+            yield return Snap("13a_penetration_status", "診断の「体との貫通」（今の姿勢）。突き抜けが無ければ「✓ 体との貫通なし」の1行", 6);
+            // 動作チェックの色の点は、ほかの操作を始めると自動で消えるので、外す操作は要らない
 
             // スカートを細くしたくて、腰の前を内側（体のほう）へ押し込む。「形だけ動かす」なので、体に食い込む
             yield return SelectToolByButton(ClothEditMode.Select);
@@ -697,13 +762,21 @@ namespace GP02.Tests
                 Op(Via.Controller, "ハンドルのドラッグでは動かなかったので、Controller の ApplySelectionTransform（体のほうへ 8cm）を直接呼んだ");
                 yield return WaitUntilIdle(300);
             }
-            yield return Snap("13b_pushed_in", "腰の前を体のほうへ押し込んだ（横から見ている）。まだ調べ直していないので、診断は「調べたあとに形が変わっています」", 6);
+            Fact("押し込んだあとの診断: " + (C.IsPenetrationStale ? "古い（自動では調べ直していない）" : "自動で調べ直した"));
+            yield return Snap("13b_pushed_in", "腰の前を体のほうへ押し込んだ（横から見ている）。操作を確定すると自動で調べ直し、診断に件数と赤い点が出る", 6);
 
-            yield return ClickOrCall("調べ直す", () => C.LastPenetration != null && !C.IsPenetrationStale, () => C.RecheckPenetration(), "ClothEditController.RecheckPenetration()");
+            if (C.LastPenetration == null || C.IsPenetrationStale)
+            {
+                yield return ClickOrCall("調べ直す", () => C.LastPenetration != null && !C.IsPenetrationStale, () => C.RecheckPenetration(), "ClothEditController.RecheckPenetration()");
+            }
+            else
+            {
+                Op(Via.Note, "自動で調べ直していたので、「調べ直す」は押していない");
+            }
             report = C.LastPenetration;
-            Fact("「調べ直す」の結果: " + (report == null ? "なし" : "突き抜けている所 " + report.RegionCount + " か所（最大 " + (report.MaxDepth * 1000f).ToString("F1") + " mm、粒子 " + report.PenetratingCount + "）、余白より近い粒子 " + report.CloseCount));
+            Fact("調べた結果: " + (report == null ? "なし" : "突き抜けている所 " + report.RegionCount + " か所（最大 " + (report.MaxDepth * 1000f).ToString("F1") + " mm、粒子 " + report.PenetratingCount + "）、余白より近い粒子 " + report.CloseCount));
             yield return ViewTo("斜め前から見る（赤い点が見える）", new Vector3(0f, 0.8f, 0.1f), 10f, 140f, 0.55f);
-            yield return Snap("13c_penetration_found", "「調べ直す」のあと。体が布を突き抜けている所が赤い点で出る。診断に件数。「貫通を直す」が押せる", 4);
+            yield return Snap("13c_penetration_found", "斜め前から見た。体が布を突き抜けている所が、白い縁の赤い点で出る（ピンの青い点とは違う色）。診断に件数。「貫通を直す」が押せる", 4);
 
             if (report != null && report.PenetratingCount > 0)
             {
@@ -715,7 +788,7 @@ namespace GP02.Tests
             {
                 Op(Via.Note, "突き抜けている所が出なかったので、「貫通を直す」は押していない");
             }
-            yield return Snap("13d_penetration_fixed", "「貫通を直す」を押したあと。赤い点が消え、窓の真ん中に結果の通知", 1);
+            yield return Snap("13d_penetration_fixed", "「貫通を直す」を押したあと。赤い点が消え、窓の真ん中に短い通知、窓の上に結果の一言", 1);
         }
 
         // ---- 14 ----
@@ -723,17 +796,17 @@ namespace GP02.Tests
         IEnumerator S14_Save()
         {
             yield return ViewTo("全体が見える正面", FrontPivot, 8f, 180f, FrontSize + 0.1f);
-            Mesh before = C.LastSavedMesh;
+            int savedBefore = SavedKeyCount();
             Fact("保存の名前の欄（自動で入る名前）: 「" + (string)GetField(_cloth, "_shapeName") + "」");
-            yield return ClickOrCall("シェイプキーとして保存", () => C.LastSavedMesh != before, () => Invoke(_cloth, "Save"), "ClothEditWindow.Save()", 1);
-            Waited("「シェイプキーとして保存」を押してから終わるまで（保存して、編集を続けられるよう作り直す）", _lastClickMs);
+            yield return ClickOrCall("保存", () => SavedKeyCount() > savedBefore, () => Invoke(_cloth, "Save"), "ClothEditWindow.Save()", 1);
+            Waited("見出しの行の「保存」を押してから終わるまで（保存して、編集を続けられるよう作り直す）", _lastClickMs);
             Fact("保存したメッシュ: " + (C.LastSavedMesh != null ? AssetDatabase.GetAssetPath(C.LastSavedMesh) : "なし") + "。編集は続けられる: " + C.IsEditing);
             GP02ShapeKeyData data = _cloth.FindSavedKeyData(out GP02ShapeKeys component);
             Fact("保存したシェイプキー: " + (data != null ? data.Entries.Count + " 個（" + string.Join("、", data.Entries.ConvertAll(e => e.Name)) + "）" : "なし") + "。スカートにシェイプキーの数 " + (_skirt is SkinnedMeshRenderer smr && smr.sharedMesh != null ? smr.sharedMesh.blendShapeCount : -1));
             // 保存したシェイプキーの一覧は、窓のいちばん下にある。見に行く（マウスホイールで下へ）
             ScrollWindowTo(true);
             Op(Via.Real, "保存した結果を見るため、窓の中身をマウスホイールで一番下までスクロールした");
-            yield return SnapKeep("14a_saved", "保存した直後。窓を一番下までスクロールして、「保存」の区切りを見ている。保存したシェイプキーの一覧（名前・重み・布で再編集・削除）が出る", 3, _hierarchy);
+            yield return SnapKeep("14a_saved", "保存した直後。窓を一番下までスクロールして、「保存」の区切りを見ている。保存したシェイプキーの一覧（名前・「表示中（重み 100）」・布で再編集・削除）が出る", 3, _hierarchy);
 
             // 手順の案内は、保存したあと、どうなるか
             yield return ToggleGuide(true);
@@ -750,6 +823,13 @@ namespace GP02.Tests
             yield return Snap("14c_inspector_blendshapes", "インスペクターの Skinned Mesh Renderer の Blend Shapes（保存したシェイプキー）と、GP02 Shape Keys。見やすいように、インスペクターを縦に大きくして撮った", 4, _inspector);
             ArrangeWindows();
             yield return Pump(4);
+        }
+
+        // 保存したシェイプキーのデータの数（保存できたかを見る。同じメッシュのアセットへ保存し直すと、LastSavedMesh は変わらないため）
+        int SavedKeyCount()
+        {
+            GP02ShapeKeyData data = _cloth.FindSavedKeyData(out _);
+            return data != null ? data.Entries.Count : 0;
         }
 
         // インスペクターの SkinnedMeshRenderer の「Blend Shapes」を開く（SkinnedMeshRendererEditor が持つ、開閉の SerializedProperty を開く）
@@ -783,7 +863,7 @@ namespace GP02.Tests
             var list = EditorWindow.GetWindow<ShapeKeyListWindow>();
             list.position = new Rect(705, 0, 575, 900);
             yield return Pump(8);
-            yield return Snap("15_shape_key_list", "シェイプキーの一覧のウィンドウ（かんたん表示）。保存したシェイプキーの名前・重み・複製・削除・分割・反転・メッシュに書き出す", 6, list);
+            yield return Snap("15_shape_key_list", "シェイプキーの一覧のウィンドウ（かんたん表示）。保存したシェイプキーの名前・重み・複製・削除・分割・反転と、メッシュとの比べ（保存した直後なので「✓ メッシュに反映済み」）", 6, list);
             list.Close();
             yield return Pump(4);
         }
@@ -917,15 +997,23 @@ namespace GP02.Tests
             Fact("(a) アバターを選んだあとの窓の「対象」: " + (_cloth.Targets.Count > 0 ? _cloth.Targets[0].name : "なし") + "（アバターには布が無いので、対象は変わらない）");
             if (ClickText(_cloth, "選択中のオブジェクトから設定", out string how)) Op(Via.Real, "(a) 窓のボタン" + how);
             yield return Pump(3);
-            yield return Snap("18a_select_avatar_root", "(a) アバターそのものを選んで、「選択中のオブジェクトから設定」を押した。布が無いと、ダイアログで案内が出る", 6, _hierarchy);
+            Fact("(a) 窓の「この中の衣装」の一覧: " + (_cloth.Candidates.Count == 0 ? "出ていない" : string.Join("、", ListCandidates())));
+            yield return Snap("18a_select_avatar_root", "(a) アバターそのものを選んで、「選択中のオブジェクトから設定」を押した。ダイアログは出ず、窓の対象の区切りに「この中の衣装」の一覧（体らしいものは最後に「体のようです」）が出る", 6, _hierarchy);
+
+            // 一覧の「Tights」を押して、タイツを対象にする
+            if (ClickText(_cloth, TestAvatarMenu.TightsName, out how)) Op(Via.Real, "(a) 窓の「この中の衣装」の" + how);
+            else Op(Via.Real, "(a) 「この中の衣装」の一覧で、" + how);
+            yield return Pump(3);
+            Fact("(a) 一覧で押したあとの窓の「対象」: " + (_cloth.Targets.Count > 0 ? _cloth.Targets[0].name : "なし") + "（ヒエラルキーの選択は " + (Selection.activeGameObject != null ? Selection.activeGameObject.name : "なし") + " のまま）");
+            yield return Snap("18a2_pick_from_list", "(a) 「この中の衣装」の「Tights」を押した。対象がタイツになる（ヒエラルキーの選択はアバターのまま）", 6, _hierarchy);
 
             // (b) 体（Body）を選んで開始
             yield return SelectInHierarchy(TestAvatarMenu.BodyName, _avatar.transform.Find(TestAvatarMenu.BodyName).gameObject, "(b) ");
             Fact("(b) 体を選んだあとの窓の「対象」: " + (_cloth.Targets.Count > 0 ? _cloth.Targets[0].name : "なし"));
-            yield return Snap("18b_select_body", "(b) 体（Body）を選んだ。自動で「対象」に入り、診断の注意が出る（出れば）", 6, _hierarchy);
+            yield return Snap("18b_select_body", "(b) 体（Body）を選んだ。自動で「対象」に入り、診断に「体のメッシュのようです」の注意と、衣装の候補が出る", 6, _hierarchy);
             yield return StartEditingByButton("(b) ");
             Fact("(b) 体で編集を始めた結果: 編集中 " + C.IsEditing + (C.IsEditing ? "、粒子 " + C.Session.ParticleCount.ToString("N0") + "、準備 " + C.Session.PrepareMilliseconds.ToString("F0") + " ms" : "、理由: " + C.LastError));
-            yield return Snap("18c_edit_on_body", "(b) 体でも編集は始まってしまう（布かどうかは調べない）。動作チェックは「衣装がアバターの中に…」の案内になる", 6);
+            yield return Snap("18c_edit_on_body", "(b) 注意を読まずに「編集を開始」を押すと、体でも編集は始まる（注意だけで、止めはしない）", 6);
             _unsavedAnswers.Enqueue(ClothEditUnsavedChoice.Discard);
             if (C.IsEditing) Invoke(_cloth, "RequestEnd");
 
@@ -970,6 +1058,18 @@ namespace GP02.Tests
             yield return Snap("18h_cloth_without_avatar", "(f) アバター（Animator）の外の布。動作チェックは使えない理由が出る。対称・診断の注意も出る", 6);
             _unsavedAnswers.Enqueue(ClothEditUnsavedChoice.Discard);
             if (C.IsEditing) Invoke(_cloth, "RequestEnd");
+        }
+
+        // 窓の「この中の衣装」の一覧の名前（記録用）。体らしいものには印を付ける
+        List<string> ListCandidates()
+        {
+            var names = new List<string>();
+            foreach (ClothCandidate candidate in _cloth.Candidates)
+            {
+                if (candidate.Renderer == null) continue;
+                names.Add(candidate.Renderer.name + (candidate.LikelyBody ? "（体のようです）" : ""));
+            }
+            return names;
         }
 
         // 平らな布（20x20 の格子）を作る。unreadable なら、読み書きできないメッシュにする
