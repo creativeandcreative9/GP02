@@ -201,6 +201,27 @@ namespace GP02.Core
             }
         }
 
+        /// <summary>
+        /// other が、この布と同じ粒子（数・乗っている三角形・静止状態の位置が tolerance メートル以内）を持つか。
+        /// 同じメッシュから同じ位置で作り直した布なら同じになる。粒子の位置の記録（Undo など）を、作り直した布にそのまま使えるかを確かめる。
+        /// </summary>
+        public bool HasSameParticles(ParticleCloth other, float tolerance)
+        {
+            if (other == null) return false;
+            if (ReferenceEquals(other, this)) return true;
+            int count = Model.ParticleCount;
+            if (other.Model.ParticleCount != count) return false;
+            Vector3[] mine = Model.RestPositions, theirs = other.Model.RestPositions;
+            float toleranceSquared = tolerance * tolerance;
+            for (int i = 0; i < count; i++)
+            {
+                if (ParticleTriangle[i] != other.ParticleTriangle[i]) return false;
+                float dx = mine[i].X - theirs[i].X, dy = mine[i].Y - theirs[i].Y, dz = mine[i].Z - theirs[i].Z;
+                if (dx * dx + dy * dy + dz * dz > toleranceSquared) return false;
+            }
+            return true;
+        }
+
         // 粒子を三角形に落とした重心座標。粒子は三角形の上に作ってあるので、落とす距離はほぼ 0
         static Vector3[] ComputeBarycentric(MeshTopology topology, Vector3[] particles, int[] particleTriangle)
         {

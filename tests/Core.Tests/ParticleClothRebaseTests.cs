@@ -175,4 +175,26 @@ public class ParticleClothRebaseTests
         var cloth = Cloth();
         Assert.Throws<ArgumentException>(() => cloth.Rebase(new Vector3[3]));
     }
+
+    // ---- 作り直した布の粒子が同じか（Undo の記録を引き継げるか） ----
+
+    [Fact]
+    public void HasSameParticles_TrueForTheSameMeshBuiltAgain_FalseWhenTheRestOrMeshDiffers()
+    {
+        ProceduralMeshes.Grid(20, 20, 0.3f, 0.3f, out var vertices, out var triangles);
+        var cloth = ParticleCloth.Build(vertices, triangles);
+
+        Assert.True(cloth.HasSameParticles(cloth, 0f));
+        Assert.True(cloth.HasSameParticles(ParticleCloth.Build(vertices, triangles), 1e-6f), "同じメッシュから作り直した布は同じ粒子");
+        Assert.False(cloth.HasSameParticles(null, 1f));
+
+        // 粒子の並びは同じでも、静止状態が動いた布（保存したあとの Rebase）は違う
+        var rebased = cloth.Rebase(Pull(cloth, 0.05f).Positions);
+        Assert.False(cloth.HasSameParticles(rebased, 1e-5f));
+        Assert.True(cloth.HasSameParticles(rebased, 1f), "許容を大きくすれば同じ並び");
+
+        // 形の違うメッシュ（置き直すと粒子の数や並びが変わる）
+        ProceduralMeshes.Grid(20, 20, 0.32f, 0.3f, out var wider, out var widerTriangles);
+        Assert.False(cloth.HasSameParticles(ParticleCloth.Build(wider, widerTriangles), 1e-5f));
+    }
 }

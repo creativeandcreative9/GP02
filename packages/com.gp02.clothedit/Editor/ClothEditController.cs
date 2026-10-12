@@ -62,6 +62,10 @@ namespace GP02.EditorTools
         ClothEditSession _session;
         ClothEditState _state;          // Unity の Undo の記録先（セッションごとに作る。RebuildSession では引き継ぐ）
         ClothEditState _carriedState;   // RebuildSession が、作り直す間だけ預ける記録先（StartSession が受け取る）
+        ParticleCloth _carriedStateCloth;   // 預けた記録先の粒子の布（作り直した布と粒子が同じときだけ、記録を引き継ぐ）
+
+        // 作り直した布の粒子の静止状態が、前とこれ（メートル）以内なら同じ粒子とみなす
+        const float CarriedStateTolerance = 1e-5f;
         float _influenceRadius = 0.3f;
         float _brushRadius = 0.03f;
         bool _disposed;
@@ -674,9 +678,17 @@ namespace GP02.EditorTools
             double warmUp = _session.WarmUp();
             DetectPenetrationOnStart();
 
-            // 作り直した直後の形が、Undo の戻り先の基準になる
+            // 作り直した直後の形が、Undo の戻り先の基準になる。
+            // 預かった記録先は、粒子が前と同じ（同じメッシュから同じ位置で作り直した）ときだけ使う。粒子の並びや静止状態が変わったのに使うと、
+            // 前の粒子の位置の記録が今の粒子に当てはめられ、Ctrl+Z / Ctrl+Y で形が崩れるか、何も戻らなくなる（保存を戻して、やり直したときなど）
+            if (_carriedState != null && !_session.Cloth.HasSameParticles(_carriedStateCloth, CarriedStateTolerance))
+            {
+                ClothEditLog.Info("[GP02] 作り直した布の粒子が前と違うので、作り直す前の操作の Ctrl+Z の記録は引き継ぎませんでした。");
+                DiscardCarriedState();
+            }
             _state = _carriedState != null ? _carriedState : ClothEditState.Create();
             _carriedState = null;
+            _carriedStateCloth = null;
             _session.WriteState(_state);
             _avatarRoot = ClothEditSymmetry.FindAvatarRoot(_target.transform);
             _previewKeyValid = false;
@@ -2204,11 +2216,13 @@ namespace GP02.EditorTools
             bool hadUnsaved = HasUnsavedEdits;
             Vector3[] deltas = keepEdit && hadUnsaved ? _session.GetMeshSpaceDeltas() : null;
             // Undo の戻り先の入れ物は、作り直しても引き継ぐ（End が消すと、作り直す前の操作（外へ逃がす・つまむなど）の Ctrl+Z の記録がなくなり、
-            // 作り直したあとに Ctrl+Z を続けても、その形が戻らない）。形を捨てて作り直すときは、前の記録に合わないので引き継がない
+            // 作り直したあとに Ctrl+Z を続けても、その形が戻らない）。形を捨てて作り直すときは、前の記録に合わないので引き継がない。
+            // 作り直した布の粒子が前と違うとき（保存を戻す・やり直すなどでメッシュの形が変わったとき）も、StartSession が引き継がない
             ClothEditState keptState = keepEdit ? _state : null;
             if (keptState != null)
             {
                 _carriedState = keptState;
+                _carriedStateCloth = _session.Cloth;
                 _state = null;
             }
             bool started;
@@ -2216,12 +2230,7 @@ namespace GP02.EditorTools
             finally
             {
                 // 使われなかった（作り直せなかった）ときは、ここで片付ける
-                if (_carriedState != null)
-                {
-                    Undo.ClearUndo(_carriedState);
-                    Object.DestroyImmediate(_carriedState);
-                    _carriedState = null;
-                }
+                DiscardCarriedState();
             }
             if (!started || deltas == null) return false;
 
@@ -2238,6 +2247,16 @@ namespace GP02.EditorTools
             AfterShapeChanged();
             RedetectPenetrationIfStale();
             return true;
+        }
+
+        // 預かった記録先を、記録ごと消す（引き継がないとき・作り直せなかったとき）
+        void DiscardCarriedState()
+        {
+            _carriedStateCloth = null;
+            if (_carriedState == null) return;
+            Undo.ClearUndo(_carriedState);
+            Object.DestroyImmediate(_carriedState);
+            _carriedState = null;
         }
 
         void AfterShapeChanged()
@@ -2330,7 +2349,10 @@ namespace GP02.EditorTools
             Undo.IncrementCurrentGroup();
 
             // シェイプキー込みの形（編集中の形そのもの）が新しい基準になる。
-            // 粒子は置き直さず、今の位置を静止状態にした布で作り直す。ピンは粒子の番号が同じなので番号で引き継ぐ
+            // 粒子は置き直さず、今の位置を静止状態にした布で作り直す。ピンは粒子の番号が同じなので番号で引き継ぐ。
+            // 保存の前の操作の Ctrl+Z の記録（_state）は、RebuildSession と違って引き継がない（StartSession の End が消す）。
+            // 保存を Ctrl+Z で戻すと、元のメッシュで作り直して形は元のメッシュの形（保存の前の操作より前）に戻るので、
+            // 記録を残すと、そのあとの Ctrl+Z で、戻した形より新しい形に進んだり、何も起きなかったりする。保存の前の操作は、保存と一緒に戻ったものとして扱う
             var timer = System.Diagnostics.Stopwatch.StartNew();
             ParticleCloth rebased;
             var pinParticles = new List<int>();
