@@ -72,8 +72,10 @@ namespace GP02.Tests
             Application.logMessageReceived += OnLog;
             Func<ClothEditLeaveReason, ClothEditUnsavedChoice> savedAsk = ClothEditPrompts.AskUnsaved;
             Func<string, string, string, string, bool> savedConfirm = ClothEditPrompts.Confirm;
+            Func<string, WeightFixChoice> savedChoose = ClothEditPrompts.ChooseWeightFix;
             ClothEditPrompts.AskUnsaved = AskUnsavedRecorder;
             ClothEditPrompts.Confirm = ConfirmRecorder;
+            ClothEditPrompts.ChooseWeightFix = ChooseWeightFixRecorder;
             try
             {
                 yield return Setup(env);
@@ -102,6 +104,7 @@ namespace GP02.Tests
             {
                 ClothEditPrompts.AskUnsaved = savedAsk;
                 ClothEditPrompts.Confirm = savedConfirm;
+                ClothEditPrompts.ChooseWeightFix = savedChoose;
                 Application.logMessageReceived -= OnLog;
                 LogAssert.ignoreFailingMessages = false;
                 total.Stop();
@@ -689,15 +692,27 @@ namespace GP02.Tests
         }
 
         // おすすめの「ウェイトを体に寄せる」を押す。候補でポーズを試した前後を見せて、適用するかを聞かれる（ここでは「適用」）。
+        // 体から離れた布が伸びすぎる候補（スカートに強さ 100% で当てたとき）は、先に「弱めて（50%）試す」「やめる」「このまま適用」を聞かれる。
+        // 初心者は案内どおり「弱めて（50%）試す」を選び、50% で試し直した前後を見て、適用する。
         // 適用すると編集を作り直すので、保存していない編集があれば、先にどうするかを聞かれる。初心者は「保存する」を選ぶ
         IEnumerator FollowWeightFix()
         {
             yield return ViewTo("全体が見える正面", FrontPivot, 8f, 180f, FrontSize + 0.1f);
             bool unsaved = C.HasUnsavedEdits;
             if (unsaved) _unsavedAnswers.Enqueue(ClothEditUnsavedChoice.Save);
+            _weightFixChoiceAsked = false;
             WeightFixReport before = C.LastWeightFix;
             yield return ClickOrCall("ウェイトを体に寄せる", () => C.LastWeightFix != before, () => Invoke(_cloth, "PreviewWeightFixFromWindow", true), "ClothEditWindow.PreviewWeightFixFromWindow(true)", 2);
-            Waited("「ウェイトを体に寄せる」を押してから終わるまで（候補でポーズを試し、確認のあと適用して、編集を作り直す）", _lastClickMs);
+            Waited("「ウェイトを体に寄せる」を押してから終わるまで（候補でポーズを試し、伸びすぎるときは弱めて試し直し、確認のあと適用して、編集を作り直す）", _lastClickMs);
+            WeightFixReport report = C.LastWeightFix;
+            bool applied = report != null && report != before;
+            if (_weightFixChoiceAsked)
+            {
+                string tryWeaker = ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.TryWeaker);
+                Op(Via.Note, "体から離れた布が伸びすぎる候補だったので、確認に「" + tryWeaker + "」「" + ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.Cancel) + "」「" + ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.ApplyAsIs)
+                    + "」の3つが出て、案内どおり「" + tryWeaker + "」を選んだ（かんたん表示のまま、強さを 50% にして試し直す）"
+                    + (applied ? "。続けて、50% で試した結果の「適用」の確認が出て、「適用」を選んだ" : "。そのあと、適用はされなかった"));
+            }
             if (_unsavedAnswers.Count > 0)
             {
                 _unsavedAnswers.Clear();
@@ -707,10 +722,30 @@ namespace GP02.Tests
             {
                 Op(Via.Note, "保存していない編集があったので、適用の前に確認が出て、「保存する」を選んだ（編集中の形がシェイプキーとして保存される）");
             }
-            WeightFixReport report = C.LastWeightFix;
-            Fact("結果: " + (report == null || report == before ? "適用されなかった（" + C.LastWeightFixError + "）" : report.ToString()) + "。編集を続けられる: " + C.IsEditing);
+            Fact("結果: " + (!applied ? "適用されなかった（" + C.LastWeightFixError + "）" : report.ToString()) + "。編集を続けられる: " + C.IsEditing);
+            if (applied && report.Preview != null)
+            {
+                WeightFixPreview used = report.Preview;
+                Fact("適用した候補の強さ: " + used.StrengthPercent + "%（" + used.Strength.ToString("F2", CultureInfo.InvariantCulture) + "）。設定の強さは " + (C.Settings.WeightFixStrength * 100f).ToString("F0", CultureInfo.InvariantCulture)
+                    + "% のまま（弱めて試すは、設定を変えない）");
+                Fact("適用した候補の数字: " + WeightFixNumbers(used));
+                Fact("結果の欄（窓の上）の1行目: 「" + Flat(_cloth.ResultText.Split('\n')[0]) + "」");
+            }
             Fact("動作チェックの結果: " + (C.LastPoseCheck != null ? C.LastPoseCheck.DescribeSummary() + (C.IsPoseCheckStale ? "（古い）" : "") : "なし"));
-            yield return Snap("12_escape_outward", "おすすめの「ウェイトを体に寄せる」を押したあと（このスカートでは、よく使うポーズに外へ逃がせる浅い所が無く、ウェイトが原因の所を勧められた）。確認のあと適用し、窓に前後の件数", 2);
+            yield return Snap("12_escape_outward", "おすすめの「ウェイトを体に寄せる」を押したあと（このスカートでは、よく使うポーズに外へ逃がせる浅い所が無く、ウェイトが原因の所を勧められた）。"
+                + (_weightFixChoiceAsked ? "強さ 100% の候補は伸びすぎたので、「弱めて（50%）試す」を選んだ。" : "") + "確認のあと適用し、窓に前後の件数", 2);
+        }
+
+        // 候補の数字を1行にする（強さ・体から離れた所の伸び・直す範囲の突き抜け・いちばん深い所）。強さ 100% と 50% を見比べるため
+        static string WeightFixNumbers(WeightFixPreview p)
+        {
+            string stretch = p.StretchEntry >= 0
+                ? p.StretchPoseName + " " + (p.StretchBefore * 100f).ToString("F0", CultureInfo.InvariantCulture) + "% → " + (p.StretchAfter * 100f).ToString("F0", CultureInfo.InvariantCulture) + "%"
+                : "増えない";
+            return "強さ " + p.StrengthPercent + "%: 体から離れた所の布の伸び " + stretch + "（伸びすぎ: " + (p.StretchesTooMuch ? "はい" : "いいえ") + "）、"
+                + p.ScopeLabel + "の突き抜け " + p.RegionsBefore + " → " + p.RegionsAfter + " か所（" + p.PosesBefore + " → " + p.PosesAfter + " ポーズ）、いちばん深い所 "
+                + (p.MaxDepthBefore * 1000f).ToString("F1", CultureInfo.InvariantCulture) + " → " + (p.MaxDepthAfter * 1000f).ToString("F1", CultureInfo.InvariantCulture) + " mm、ウェイトが原因の所 "
+                + p.WeightRegionsBefore + " → " + p.WeightRegionsAfter + " か所、ウェイトを変える頂点 " + p.ChangedVertices;
         }
 
         // ---- 13 ----

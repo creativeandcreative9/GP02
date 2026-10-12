@@ -596,6 +596,22 @@ namespace GP02.Tests
             return true;
         }
 
+        // 「ウェイトを体に寄せる」の候補が、体から離れた布を伸ばしすぎるときの確認（ClothEditPrompts.ChooseWeightFix）は、本文と3つのボタンを記録して、
+        // 案内どおり「弱めて（50%）試す」を選ぶ。確認の時点の候補（強さ 100%）の数字も、確かめた値に残す（あとの50%の候補と見比べるため）
+        bool _weightFixChoiceAsked;
+
+        WeightFixChoice ChooseWeightFixRecorder(string message)
+        {
+            _weightFixChoiceAsked = true;
+            string tryWeaker = ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.TryWeaker);
+            string cancel = ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.Cancel);
+            string asIs = ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.ApplyAsIs);
+            _r.Dialogs.Add("『GP02』 " + Flat(message) + "（ボタン: " + tryWeaker + " ／ " + cancel + " ／ " + asIs + "。ここでは案内どおり「" + tryWeaker + "」を選んだことにした）");
+            WeightFixPreview candidate = C != null ? C.WeightFixPreview : null;
+            if (candidate != null) Fact("伸びすぎると知らせた候補（確認の時点）の数字: " + WeightFixNumbers(candidate));
+            return WeightFixChoice.TryWeaker;
+        }
+
         // ---- シーンビューのマウス操作 ----
         // 窓のボタンのクリックと同じく、SendEvent でマウスのイベントを送る。位置は、世界の点を画面の点にして渡す。
         // SendEvent に渡す位置と、カメラの画面の位置との食い違い（タブ・ツールバーの高さ）は、実際にマウスを乗せて測って補正する
