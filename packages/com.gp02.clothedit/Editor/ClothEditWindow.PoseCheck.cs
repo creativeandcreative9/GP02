@@ -127,12 +127,13 @@ namespace GP02.EditorTools
                     $"Places that already poke through in the current pose ({result.Baseline.RegionCount}) are not counted here. Use \"Fix Penetration\" for them."), EditorStyles.wordWrappedMiniLabel);
             }
 
-            DrawRankedPoses(result, detailed);
-            DrawPoseBrowseButtons(result);
-            DrawPoseScopeToggles(result);
+            // 次にすること（おすすめの直し方）を先に出す。悪い順の一覧の下だと、スクロールしないと見えないため
             DrawPoseFixAdvice(result, stale, detailed);
             DrawWeightFixSection(result, stale);
             DrawLastPoseEscape(detailed);
+            DrawRankedPoses(result, detailed);
+            DrawPoseBrowseButtons(result);
+            DrawPoseScopeToggles(result);
             DrawPoseExplanation(result);
         }
 
@@ -262,8 +263,8 @@ namespace GP02.EditorTools
                     // 直す範囲には問題が無い。大きく動くポーズだけに突き抜けがあるときは、直したいときの方法を一言
                     EditorGUILayout.LabelField(advice.IncludesLargePoses
                         ? L10n.Tr("直すことはありません ✓", "Nothing to fix ✓")
-                        : L10n.Tr("直すことはありません ✓（大きく動くポーズも直したいときは、上の「大きく動くポーズも直す」をオンにします）",
-                            "Nothing to fix ✓ (to also fix the big-motion poses, turn on \"Also fix big-motion poses\" above)"), EditorStyles.wordWrappedLabel);
+                        : L10n.Tr("直すことはありません ✓（大きく動くポーズも直したいときは、下の「大きく動くポーズも直す」をオンにします）",
+                            "Nothing to fix ✓ (to also fix the big-motion poses, turn on \"Also fix big-motion poses\" below)"), EditorStyles.wordWrappedLabel);
                 }
                 if (advice.EscapeRegions > 0)
                 {

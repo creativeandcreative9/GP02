@@ -766,12 +766,14 @@ namespace GP02.Tests
             Assert.That(ClothEditView.Shows(ClothEditUiItem.SavedKeyOverlay, ClothEditViewMode.Simple), Is.False, "かんたん表示では、重ねて見るスライダーをやめる");
             Assert.That(ClothEditView.Shows(ClothEditUiItem.SavedKeyOverlay, ClothEditViewMode.Detailed), Is.True, "くわしく表示に移す");
 
-            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 100f), Is.EqualTo("反映中（100）"));
-            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 0f), Is.EqualTo("反映していない（0）"));
-            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 37.5f), Is.EqualTo("反映中（37.5）"));
-            Assert.That(ClothEditWindow.AppliedWeightLabel(false, 0f), Does.Contain("反映していない").And.Contain("未書き出し"));
+            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 100f), Is.EqualTo("表示中（重み 100）"));
+            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 0f), Is.EqualTo("表示していない（重み 0）"));
+            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 37.5f), Is.EqualTo("表示中（重み 37.5）"));
+            Assert.That(ClothEditWindow.AppliedWeightLabel(false, 0f), Is.EqualTo("メッシュにまだ無い"));
+            // 「反映」は、シェイプキーの一覧の「メッシュに反映」だけに使う（重みの表示に使うと、別の意味に読める）
+            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 100f) + ClothEditWindow.AppliedWeightLabel(true, 0f) + ClothEditWindow.AppliedWeightLabel(false, 0f), Does.Not.Contain("反映"));
             L10n.Language = UiLanguage.English;
-            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 100f), Is.EqualTo("Applied (100)"));
+            Assert.That(ClothEditWindow.AppliedWeightLabel(true, 100f), Is.EqualTo("Shown (weight 100)"));
 
             // レンダラーの実際の重みを読む（インスペクターの重みと同じ）
             GameObject root = CreateAvatar();
@@ -786,7 +788,7 @@ namespace GP02.Tests
             skirt.SetBlendShapeWeight(skirt.sharedMesh.GetBlendShapeIndex("GP02_1"), 0f);
             Assert.That(window.TryGetAppliedWeight(component, entry, out weight), Is.True);
             Assert.That(weight, Is.EqualTo(0f));
-            Assert.That(window.TryGetAppliedWeight(component, new ShapeKeyEntry { Name = "NotInTheMesh" }, out _), Is.False, "メッシュに無いものは、反映していない");
+            Assert.That(window.TryGetAppliedWeight(component, new ShapeKeyEntry { Name = "NotInTheMesh" }, out _), Is.False, "メッシュに無いものは、表示していない（メッシュにまだ無い）");
         }
 
         // ---- D1: アバター全体を選んだとき ----

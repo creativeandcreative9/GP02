@@ -6,7 +6,8 @@ namespace GP02.EditorTools
 {
     // 「保存」の区切りの、保存したシェイプキーの簡単な一覧。名前・「布で再編集」・削除と、「詳しい一覧を開く」。
     // 保存したものを確かめるために、シェイプキーの一覧のウィンドウへ行き来しなくてよいようにする。詳しい操作は一覧のウィンドウで行う。
-    // かんたん表示は、レンダラーの実際の重みを「反映中（100）」「反映していない（0）」の言葉で出す（インスペクターの重みと同じもの）。
+    // かんたん表示は、レンダラーの実際の重みを「表示中（重み 100）」「表示していない（重み 0）」の言葉で出す（インスペクターの重みと同じもの）。
+    // 「反映」は、シェイプキーの一覧の「メッシュに反映」（データをメッシュに入れること）だけに使い、ここでは使わない。
     // くわしく表示では、「重ねて見る」スライダーも出す。これは、編集中の形に、保存した形を橙の半透明で重ねて見るためのもので、
     // レンダラーの重みとも、データの「プレビューの重み」とも別（どちらも触らない）。
     public sealed partial class ClothEditWindow
@@ -55,7 +56,7 @@ namespace GP02.EditorTools
                 EditorGUILayout.LabelField(L10n.Tr($"ほか {data.Entries.Count - shown} 個は、詳しい一覧で見られます", $"{data.Entries.Count - shown} more in the detailed list"), EditorStyles.miniLabel);
             }
             if (GUILayout.Button(new GUIContent(L10n.Tr("詳しい一覧を開く", "Open the detailed list"),
-                L10n.Tr("シェイプキーの一覧のウィンドウを開きます（分割・反転・書き出しなど、すべての操作ができます）", "Opens the shape key list window (split, flip, export and every other operation)"))))
+                L10n.Tr("シェイプキーの一覧のウィンドウを開きます（分割・反転・メッシュへの反映など、すべての操作ができます）", "Opens the shape key list window (split, flip, apply to the mesh and every other operation)"))))
             {
                 OpenShapeKeyList();
             }
@@ -74,13 +75,13 @@ namespace GP02.EditorTools
             return true;
         }
 
-        /// <summary>保存したシェイプキーが、衣装に反映されているかの言葉。「反映中（100）」「反映していない（0）」「反映していない（メッシュに未書き出し）」。</summary>
+        /// <summary>保存したシェイプキーが、いま衣装に出ているかの言葉。「表示中（重み 100）」「表示していない（重み 0）」「メッシュにまだ無い」。</summary>
         internal static string AppliedWeightLabel(bool inMesh, float weight)
         {
-            if (!inMesh) return L10n.Tr("反映していない（未書き出し）", "Not applied (not exported)");
+            if (!inMesh) return L10n.Tr("メッシュにまだ無い", "Not in the mesh yet");
             return weight > 0f
-                ? L10n.Tr($"反映中（{weight:0.#}）", $"Applied ({weight:0.#})")
-                : L10n.Tr("反映していない（0）", "Not applied (0)");
+                ? L10n.Tr($"表示中（重み {weight:0.#}）", $"Shown (weight {weight:0.#})")
+                : L10n.Tr("表示していない（重み 0）", "Hidden (weight 0)");
         }
 
         // 1行: 名前、反映のようす、布で再編集、削除。くわしく表示は、もう1行に「重ねて見る」スライダー。データを変えて、この描画を打ち切る必要があるとき true
@@ -189,8 +190,8 @@ namespace GP02.EditorTools
         {
             string name = entry.Name;
             if (!ClothEditPrompts.Confirm("GP02",
-                L10n.Tr($"保存データ「{name}」を一覧から削除しますか？\n（バックアップが自動で残ります。メッシュに書き出し済みのシェイプキーは、そのまま残ります）",
-                    $"Remove the saved data \"{name}\" from the list?\n(A backup is kept automatically. A shape key already exported to the mesh stays in the mesh.)"),
+                L10n.Tr($"保存データ「{name}」を一覧から削除しますか？\n（バックアップが自動で残ります。メッシュに反映済みのシェイプキーは、そのまま残ります）",
+                    $"Remove the saved data \"{name}\" from the list?\n(A backup is kept automatically. A shape key already applied to the mesh stays in the mesh.)"),
                 L10n.Tr("削除する", "Delete"), L10n.Tr("やめる", "Cancel")))
             {
                 return false;

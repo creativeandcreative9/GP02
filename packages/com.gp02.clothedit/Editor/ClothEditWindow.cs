@@ -426,6 +426,7 @@ namespace GP02.EditorTools
             }
             if (blocked) EditorGUILayout.HelpBox(L10n.Tr("この対象では編集を始められません。理由は下の診断を見てください。", "Editing cannot start with this target. See the diagnostics below for the reason."), MessageType.Error);
             if (!string.IsNullOrEmpty(_controller.LastError)) EditorGUILayout.HelpBox(_controller.LastError, MessageType.Error);
+            DrawLikelyBodyNotice();
             DrawResultBox();
 
             EditorGUILayout.Space();
@@ -1162,14 +1163,14 @@ namespace GP02.EditorTools
             if (entryComponent != null && entryComponent.gameObject == _controller.Target.gameObject)
             {
                 // 一覧から「布で編集する」で始めたときは、そのシェイプキーへ保存する
-                EditorGUILayout.HelpBox(L10n.Tr($"シェイプキー「{ShapeKeyClothEdit.ActiveEntryName}」を布で編集しています。保存はデータに入ります。メッシュへの書き出しは、シェイプキーの一覧から行います。",
-                    $"Editing the shape key \"{ShapeKeyClothEdit.ActiveEntryName}\" with cloth. Saving stores it in the data. Export to the mesh from the shape key list."), MessageType.Info);
+                EditorGUILayout.HelpBox(L10n.Tr($"シェイプキー「{ShapeKeyClothEdit.ActiveEntryName}」を布で編集しています。保存はデータに入ります。メッシュへの反映は、シェイプキーの一覧から行います。",
+                    $"Editing the shape key \"{ShapeKeyClothEdit.ActiveEntryName}\" with cloth. Saving stores it in the data. Apply it to the mesh from the shape key list."), MessageType.Info);
                 using (new EditorGUILayout.HorizontalScope())
                 {
                     if (GUILayout.Button(new GUIContent(L10n.Tr("同じ名前で上書き保存", "Save (overwrite)"), L10n.Tr("編集したシェイプキーを、同じ名前で上書きします。Ctrl+Z で取り消せます", "Overwrites the shape key being edited, under the same name. Ctrl+Z undoes this")))) SaveEntry(true);
                     if (GUILayout.Button(new GUIContent(L10n.Tr("別名で追加", "Save as new"), L10n.Tr("今の形を、新しいシェイプキーとして一覧に加えます", "Adds the current shape to the list as a new shape key")))) SaveEntry(false);
                 }
-                if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーの一覧を開く", "Open the shape key list"), L10n.Tr("保存したシェイプキーの再編集・分割・反転・書き出しをする一覧を開きます", "Opens the list for re-editing, splitting, flipping and exporting saved shape keys")))) OpenShapeKeyList();
+                if (GUILayout.Button(new GUIContent(L10n.Tr("シェイプキーの一覧を開く", "Open the shape key list"), L10n.Tr("保存したシェイプキーの再編集・分割・反転・メッシュへの反映をする一覧を開きます", "Opens the list for re-editing, splitting, flipping and applying saved shape keys to the mesh")))) OpenShapeKeyList();
                 DrawSavedKeys();
                 EditorGUILayout.Space();
                 return;
@@ -1196,7 +1197,7 @@ namespace GP02.EditorTools
             _guideSaved = true;
             AfterSaved();
             Report(L10n.Tr("保存しました", "Saved"),
-                L10n.Tr($"「{saved.Name}」を保存しました。データに入りました（メッシュへの書き出しは、シェイプキーの一覧から行います）。", $"Saved \"{saved.Name}\" to the data (export to the mesh from the shape key list)."));
+                L10n.Tr($"「{saved.Name}」を保存しました。データに入りました（メッシュへの反映は、シェイプキーの一覧から行います）。", $"Saved \"{saved.Name}\" to the data (apply it to the mesh from the shape key list)."));
             return true;
         }
 

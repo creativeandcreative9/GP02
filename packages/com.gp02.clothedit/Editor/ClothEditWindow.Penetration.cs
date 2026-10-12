@@ -29,7 +29,8 @@ namespace GP02.EditorTools
             if (detailed) EditorGUILayout.LabelField(L10n.Tr("体との貫通", "Body Penetration"), EditorStyles.boldLabel);
 
             PenetrationReport report = _controller.LastPenetration;
-            bool stale = ShowsStaleNotice(report, _controller.NeedsPenetrationRefresh);
+            // 自動で調べ直す衣装では、つまんでいる間も「古い」と出さない（操作を確定すると、すぐ調べ直すため）
+            bool stale = ShowsStaleNotice(report, _controller.NeedsPenetrationRefresh) && !_controller.IsAutoPenetrationCheck;
             bool penetrating = report != null && report.HasBody && report.PenetratingCount > 0;
             bool canFix = _controller.HasBody && report != null && report.NeedPushCount > 0 && !_controller.IsBusy;
 

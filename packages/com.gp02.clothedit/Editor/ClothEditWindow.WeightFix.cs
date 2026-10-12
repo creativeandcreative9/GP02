@@ -192,8 +192,10 @@ namespace GP02.EditorTools
                 EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
                 return;
             }
-            // 窓の真ん中の通知は短く（前後の数は、窓の結果の欄に残る）
-            Toast(L10n.Tr("ウェイトを体に寄せました", "Fitted the weights"));
+            // 窓の真ん中の通知は短く、前後の数（候補で試したもの）は、窓の上の結果の欄に残す
+            Report(L10n.Tr("ウェイトを体に寄せました", "Fitted the weights"),
+                L10n.Tr("ウェイトを体に寄せました（Ctrl+Z の 1 回で戻せます）。", "Fitted the weights to the body (one Ctrl+Z undoes it).")
+                + (report.Preview != null ? "\n" + report.Preview.Describe() : ""));
         }
 
         void RemoveWeightFixFromWindow()

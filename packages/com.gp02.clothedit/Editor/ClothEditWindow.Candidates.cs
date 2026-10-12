@@ -118,7 +118,28 @@ namespace GP02.EditorTools
             return outfits;
         }
 
-        // 診断の項目の下: 「衣装の候補」のボタン
+        // 体のメッシュらしいものを対象にしたときの注意。「編集を開始」の上に出す（下の診断に出すと、押したあとで気づくため）。
+        // 「この中の衣装」の一覧が出ていれば、候補のボタンはそちらに任せる（同じボタンを2回並べない）
+        void DrawLikelyBodyNotice()
+        {
+            for (int i = 0; i < _warnings.Count; i++)
+            {
+                if (_warnings[i].Kind != TargetWarningKind.LikelyBody) continue;
+                EditorGUILayout.HelpBox(_warnings[i].Message, MessageType.Warning);
+                RefreshCandidates();
+                if (_candidates.Count > 0)
+                {
+                    EditorGUILayout.LabelField(L10n.Tr("上の「この中の衣装」から、服を選べます", "You can choose the clothing in \"Outfits in this object\" above"), EditorStyles.miniLabel);
+                }
+                else
+                {
+                    DrawOutfitSuggestions(i < _warningOwners.Count ? _warningOwners[i] : _target);
+                }
+                return;
+            }
+        }
+
+        // 体の注意の下: 「衣装の候補」のボタン
         void DrawOutfitSuggestions(Renderer body)
         {
             List<Renderer> outfits = OutfitsFor(body);

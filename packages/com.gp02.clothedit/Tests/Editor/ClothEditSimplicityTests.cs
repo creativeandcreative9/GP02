@@ -246,7 +246,7 @@ namespace GP02.Tests
                 ClothEditUiItem.ShapeKeyBulkEnable, ClothEditUiItem.ShapeKeyGroups, ClothEditUiItem.ShapeKeySolo, ClothEditUiItem.ShapeKeyDetails,
                 ClothEditUiItem.ShapeKeyMoreOperations, ClothEditUiItem.ShapeKeyOperationSettings, ClothEditUiItem.ShapeKeyImport,
                 ClothEditUiItem.ShapeKeyApplyMode, ClothEditUiItem.ShapeKeyExportDetails, ClothEditUiItem.ShapeKeyBackups,
-                // 保存したシェイプキーを「重ねて見る」スライダー（かんたん表示では、反映中かどうかの表示だけ）
+                // 保存したシェイプキーを「重ねて見る」スライダー（かんたん表示では、表示中かどうかの言葉だけ）
                 ClothEditUiItem.SavedKeyOverlay,
             };
             foreach (ClothEditUiItem item in simple) Assert.That(ClothEditView.Shows(item, ClothEditViewMode.Simple), Is.True, item + " はかんたん表示でも出す");

@@ -383,6 +383,9 @@ namespace GP02.EditorTools
             if (session.PinnedCount > 0)
             {
                 session.GetPinnedPositions(_pinDots, MaxPinDots);
+                // 白い縁を付けて、青い服の上でも見えるようにする（貫通の点は、白い縁の赤）
+                Handles.color = Color.white;
+                for (int i = 0; i < _pinDots.Count; i++) Dot(_pinDots[i], 0.019f);
                 Handles.color = ClothEditHelp.PinColor;
                 for (int i = 0; i < _pinDots.Count; i++) Dot(_pinDots[i], 0.015f);
             }

@@ -187,7 +187,7 @@ namespace GP02.Tests
                 Shot(window, "beginner_window_stretch_large");
                 SetStretch(controller, 0f);
 
-                // 4. 見出しの「保存」で保存する。保存したシェイプキーの一覧には、実際の重みが「反映中（100）」と出る
+                // 4. 見出しの「保存」で保存する。保存したシェイプキーの一覧には、実際の重みが「表示中（重み 100）」と出る
                 Assert.That(window.SaveFromHeader(), Is.True, controller.LastError);
                 SetField(window, "_foldGuide", true);
                 yield return Pump(10);

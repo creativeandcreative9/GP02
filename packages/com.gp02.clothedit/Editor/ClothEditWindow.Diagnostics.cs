@@ -73,6 +73,7 @@ namespace GP02.EditorTools
             int errors = 0, warnings = 0, infos = 0;
             foreach (TargetWarning item in _diagnostics)
             {
+                if (IsDrawnInTargetSection(item)) continue;
                 if (item.Severity == MessageType.Error) errors++;
                 else if (item.Severity == MessageType.Warning) warnings++;
                 else infos++;
@@ -83,12 +84,12 @@ namespace GP02.EditorTools
             bool editing = _controller.IsEditing;
             if (panel)
             {
-                string summary = _diagnostics.Count == 0
+                string summary = errors + warnings + infos == 0
                     ? L10n.Tr("診断（問題なし）", "Diagnostics (no problems)")
                     : L10n.Tr($"診断（重大 {errors}・注意 {warnings}・情報 {infos}）", $"Diagnostics ({errors} critical, {warnings} warnings, {infos} info)");
                 _foldDiagnostics = Section(_foldDiagnostics, summary);
                 if (!_foldDiagnostics) return;
-                if (_diagnostics.Count == 0) EditorGUILayout.HelpBox(L10n.Tr("見つかった問題はありません。", "No problems were found."), MessageType.Info);
+                if (errors + warnings + infos == 0) EditorGUILayout.HelpBox(L10n.Tr("見つかった問題はありません。", "No problems were found."), MessageType.Info);
             }
             else if (errors + warnings == 0 && !(editing && infos > 0) && !(editing && Shows(ClothEditUiItem.PenetrationFix)))
             {
@@ -98,6 +99,7 @@ namespace GP02.EditorTools
             // 重大・注意は、そのまま出す
             for (int i = 0; i < _diagnostics.Count; i++)
             {
+                if (IsDrawnInTargetSection(_diagnostics[i])) continue;
                 if (_diagnostics[i].Severity == MessageType.Error || _diagnostics[i].Severity == MessageType.Warning) DrawDiagnosticItem(i);
             }
 
@@ -109,6 +111,7 @@ namespace GP02.EditorTools
                 {
                     for (int i = 0; i < _diagnostics.Count; i++)
                     {
+                        if (IsDrawnInTargetSection(_diagnostics[i])) continue;
                         if (_diagnostics[i].Severity != MessageType.Error && _diagnostics[i].Severity != MessageType.Warning) DrawDiagnosticItem(i);
                     }
                 }
@@ -123,6 +126,9 @@ namespace GP02.EditorTools
             EditorGUILayout.Space();
         }
 
+        // 体のメッシュのようです、は、編集を始める前は対象の区切り（「編集を開始」の上）に出すので、診断には並べない（DrawLikelyBodyNotice）
+        bool IsDrawnInTargetSection(TargetWarning item) => item.Kind == TargetWarningKind.LikelyBody && !_controller.IsEditing;
+
         void DrawDiagnosticItem(int i)
         {
             TargetWarning item = _diagnostics[i];
@@ -130,8 +136,6 @@ namespace GP02.EditorTools
             string prefix = $"[{item.SeverityLabel}] ";
             if (owner != null && CollectTargets().Count > 1) prefix += owner.name + ": ";
             EditorGUILayout.HelpBox(prefix + item.Message, item.Severity);
-            // 体のメッシュのようです: 衣装の候補を、押して対象にできるボタンで出す
-            if (item.Kind == TargetWarningKind.LikelyBody && !_controller.IsEditing) DrawOutfitSuggestions(owner != null ? owner : _target);
             // ピンが無い: 付け根を自動でピン留めするボタン
             if (item.Kind == TargetWarningKind.NoPins && _controller.IsEditing) DrawAutoPinButton();
             if (!item.CanAutoFix) return;
