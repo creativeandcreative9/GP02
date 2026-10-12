@@ -221,27 +221,10 @@ namespace GP02.EditorTools
             if (ClothEditPrompts.Confirm("GP02", message, L10n.Tr("適用", "Apply"), L10n.Tr("やめる", "Cancel"))) ApplyWeightFixFromWindow();
         }
 
-        // 保存していない編集があれば、先に保存するかを聞く。続けてよければ true（discard は、保存せずに続けるか）
-        bool ConfirmRebuildForWeights(out bool discard)
-        {
-            discard = false;
-            if (!_controller.HasUnsavedEdits) return true;
-            switch (ClothEditPrompts.AskUnsaved(ClothEditLeaveReason.RebuildForWeights))
-            {
-                case ClothEditUnsavedChoice.Save:
-                    return SaveBeforeLeaving();
-                case ClothEditUnsavedChoice.Discard:
-                    discard = true;
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
         void ApplyWeightFixFromWindow()
         {
-            if (!ConfirmRebuildForWeights(out bool discard)) return;
-            WeightFixReport report = _controller.ApplyWeightFix(discard);
+            // 保存していない編集があっても聞かない（その形は、作り直すときに引き継ぐ）
+            WeightFixReport report = _controller.ApplyWeightFix();
             SceneView.RepaintAll();
             _diagnosticsAt = double.NegativeInfinity;
             if (report == null)
@@ -253,8 +236,14 @@ namespace GP02.EditorTools
             WeightFixPreview used = report.Preview;
             string undoJa = used != null && used.IsBelowFullStrength ? $"（強さ {used.StrengthPercent}%。Ctrl+Z の 1 回で戻せます）" : "（Ctrl+Z の 1 回で戻せます）";
             string undoEn = used != null && used.IsBelowFullStrength ? $" (strength {used.StrengthPercent}%; one Ctrl+Z undoes it)" : " (one Ctrl+Z undoes it)";
+            // 保存していない編集は、そのまま残っている。動作チェックの結果は、確認のときのものがそのまま新しいウェイトの結果になる
+            string carriedJa = report.CarriedUnsaved ? "\n保存していない編集は、そのまま残っています（まだ保存していません）。" : "";
+            string carriedEn = report.CarriedUnsaved ? "\nYour unsaved edits are kept as they were (not saved yet)." : "";
+            bool freshCheck = !_controller.IsPoseCheckStale && _controller.LastPoseCheck != null;
+            string freshJa = freshCheck ? "\n動作チェックの結果も、新しいウェイトのものになりました。" : "";
+            string freshEn = freshCheck ? "\nThe pose check result is now the one for the new weights." : "";
             Report(L10n.Tr("ウェイトを体に寄せました", "Fitted the weights"),
-                L10n.Tr("ウェイトを体に寄せました" + undoJa + "。", "Fitted the weights to the body" + undoEn + ".")
+                L10n.Tr("ウェイトを体に寄せました" + undoJa + "。" + carriedJa + freshJa, "Fitted the weights to the body" + undoEn + "." + carriedEn + freshEn)
                 + (used != null ? "\n" + used.Describe(ShowsWeightFixDetails) : ""));
         }
 
@@ -266,8 +255,7 @@ namespace GP02.EditorTools
             {
                 return;
             }
-            if (!ConfirmRebuildForWeights(out bool discard)) return;
-            if (!_controller.RemoveWeightFix(discard)) EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
+            if (!_controller.RemoveWeightFix()) EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
             else Toast(L10n.Tr("ウェイトの変更を外しました", "Removed the weight change"));
             SceneView.RepaintAll();
         }

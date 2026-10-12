@@ -2168,7 +2168,8 @@ namespace GP02.EditorTools
 
             if (!_session.IsTargetUnchanged())
             {
-                // 保存そのもの（メッシュの差し替えやシェイプキーの重み）が戻された、または対象が消えた。今のレンダラーで作り直す
+                // 保存そのもの（メッシュの差し替えやシェイプキーの重み）が戻された、または対象が消えた。今のレンダラーで作り直す。
+                // 保存していない形も引き継ぐ（Undo は後のものから戻すので、保存のあとの編集は、この時点でもう戻っている）
                 RebuildSession();
                 return;
             }
@@ -2177,7 +2178,12 @@ namespace GP02.EditorTools
             RedetectPenetrationIfStale();
         }
 
-        void RebuildSession()
+        /// <summary>
+        /// 今のレンダラーで、編集を作り直す（ピンと選んだ点は、位置と島で引き継ぐ）。
+        /// keepEdit が true で保存していない編集があるときは、その形も、メッシュ空間の差分で引き継ぐ（保存していない編集のまま。Undo には積まない）。
+        /// 編集を終えたとき・作り直せなかったときは false。保存していない形を引き継げたときだけ true を返す。
+        /// </summary>
+        bool RebuildSession(bool keepEdit = true)
         {
             // 消えた・編集できなくなったレンダラーは外して、残りで作り直す
             _targets.RemoveAll(renderer => renderer == null || GetStartProblem(renderer) != null);
@@ -2185,14 +2191,31 @@ namespace GP02.EditorTools
             if (_target == null)
             {
                 End();
-                return;
+                return false;
             }
             var pins = new List<Vector3>();
             var pinIslands = new List<int>();
             _session.GetPinnedPositions(pins, pinIslands);
             // 粒子を置き直すと番号が変わるので、選んだ点も位置と島から探し直す
             SelectionCarry carry = CaptureSelection();
-            StartSession(pins, pinIslands, null, null, carry, out _);
+            // 作り直す前の形（今のセッションの行列で、メッシュ空間の差分にしておく。メッシュのウェイトが変わっても、差分は頂点ごとに同じ意味を持つ）
+            bool hadUnsaved = HasUnsavedEdits;
+            Vector3[] deltas = keepEdit && hadUnsaved ? _session.GetMeshSpaceDeltas() : null;
+            if (!StartSession(pins, pinIslands, null, null, carry, out _) || deltas == null) return false;
+
+            if (deltas.Length != _session.VertexCount)
+            {
+                ClothEditLog.Info($"[GP02] 作り直した編集の頂点数（{_session.VertexCount}）が前（{deltas.Length}）と違うので、保存していない形は引き継げませんでした。");
+                return false;
+            }
+            _session.LoadMeshSpaceDeltas(deltas);
+            // 戻り先の基準も、引き継いだ形にする（しないと、次の操作を元に戻したときに引き継いだ形が消える）。保存済みの印は付けない
+            _session.WriteState(_state);
+            // 選んだ点は、引き継いだ形の上で探し直す（CaptureSelection は、作り直す前の位置を覚えている）
+            RestoreSelection(carry, false);
+            AfterShapeChanged();
+            RedetectPenetrationIfStale();
+            return true;
         }
 
         void AfterShapeChanged()

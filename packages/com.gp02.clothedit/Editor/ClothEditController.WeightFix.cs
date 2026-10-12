@@ -322,7 +322,8 @@ namespace GP02.EditorTools
         /// (a) 衣装のシェイプキーのデータ（無ければ作る）に、ボーンウェイトの変更として記録する（前の変更と合わせる。同じ頂点は新しいほう）。
         /// (b) 衣装のメッシュのウェイトを変える（GP02 が作ったメッシュなら書き換え、そうでなければ複製をアセットにして差し替える）。
         /// 足すボーンは、レンダラーのボーンの末尾に足す。そのあと編集を作り直し、候補で調べ直した結果を今の結果にする。
-        /// 保存していない編集があるときは、discardUnsaved が false なら何もしない（先に保存する。true なら、保存していない形は捨てる）。
+        /// 保存していない編集があるときは、その形をメッシュ空間の差分で引き継いで作り直す（保存していない編集のまま。Ctrl+Z の1回で、ウェイトと一緒に戻る）。
+        /// discardUnsaved が true のときだけ、保存していない形を捨てて作り直す（そのときは、動作チェックの結果が古くなる）。
         /// できなければ null（理由は <see cref="LastWeightFixError"/>）。
         /// </summary>
         public WeightFixReport ApplyWeightFix(bool discardUnsaved = false)
@@ -335,17 +336,11 @@ namespace GP02.EditorTools
                     : L10n.Tr("確認のあとに形が変わったので、もう一度確認してください。", "The shape changed after the check. Check again.");
                 return null;
             }
-            bool unsaved = HasUnsavedEdits;
-            if (unsaved && !discardUnsaved)
-            {
-                LastWeightFixError = L10n.Tr("保存していない編集があります。ウェイトを寄せると編集を作り直すので、先に保存してください。",
-                    "You have unsaved edits. Fitting the weights restarts the edit, so save first.");
-                return null;
-            }
             FinishStroke();
+            bool unsaved = HasUnsavedEdits;
             WeightFixPreview preview = _weightPreview;
             _weightPreview = null;
-            var report = new WeightFixReport { Preview = preview, ChangedVertices = preview.ChangedVertices, DiscardedUnsaved = unsaved };
+            var report = new WeightFixReport { Preview = preview, ChangedVertices = preview.ChangedVertices };
             string undoName = L10n.Tr("GP02 ウェイトを体に寄せる", "GP02 Fit Weights to Body");
 
             Undo.IncrementCurrentGroup();
@@ -389,17 +384,21 @@ namespace GP02.EditorTools
                 RevertRecords(group);
                 preview.DisposeRig();
                 LastWeightFixError = L10n.Tr("ウェイトを寄せられませんでした。Console のエラーを確認してください。\n", "Could not fit the weights. Check the errors in the Console.\n") + ex.Message;
-                RebuildSession();
+                RebuildSession(!discardUnsaved);
                 return null;
             }
             Undo.CollapseUndoOperations(group);
             Undo.IncrementCurrentGroup();
 
-            // 作り直す（ピンと選んだ点は、位置と部品で引き継ぐ）。保存していない形を捨てていなければ、候補で調べ直した結果がそのまま今の結果になる
+            // 作り直す（ピンと選んだ点は、位置と部品で引き継ぐ。保存していない形は、メッシュ空間の差分で引き継ぐ）。
+            // 保存していない形を捨てていなければ、候補で調べ直した結果がそのまま今の結果になる
+            // （動作チェックは、メッシュ空間の差分を入れた編集のメッシュに候補のウェイトを入れて試しているので、引き継いだ形は適用のあとの状態と同じ）
             PoseCheckResult after = preview.After;
             PoseRig afterRig = preview.DetachRig();
-            RebuildSession();
-            if (!unsaved && _session != null && after != null && afterRig != null && !afterRig.IsDisposed)
+            bool carried = RebuildSession(!discardUnsaved);
+            report.CarriedUnsaved = unsaved && carried;
+            report.DiscardedUnsaved = unsaved && !carried;
+            if (!report.DiscardedUnsaved && _session != null && after != null && afterRig != null && !afterRig.IsDisposed)
             {
                 after.Session = _session;
                 after.ShapeVersion = _session.ShapeVersion;
@@ -453,7 +452,7 @@ namespace GP02.EditorTools
         /// <summary>
         /// 編集中の衣装のデータから、ボーンウェイトの変更を外し、今の編集のメッシュの、変えた頂点のウェイトを元のメッシュ（データの元のメッシュ）のものに戻す
         /// （足したボーンも外す）。Unity の Undo の1段。そのあと編集を作り直す（動作チェックの結果は古くなる）。
-        /// 保存していない編集があるときは、discardUnsaved が false なら何もしない。外す変更が無ければ false。
+        /// 保存していない編集があるときは、その形を引き継いで作り直す（discardUnsaved が true のときだけ捨てる）。外す変更が無ければ false。
         /// </summary>
         public bool RemoveWeightFix(bool discardUnsaved = false)
         {
@@ -462,12 +461,6 @@ namespace GP02.EditorTools
             if (RecordedWeightEditVertexCount == 0)
             {
                 LastWeightFixError = L10n.Tr("データに記録したウェイトの変更はありません。", "There is no weight change recorded in the data.");
-                return false;
-            }
-            if (HasUnsavedEdits && !discardUnsaved)
-            {
-                LastWeightFixError = L10n.Tr("保存していない編集があります。ウェイトの変更を外すと編集を作り直すので、先に保存してください。",
-                    "You have unsaved edits. Removing the weight change restarts the edit, so save first.");
                 return false;
             }
             FinishStroke();
@@ -532,13 +525,13 @@ namespace GP02.EditorTools
                 Undo.CollapseUndoOperations(group);
                 RevertRecords(group);
                 LastWeightFixError = L10n.Tr("ウェイトの変更を外せませんでした。Console のエラーを確認してください。\n", "Could not remove the weight change. Check the errors in the Console.\n") + ex.Message;
-                RebuildSession();
+                RebuildSession(!discardUnsaved);
                 return false;
             }
             Undo.CollapseUndoOperations(group);
             Undo.IncrementCurrentGroup();
             LastWeightFix = null;
-            RebuildSession();
+            RebuildSession(!discardUnsaved);
             ClothEditLog.Info($"[GP02] {(_session != null ? _session.DescribeTargets() : "")}: データからウェイトの変更を外しました。");
             Notify();
             return true;

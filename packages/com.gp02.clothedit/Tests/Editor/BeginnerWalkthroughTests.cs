@@ -689,17 +689,26 @@ namespace GP02.Tests
             PoseEscapeReport report = C.LastPoseEscape;
             Fact("結果: " + (report == null ? "なし" : report.Reverted ? "効かなかったので元に戻した" : report.Rechecked ? "逃がした所の深さ（平均） " + (report.PushedDepthBefore * 1000f).ToString("F1") + " → " + (report.PushedDepthAfter * 1000f).ToString("F1") + " mm、貫通したポーズ " + report.PosesBefore + " → " + report.PosesAfter + "、か所 " + report.RegionsBefore + " → " + report.RegionsAfter : "逃がした（調べ直せなかった）"));
             yield return Snap("12_escape_outward", "「元のポーズで外へ逃がす」を押したあと。窓の真ん中に短い通知、窓には前後の件数の一言", 1);
+
+            // 外へ逃がしても、ウェイトが原因の所は残る。おすすめの直し方に「ウェイトを体に寄せる」がまだあるので、続けて押す
+            // （このスカートでは、外へ逃がせる浅い所が1か所だけあり、そこを逃がしたあとも、ウェイトが原因の所は残る）
+            if (ButtonState(_cloth, "ウェイトを体に寄せる") == "有効")
+            {
+                Op(Via.Note, "外へ逃がしたあとも、おすすめの直し方に「ウェイトを体に寄せる」が残っているので、続けて押す");
+                yield return FollowWeightFix("12b_weight_fit");
+            }
         }
 
         // おすすめの「ウェイトを体に寄せる」を押す。候補でポーズを試した前後を見せて、適用するかを聞かれる（ここでは「適用」）。
         // 体から離れた布が伸びすぎる候補（スカートに強さ 100% で当てたとき）は、先に「弱めて（50%）試す」「やめる」「このまま適用」を聞かれる。
         // 初心者は案内どおり「弱めて（50%）試す」を選び、50% で試し直した前後を見て、適用する。
-        // 適用すると編集を作り直すので、保存していない編集があれば、先にどうするかを聞かれる。初心者は「保存する」を選ぶ
-        IEnumerator FollowWeightFix()
+        // 適用すると編集を作り直すが、保存していない編集は、その形のまま引き継ぐので、保存の確認は出ない（適用の前後の「保存していない編集」と、
+        // 動作チェックの結果が古くならないことを、Fact に残す）
+        IEnumerator FollowWeightFix(string snapName = "12_escape_outward")
         {
             yield return ViewTo("全体が見える正面", FrontPivot, 8f, 180f, FrontSize + 0.1f);
             bool unsaved = C.HasUnsavedEdits;
-            if (unsaved) _unsavedAnswers.Enqueue(ClothEditUnsavedChoice.Save);
+            Fact("適用の前: 保存していない編集 " + unsaved + "、動作チェックの結果が古いか " + C.IsPoseCheckStale + "、保存したシェイプキー " + SavedKeyCount() + " 個");
             _weightFixChoiceAsked = false;
             WeightFixReport before = C.LastWeightFix;
             yield return ClickOrCall("ウェイトを体に寄せる", () => C.LastWeightFix != before, () => Invoke(_cloth, "PreviewWeightFixFromWindow", true), "ClothEditWindow.PreviewWeightFixFromWindow(true)", 2);
@@ -713,15 +722,12 @@ namespace GP02.Tests
                     + "」の3つが出て、案内どおり「" + tryWeaker + "」を選んだ（かんたん表示のまま、強さを 50% にして試し直す）"
                     + (applied ? "。続けて、50% で試した結果の「適用」の確認が出て、「適用」を選んだ" : "。そのあと、適用はされなかった"));
             }
-            if (_unsavedAnswers.Count > 0)
-            {
-                _unsavedAnswers.Clear();
-                Op(Via.Note, "保存していない編集の確認は出なかった（用意した答えは使わずに捨てた）");
-            }
-            else if (unsaved)
-            {
-                Op(Via.Note, "保存していない編集があったので、適用の前に確認が出て、「保存する」を選んだ（編集中の形がシェイプキーとして保存される）");
-            }
+            int unsavedAsked = _r.Dialogs.FindAll(d => d.Contains("保存していない編集があります")).Count;
+            Op(Via.Note, unsaved
+                ? "保存していない編集があったが、保存の確認は" + (unsavedAsked == 0 ? "出なかった（形は、作り直すときに引き継がれる）" : "出た（" + unsavedAsked + " 回）")
+                : "保存していない編集は無かった");
+            Fact("適用のあと: 保存していない編集 " + C.HasUnsavedEdits + "（引き継いだか " + (report != null && report.CarriedUnsaved ? "はい" : "いいえ") + "、捨てたか " + (report != null && report.DiscardedUnsaved ? "はい" : "いいえ")
+                + "）、動作チェックの結果が古いか " + C.IsPoseCheckStale + "、保存したシェイプキー " + SavedKeyCount() + " 個");
             Fact("結果: " + (!applied ? "適用されなかった（" + C.LastWeightFixError + "）" : report.ToString()) + "。編集を続けられる: " + C.IsEditing);
             if (applied && report.Preview != null)
             {
@@ -731,8 +737,9 @@ namespace GP02.Tests
                 Fact("適用した候補の数字: " + WeightFixNumbers(used));
                 Fact("結果の欄（窓の上）の1行目: 「" + Flat(_cloth.ResultText.Split('\n')[0]) + "」");
             }
+            Fact("結果の欄（窓の上）に、保存していない編集が残ること・動作チェックの結果が新しくなったことの一言が" + (_cloth.ResultText.Contains("保存していない編集は、そのまま残っています") && _cloth.ResultText.Contains("動作チェックの結果も、新しいウェイトのものになりました") ? "ある" : "ない"));
             Fact("動作チェックの結果: " + (C.LastPoseCheck != null ? C.LastPoseCheck.DescribeSummary() + (C.IsPoseCheckStale ? "（古い）" : "") : "なし"));
-            yield return Snap("12_escape_outward", "おすすめの「ウェイトを体に寄せる」を押したあと（このスカートでは、よく使うポーズに外へ逃がせる浅い所が無く、ウェイトが原因の所を勧められた）。"
+            yield return Snap(snapName, "おすすめの「ウェイトを体に寄せる」を押したあと（このスカートでは、よく使うポーズに外へ逃がせる浅い所が無く、ウェイトが原因の所を勧められた）。"
                 + (_weightFixChoiceAsked ? "強さ 100% の候補は伸びすぎたので、「弱めて（50%）試す」を選んだ。" : "") + "確認のあと適用し、窓に前後の件数", 2);
         }
 
@@ -837,7 +844,7 @@ namespace GP02.Tests
             Waited("見出しの行の「保存」を押してから終わるまで（保存して、編集を続けられるよう作り直す）", _lastClickMs);
             Fact("保存したメッシュ: " + (C.LastSavedMesh != null ? AssetDatabase.GetAssetPath(C.LastSavedMesh) : "なし") + "。編集は続けられる: " + C.IsEditing);
             GP02ShapeKeyData data = _cloth.FindSavedKeyData(out GP02ShapeKeys component);
-            Fact("保存したシェイプキー: " + (data != null ? data.Entries.Count + " 個（" + string.Join("、", data.Entries.ConvertAll(e => e.Name)) + "）" : "なし") + "。スカートにシェイプキーの数 " + (_skirt is SkinnedMeshRenderer smr && smr.sharedMesh != null ? smr.sharedMesh.blendShapeCount : -1));
+            Fact("保存したシェイプキー: " + (data != null ? data.Entries.Count + " 個（" + string.Join("、", data.Entries.ConvertAll(e => e.Name)) + "）。ウェイトを体に寄せるの前に保存していないので、ここで保存したものだけ（1 個）になるか: " + (data.Entries.Count == 1 ? "はい" : "いいえ") : "なし") + "。スカートにシェイプキーの数 " + (_skirt is SkinnedMeshRenderer smr && smr.sharedMesh != null ? smr.sharedMesh.blendShapeCount : -1));
             // 保存したシェイプキーの一覧は、窓のいちばん下にある。見に行く（マウスホイールで下へ）
             ScrollWindowTo(true);
             Op(Via.Real, "保存した結果を見るため、窓の中身をマウスホイールで一番下までスクロールした");

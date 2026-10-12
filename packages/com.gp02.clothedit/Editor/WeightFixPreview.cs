@@ -286,7 +286,10 @@ namespace GP02.EditorTools
         /// <summary>作ったメッシュ（アセット）と、書き換えたメッシュ。</summary>
         public readonly List<Mesh> Meshes = new List<Mesh>();
 
-        /// <summary>保存していない編集を捨てて適用したか（そのときは、調べ直した結果を使わず、もう一度チェックが要る）。</summary>
+        /// <summary>保存していない編集を、メッシュ空間の差分で引き継いで作り直したか（保存していない編集のまま残る。調べ直した結果もそのまま使える）。</summary>
+        public bool CarriedUnsaved;
+
+        /// <summary>保存していない編集を捨てて適用したか（API で捨てるよう頼んだときだけ。そのときは、調べ直した結果を使わず、もう一度チェックが要る）。</summary>
         public bool DiscardedUnsaved;
 
         public override string ToString() => $"ウェイトを変えた頂点 {ChangedVertices}、データに記録 {RecordedVertices} 頂点" + (Preview != null ? " / " + Preview : "");

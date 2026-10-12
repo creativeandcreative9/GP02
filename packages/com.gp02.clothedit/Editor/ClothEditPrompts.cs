@@ -24,9 +24,6 @@ namespace GP02.EditorTools
 
         /// <summary>別の衣装で編集を始める。</summary>
         SwitchTarget,
-
-        /// <summary>ウェイトを体に寄せる・データから外す（メッシュのウェイトを変えて、編集を作り直す）。</summary>
-        RebuildForWeights,
     }
 
     /// <summary>「ウェイトを体に寄せる」の候補が、体から離れた布を伸ばしすぎるときの確認で、利用者が選んだもの。</summary>
@@ -66,9 +63,6 @@ namespace GP02.EditorTools
             {
                 case ClothEditLeaveReason.SwitchTarget:
                     return L10n.Tr("保存していない編集があります。別の衣装に切り替える前に、保存しますか？", "You have unsaved edits. Save them before switching to another outfit?");
-                case ClothEditLeaveReason.RebuildForWeights:
-                    return L10n.Tr("保存していない編集があります。ウェイトを変えると、そのメッシュで編集を作り直します。先にシェイプキーとして保存しますか？\n（保存しないで続けると、保存していない形は元に戻ります）",
-                        "You have unsaved edits. Changing the weights restarts the edit with that mesh. Save them as a shape key first?\n(If you continue without saving, the unsaved shape is reset.)");
                 default:
                     return L10n.Tr("保存していない編集があります。編集を終える前に、保存しますか？", "You have unsaved edits. Save them before ending the edit?");
             }
@@ -131,8 +125,7 @@ namespace GP02.EditorTools
 
         static ClothEditUnsavedChoice DefaultAskUnsaved(ClothEditLeaveReason reason)
         {
-            string discard = reason == ClothEditLeaveReason.RebuildForWeights ? L10n.Tr("保存しないで続ける", "Continue Without Saving") : L10n.Tr("保存しないで終わる", "Don't Save");
-            int result = EditorUtility.DisplayDialogComplex("GP02", UnsavedMessage(reason), L10n.Tr("保存する", "Save"), L10n.Tr("やめる", "Cancel"), discard);
+            int result = EditorUtility.DisplayDialogComplex("GP02", UnsavedMessage(reason), L10n.Tr("保存する", "Save"), L10n.Tr("やめる", "Cancel"), L10n.Tr("保存しないで終わる", "Don't Save"));
             return result == 0 ? ClothEditUnsavedChoice.Save : result == 1 ? ClothEditUnsavedChoice.Cancel : ClothEditUnsavedChoice.Discard;
         }
     }
