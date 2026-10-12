@@ -355,7 +355,7 @@ namespace GP02.Tests
                     Assert.That(session.Raycast(ray, out UnityEngine.Vector3 hit, out _, out int triangle), Is.True);
                     Assert.That(session.BeginGrab(hit, 0.05f, triangle), Is.True);
                     session.DragTo(hit + new UnityEngine.Vector3(0.02f, 0.03f, -0.06f));
-                    session.Solver.SolveFor(30);
+                    session.Solver.Solve(30);   // 時間（SolveFor）で決めると、環境の速さで形が変わり、ときどき失敗するので、反復の回数で決める
 
                     var rays = new UnityEngine.Ray[100];
                     var random = new System.Random(5);
@@ -387,19 +387,26 @@ namespace GP02.Tests
                         moved = System.Math.Max(moved, (csharp.Item1[v] - rest[v]).magnitude);
                         difference = System.Math.Max(difference, (burst.Item1[v] - csharp.Item1[v]).magnitude);
                     }
-                    int hits = 0;
+                    // クリック判定: 当たるか・当たった点・当たった三角形が、Burst と C# で同じこと。
+                    // 形は 1e-7 m ほど違うので、三角形の辺すれすれを通るレイなどは、ごくまれに（37 万本に 1 本ほど）当たる面が変わる
+                    // （測ったときは、スカートの面と、3mm 内側のペチコートの面で、当たった点が 1cm 違った）。それは許し、食い違いを数えて、2 本までにする
+                    // （本当に食い違うなら、もっと多くのレイが違う）
+                    int hits = 0, differing = 0;
+                    var details = new StringBuilder();
                     for (int i = 0; i < rays.Length; i++)
                     {
-                        Assert.That(burst.Item2[i], Is.EqualTo(csharp.Item2[i]), $"レイ {i}");
-                        if (!csharp.Item2[i]) continue;
-                        hits++;
-                        Assert.That((burst.Item3[i] - csharp.Item3[i]).magnitude, Is.LessThan(1e-5f), $"レイ {i}");
-                        Assert.That(burst.Item4[i], Is.EqualTo(csharp.Item4[i]), $"レイ {i}");
+                        if (csharp.Item2[i]) hits++;
+                        bool same = burst.Item2[i] == csharp.Item2[i]
+                            && (!csharp.Item2[i] || ((burst.Item3[i] - csharp.Item3[i]).magnitude < 1e-5f && burst.Item4[i] == csharp.Item4[i]));
+                        if (same) continue;
+                        differing++;
+                        details.AppendLine($"レイ {i}: 当たった Burst {burst.Item2[i]} / C# {csharp.Item2[i]}、点の差 {(burst.Item3[i] - csharp.Item3[i]).magnitude:E2} m、三角形 Burst {burst.Item4[i]} / C# {csharp.Item4[i]}");
                     }
-                    Debug.Log($"[GP02] Burst と C# の差（セッションの形の更新）: 最大 {difference:E2} m（最大の移動 {moved:F3} m、当たったレイ {hits}）");
+                    Debug.Log($"[GP02] Burst と C# の差（セッションの形の更新）: 最大 {difference:E2} m（最大の移動 {moved:F3} m、当たったレイ {hits}、食い違ったレイ {differing}）");
                     Assert.That(moved, Is.GreaterThan(0.005f), "操作で動いていません");
                     Assert.That(difference, Is.LessThan(1e-5f));
                     Assert.That(hits, Is.GreaterThan(10));
+                    Assert.That(differing, Is.LessThanOrEqualTo(2), "クリック判定が Burst と C# で食い違うレイが多すぎます\n" + details);
                 }
             }
             finally
