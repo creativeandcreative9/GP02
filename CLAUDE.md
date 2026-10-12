@@ -52,7 +52,7 @@ GP02/
   - 描画の中身は `tools/unity/render/RenderScenes.cs`。出力は `tools/unity/out/render/`（`edit_and_save.png` に編集と保存を、`tools.png` に対称でつまむ・回す・拡大縮小・元に戻すブラシの結果を、それぞれ1枚にまとめる。動作チェックは `pose_check.png`・`pose_escape.png`。`tools/unity/render.sh RenderScenes.PoseCheck` でそれだけ描ける）
   - 開発用の `unity/` とは別の作業用プロジェクトを使うので、`run-tests.sh` と同時に動かせる
   - `-executeMethod` では毎フレームの更新が回らないので、SkinnedMeshRenderer は `BakeMesh` で取り出して描く
-- 初心者の通しの再現（Docker、画面あり）: `tools/unity/walkthrough.sh`（窓を開く → 衣装を選ぶ → 編集 → 動作チェック → 保存 → 失敗しやすい例までを自動で再現し、各段階の日本語の画面 `NN_名前.png` と記録 `walkthrough.md` を `tools/unity/out/walkthrough/` に出す。`noburst` を付けると Burst なし。中身は `Tests/Editor/BeginnerWalkthroughTests*.cs`で、`GP02_GUI=1` かつ `GP02_WALKTHROUGH=1` のときだけ動く）
+- 初心者の通しの再現（Docker、画面あり）: `tools/unity/walkthrough.sh`（窓を開く → 衣装を選ぶ → 編集 → 動作チェック → 保存 → 失敗しやすい例までを自動で再現し、各段階の日本語の画面 `NN_名前.png` と記録 `walkthrough.md` を `tools/unity/out/walkthrough/` に出す。`noburst` を付けると Burst なし。`burst fixlarge` のように最後に `fixlarge` を付けると、段階12の最初に窓で「大きく動くポーズも直す」をオンにして、「外へ逃がす」→「ウェイトを体に寄せる」の順に押す筋で動かす（控えは `tools/unity/out/walkthrough_fixlarge/`）。中身は `Tests/Editor/BeginnerWalkthroughTests*.cs`で、`GP02_GUI=1` かつ `GP02_WALKTHROUGH=1` のときだけ動く）
 - NDMF 連携のテスト（Docker、NDMF 入りの作業用プロジェクト）: `tools/unity/ndmf-tests.sh`
   - NDMF 1.14.8 を VPM から取得して `tools/unity/out/` の作業用プロジェクトに入れ、`Editor/NDMF/` の Plugin と `Tests/Editor/NDMF/` のテスト（NDMF があるときだけ有効）を、通常のテストと一緒に動かす。開発用の `unity/` には NDMF を入れない
 - `.meta` の作成: `python3 tools/unity/generate_meta.py`

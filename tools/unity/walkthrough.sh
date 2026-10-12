@@ -8,22 +8,38 @@
 #   tools/unity/walkthrough.sh           … いまの unity/ のプロジェクトで動かす（Burst が入っている）
 #   tools/unity/walkthrough.sh noburst   … Burst を外して動かす。BOOTH で配る .unitypackage を入れたばかりの、Burst の無いプロジェクトに近い。
 #                                          manifest.json と packages-lock.json は、終わったら元に戻す
+#   tools/unity/walkthrough.sh burst fixlarge … 段階12の最初に、窓で「大きく動くポーズも直す」をオンにする変形（GP02_WALKTHROUGH_FIXLARGE=1）。
+#                                          外へ逃がせる浅い所が増え、「元のポーズで外へ逃がす」→「ウェイトを体に寄せる」の順に押す筋に入る。
+#                                          控えは walkthrough_fixlarge/（noburst fixlarge なら walkthrough_noburst_fixlarge/）。
+#                                          第1引数を省くときは、burst と書く（例: walkthrough.sh burst fixlarge）
 #
 # 出力（Git には含めない）:
 #   tools/unity/out/walkthrough/walkthrough.md … 記録（段階ごとの、初心者がしようとしたこと・実際にした操作・画面に出た文字・かかった時間・画像）
 #   tools/unity/out/walkthrough/NN_名前.png    … 各段階の画面（左上から ヒエラルキー・インスペクター ／ GP02 の窓 ／ シーンビュー・コンソール）
 #   tools/unity/out/walkthrough_burst/ または walkthrough_noburst/ … 同じ内容の控え（Burst あり・なしを両方動かして見比べるため）
+#   tools/unity/out/walkthrough_fixlarge/ … fixlarge の変形の控え（Burst ありのとき。なしなら walkthrough_noburst_fixlarge/）
 #   tools/unity/out/editmode.xml ・ unity.log … run-tests.sh と同じ
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO="$(pwd)"
 OUT="$REPO/tools/unity/out"
 MODE="${1:-burst}"
+VARIANT="${2:-}"
 
 case "$MODE" in
   burst) ;;
   noburst) ;;
-  *) echo "使い方: tools/unity/walkthrough.sh [burst|noburst]" >&2; exit 2 ;;
+  *) echo "使い方: tools/unity/walkthrough.sh [burst|noburst] [fixlarge]" >&2; exit 2 ;;
+esac
+# 控えのフォルダ名。通常は walkthrough_<MODE>。fixlarge は、Burst ありなら walkthrough_fixlarge、なしなら walkthrough_noburst_fixlarge
+COPY="walkthrough_$MODE"
+case "$VARIANT" in
+  "") export GP02_WALKTHROUGH_FIXLARGE=0 ;;
+  fixlarge)
+    export GP02_WALKTHROUGH_FIXLARGE=1
+    if [ "$MODE" = burst ]; then COPY="walkthrough_fixlarge"; else COPY="walkthrough_${MODE}_fixlarge"; fi
+    ;;
+  *) echo "使い方: tools/unity/walkthrough.sh [burst|noburst] [fixlarge]" >&2; exit 2 ;;
 esac
 
 MANIFEST="$REPO/unity/Packages/manifest.json"
@@ -55,9 +71,9 @@ GP02_GUI=1 GP02_GUI_LANG=ja GP02_WALKTHROUGH=1 GP02_UNITY_ARGS="-testFilter GP02
 echo
 echo "---- 初心者の通しの結果 ----"
 if [ -f "$OUT/walkthrough/walkthrough.md" ]; then
-  rm -rf "$OUT/walkthrough_$MODE"
-  cp -r "$OUT/walkthrough" "$OUT/walkthrough_$MODE"
-  echo "記録: tools/unity/out/walkthrough/walkthrough.md（控え: tools/unity/out/walkthrough_$MODE/）"
+  rm -rf "$OUT/$COPY"
+  cp -r "$OUT/walkthrough" "$OUT/$COPY"
+  echo "記録: tools/unity/out/walkthrough/walkthrough.md（控え: tools/unity/out/$COPY/）"
   echo "画像: $(ls "$OUT/walkthrough"/*.png 2>/dev/null | wc -l) 枚（tools/unity/out/walkthrough/）"
   echo "途中で止まった段階:"
   grep -E '^\| [0-9]+ \|.*（問題あり）' "$OUT/walkthrough/walkthrough.md" || echo "  なし"

@@ -89,6 +89,7 @@ docker run --rm \
   -e GP02_GUI="${GP02_GUI:-0}" \
   -e GP02_GUI_LANG="${GP02_GUI_LANG:-en}" \
   -e GP02_WALKTHROUGH="${GP02_WALKTHROUGH:-0}" \
+  -e GP02_WALKTHROUGH_FIXLARGE="${GP02_WALKTHROUGH_FIXLARGE:-0}" \
   -e UNITY_EMAIL -e UNITY_PASSWORD \
   -v "$REPO:/repo" \
   "$IMAGE" \

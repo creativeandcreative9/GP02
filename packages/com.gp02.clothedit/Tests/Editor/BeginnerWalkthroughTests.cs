@@ -32,6 +32,10 @@ namespace GP02.Tests
     {
         const string TestAvatarName = "GP02_TestAvatar";
 
+        // 環境変数 GP02_WALKTHROUGH_FIXLARGE=1 のときだけ、段階12の最初に「大きく動くポーズも直す」をオンにする
+        // （外へ逃がせる浅い所が増え、「外へ逃がす」→「ウェイトを体に寄せる」の筋に入る。通常の通しの筋書きは変えない）
+        static bool FixLargeVariant => Environment.GetEnvironmentVariable("GP02_WALKTHROUGH_FIXLARGE") == "1";
+
         // 視点（SceneView.LookAt に渡す値）。正面は、スカートが画面の半分以上を占める大きさ
         static readonly Vector3 FrontPivot = new Vector3(0f, 0.74f, 0f);
         const float FrontSize = 0.45f;
@@ -199,6 +203,7 @@ namespace GP02.Tests
             try
             {
                 Directory.CreateDirectory(OutFolder);
+                if (FixLargeVariant) env.Notes.Add("変形: fixlarge（GP02_WALKTHROUGH_FIXLARGE=1）。段階12の最初に、動作チェックの区切りの「大きく動くポーズも直す」をオンにして、外へ逃がせる浅い所を増やす。そのため、段階12で「元のポーズで外へ逃がす」→「ウェイトを体に寄せる」の順に押す筋になるはず（通常の通しの筋書きとは別）");
                 env.Notes.Add("画像は " + OutFolder.Replace("/repo/", "") + "/ にあります。この記録（walkthrough.md）と同じ場所です");
                 env.Notes.Add("コマの進み: Docker の1コマは、窓を5つソフトウェア描画するので数百ミリ秒かかる（利用者の PC は十数ミリ秒）。そのままだと、つまんでいる間・仕上げの間に進む布の計算が PC よりずっと少なくなるので、"
                     + "その間だけ、コマの合間に Controller.Tick（設定の SolveMilliseconds ずつ）を足して、PC に近い量にした（足した回数 " + _extraTicks + " 回。設定の値は変えていない）。待ち時間は、この補いを含めた Docker での値");
@@ -663,8 +668,39 @@ namespace GP02.Tests
 
         // ---- 12 ----
 
+        // 初心者が、動作チェックの区切りのチェック「大きく動くポーズも直す」を窓でクリックしてオンにする（fixlarge の変形だけ）。
+        // クリックできなければ、設定を直接変える（そのことを記録する）
+        IEnumerator TurnOnFixLarge()
+        {
+            Fact("「大きく動くポーズも直す」を押す前: 設定 " + (C.Settings.FixLargePoses ? "オン" : "オフ") + "、外へ逃がせる浅い所 " + (C.LastPoseCheck != null && C.LastPoseCheck.EscapePlan != null ? C.LastPoseCheck.EscapePlan.PushedRegions : 0)
+                + " か所、ウェイトが原因の所 " + C.WeightCausedRegionCount + " か所、直す範囲のか所 " + (C.LastPoseCheck != null ? C.LastPoseCheck.FixSummary.TotalRegionCount : 0));
+            if (!C.Settings.FixLargePoses)
+            {
+                // チェック（トグル）はボタンの描き方ではないので、描き方は問わずに探す
+                bool clicked = ClickText(_cloth, "大きく動くポーズも直す", out string how, "*");
+                yield return Pump(3);
+                if (clicked && C.Settings.FixLargePoses) Op(Via.Real, "窓のチェック" + how);
+                else
+                {
+                    Op(Via.Real, "窓のチェック" + how + (clicked ? " → オンにならなかった" : ""));
+                    C.Settings.FixLargePoses = true;
+                    C.ApplyPoseFixScope();
+                    Op(Via.Setting, "設定 FixLargePoses を直接オンにして、ClothEditController.ApplyPoseFixScope() を呼んだ（窓のクリックでは変えられなかった）");
+                    yield return Pump(3);
+                }
+            }
+            PoseCheckResult check = C.LastPoseCheck;
+            Fact("「大きく動くポーズも直す」をオンにしたあと: 設定 " + (C.Settings.FixLargePoses ? "オン" : "オフ") + "、外へ逃がせる浅い所 " + (check != null && check.EscapePlan != null ? check.EscapePlan.PushedRegions : 0)
+                + " か所、ウェイトが原因の所 " + C.WeightCausedRegionCount + " か所、直す範囲のか所 " + (check != null ? check.FixSummary.TotalRegionCount : 0) + "。動作チェックの結果が古いか " + C.IsPoseCheckStale);
+            // 撮る画像に、オンにしたチェックが写るように、見える所までスクロールしておく
+            FindWithScroll(_cloth, "大きく動くポーズも直す", "*", out _);
+            yield return Pump(2);
+            yield return Snap("12a_fix_large_on", "動作チェックの区切りで「大きく動くポーズも直す」をオンにした。直す範囲が広がり、おすすめの直し方の件数とボタンが変わる", 4);
+        }
+
         IEnumerator S12_FollowRecommendation()
         {
+            if (FixLargeVariant) yield return TurnOnFixLarge();
             PoseCheckResult check = C.LastPoseCheck;
             Fact("「おすすめの直し方」の元: 外へ逃がせる浅い所 " + (check != null && check.EscapePlan != null ? check.EscapePlan.PushedRegions : 0) + " か所、ウェイトが原因の所 " + C.WeightCausedRegionCount
                 + " か所、体どうしの重なり " + (check != null ? check.FixOverlapRegionCount : 0) + " か所（直す範囲: " + (C.Settings.FixLargePoses ? "すべてのポーズ" : "よく使うポーズ") + "）");
@@ -673,6 +709,7 @@ namespace GP02.Tests
             Fact("おすすめのボタン: 「元のポーズで外へ逃がす」 " + escapeState + "、「ウェイトを体に寄せる」 " + weightState);
             if (escapeState != "有効" && weightState == "有効")
             {
+                if (FixLargeVariant) Op(Via.Note, "fixlarge の変形なのに、外へ逃がせる浅い所が無かった（ボタン: " + escapeState + "）。「外へ逃がす」→「ウェイトを体に寄せる」の筋には入らず、「ウェイトを体に寄せる」を直接押す");
                 yield return FollowWeightFix();
                 yield break;
             }
@@ -688,6 +725,12 @@ namespace GP02.Tests
             Waited("「元のポーズで外へ逃がす」を押してから終わるまで（逃がして、もう一度調べ直す）", _lastClickMs);
             PoseEscapeReport report = C.LastPoseEscape;
             Fact("結果: " + (report == null ? "なし" : report.Reverted ? "効かなかったので元に戻した" : report.Rechecked ? "逃がした所の深さ（平均） " + (report.PushedDepthBefore * 1000f).ToString("F1") + " → " + (report.PushedDepthAfter * 1000f).ToString("F1") + " mm、貫通したポーズ " + report.PosesBefore + " → " + report.PosesAfter + "、か所 " + report.RegionsBefore + " → " + report.RegionsAfter : "逃がした（調べ直せなかった）"));
+            Fact("外へ逃がしたあと: 保存していない編集 " + C.HasUnsavedEdits + "、動作チェックの結果が古いか " + C.IsPoseCheckStale + "、外へ逃がせる浅い所 "
+                + (C.LastPoseCheck != null && C.LastPoseCheck.EscapePlan != null ? C.LastPoseCheck.EscapePlan.PushedRegions : 0) + " か所、ウェイトが原因の所 " + C.WeightCausedRegionCount + " か所、保存したシェイプキー " + SavedKeyCount() + " 個");
+            if (FixLargeVariant && (report == null || report.Reverted || report.PushedRegions == 0))
+            {
+                Op(Via.Note, "fixlarge の変形なのに、外へ逃がせる浅い所が" + (report == null ? "無かった（押せなかった）" : report.Reverted ? "あったが、効かなかったので元に戻された" : " 0 か所だった") + "。「外へ逃がす」→「ウェイトを体に寄せる」の筋には入らなかった");
+            }
             yield return Snap("12_escape_outward", "「元のポーズで外へ逃がす」を押したあと。窓の真ん中に短い通知、窓には前後の件数の一言", 1);
 
             // 外へ逃がしても、ウェイトが原因の所は残る。おすすめの直し方に「ウェイトを体に寄せる」がまだあるので、続けて押す
@@ -739,7 +782,7 @@ namespace GP02.Tests
             }
             Fact("結果の欄（窓の上）に、保存していない編集が残ること・動作チェックの結果が新しくなったことの一言が" + (_cloth.ResultText.Contains("保存していない編集は、そのまま残っています") && _cloth.ResultText.Contains("動作チェックの結果も、新しいウェイトのものになりました") ? "ある" : "ない"));
             Fact("動作チェックの結果: " + (C.LastPoseCheck != null ? C.LastPoseCheck.DescribeSummary() + (C.IsPoseCheckStale ? "（古い）" : "") : "なし"));
-            yield return Snap(snapName, "おすすめの「ウェイトを体に寄せる」を押したあと（このスカートでは、よく使うポーズに外へ逃がせる浅い所が無く、ウェイトが原因の所を勧められた）。"
+            yield return Snap(snapName, "おすすめの「ウェイトを体に寄せる」を押したあと（ウェイトが原因の所を勧められた。外へ逃がせる浅い所が先にあれば、外へ逃がしたあとに押している）。"
                 + (_weightFixChoiceAsked ? "強さ 100% の候補は伸びすぎたので、「弱めて（50%）試す」を選んだ。" : "") + "確認のあと適用し、窓に前後の件数", 2);
         }
 
