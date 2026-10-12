@@ -63,8 +63,29 @@ namespace GP02.EditorTools
         /// <summary>対象のか所が、どれだけ浅くなったか（ポーズごとに比べたもの）。</summary>
         public PoseFixEffect Effect;
 
-        /// <summary>候補を作ったときの強さ（0〜1）と半径（メートル）。</summary>
+        /// <summary>候補を作ったときの強さ（0〜1）と半径（メートル）。「弱めて試す」で作った候補は、設定の強さではなく、実際に使った強さが入る。</summary>
         public float Strength, Radius;
+
+        /// <summary>
+        /// 「弱めて試す」で使う強さ（0〜1）。体から離れた布（スカートなど）が伸びすぎる候補のとき、かんたん表示でも確認の画面から選べる
+        /// （強さの設定はくわしく表示にしか無い。設定の値は変えず、この候補を作るときだけ使う）。
+        /// </summary>
+        public const float WeakerStrength = 0.5f;
+
+        /// <summary><see cref="WeakerStrength"/> の百分率（画面の文に使う）。</summary>
+        public static int WeakerPercent => (int)Math.Round(WeakerStrength * 100f);
+
+        /// <summary>候補を作ったときの強さの百分率（四捨五入。画面の文に使う）。</summary>
+        public int StrengthPercent => (int)Math.Round(Strength * 100f);
+
+        /// <summary>強さを弱めて作った候補か（100% 未満）。</summary>
+        public bool IsBelowFullStrength => StrengthPercent < 100;
+
+        /// <summary>強さが <see cref="WeakerStrength"/> より大きいか（まだ弱めて試せるか）。画面に出す百分率で比べる。</summary>
+        public bool IsAboveWeakerStrength => StrengthPercent > WeakerPercent;
+
+        /// <summary>確認で「弱めて試す」を出すか: 体から離れた布が伸びすぎて（<see cref="StretchesTooMuch"/>）、強さがまだ <see cref="WeakerStrength"/> より大きい。</summary>
+        public bool CanTryWeaker => StretchesTooMuch && IsAboveWeakerStrength;
 
         /// <summary>レンダラーごとの候補（Session のレンダラーの順。ウェイトの無いレンダラーは null）。</summary>
         public readonly List<WeightFixCandidate> Candidates = new List<WeightFixCandidate>();
@@ -171,17 +192,23 @@ namespace GP02.EditorTools
         /// <summary>効いたか: 対象のか所の深さの平均が 6 割以下になり、全体の深さの合計も減った。</summary>
         public bool Improved => Effect != null && Effect.Improved(0.6f);
 
-        /// <summary>前後の要約（画面・ダイアログ用）。数は直す範囲のポーズ（<see cref="ScopeLabel"/>）で数える。</summary>
-        public string Describe()
+        /// <summary>
+        /// 前後の要約（画面・ダイアログ用）。数は直す範囲のポーズ（<see cref="ScopeLabel"/>）で数える。
+        /// 強さを弱めた候補（100% 未満）は、1行目に強さを出す。伸びすぎるときの一言は、画面で今できることに合わせて出し分ける:
+        /// くわしく表示は「強さ」のスライダー、かんたん表示は、確認の「弱めて試す」（まだ弱められるとき）か、くわしく表示の「強さ」（もう弱めたあと）。
+        /// </summary>
+        /// <param name="detailedView">くわしく表示か（かんたん表示では、強さのスライダーが無い）。</param>
+        public string Describe(bool detailedView)
         {
             string scope = ScopeLabel;
+            bool weakened = IsBelowFullStrength;
             string text = L10n.Tr(
-                $"ウェイトを変える頂点: {ChangedVertices}" + (AddedBoneCount > 0 ? $"（足すボーン {AddedBoneCount}）" : "") +
+                $"ウェイトを変える頂点: {ChangedVertices}" + (AddedBoneCount > 0 ? $"（足すボーン {AddedBoneCount}）" : "") + (weakened ? $"、強さ {StrengthPercent}%" : "") +
                 $"\n{scope}の突き抜け: {PosesBefore} → {PosesAfter} ポーズ、{RegionsBefore} → {RegionsAfter} か所、いちばん深い所 {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
                 $"\nウェイトが原因の所: {WeightRegionsBefore} → {WeightRegionsAfter} か所" +
                 (Effect != null && Effect.TargetPairs > 0 ? $"（深さの平均 {Effect.TargetDepthBefore * 1000f:F1} → {Effect.TargetDepthAfter * 1000f:F1} mm、直った割合 {Effect.ClearedRatio * 100f:F0}%）" : "") +
                 (StretchEntry >= 0 ? $"\n体から離れた所の布の伸び: {StretchPoseName}で {StretchBefore * 100f:F0}% → {StretchAfter * 100f:F0}%" : "\n体から離れた所の布の伸び: 増えません"),
-                $"Vertices whose weights change: {ChangedVertices}" + (AddedBoneCount > 0 ? $" ({AddedBoneCount} bone(s) added)" : "") +
+                $"Vertices whose weights change: {ChangedVertices}" + (AddedBoneCount > 0 ? $" ({AddedBoneCount} bone(s) added)" : "") + (weakened ? $", strength {StrengthPercent}%" : "") +
                 $"\n{scope}, poke-through: {PosesBefore} → {PosesAfter} poses, {RegionsBefore} → {RegionsAfter} places, deepest {MaxDepthBefore * 1000f:F1} → {MaxDepthAfter * 1000f:F1} mm" +
                 $"\nPlaces caused by weights: {WeightRegionsBefore} → {WeightRegionsAfter}" +
                 (Effect != null && Effect.TargetPairs > 0 ? $" (average depth {Effect.TargetDepthBefore * 1000f:F1} → {Effect.TargetDepthAfter * 1000f:F1} mm, {Effect.ClearedRatio * 100f:F0}% cleared)" : "") +
@@ -192,8 +219,31 @@ namespace GP02.EditorTools
             }
             if (StretchesTooMuch)
             {
-                text += L10n.Tr("\n体から離れた布（スカートなど）が、脚などに貼り付いて伸びます。くわしく表示の「強さ」を下げて確認し直すと和らぎます（50% くらい）。",
-                    "\nCloth away from the body (such as a skirt) sticks to the legs, etc. and stretches. Lowering \"Strength\" in the detailed view (to about 50%) and checking again eases this.");
+                string tryWeaker = ClothEditPrompts.WeightFixButtonLabel(WeightFixChoice.TryWeaker);
+                string hintJa, hintEn;
+                if (detailedView && IsAboveWeakerStrength)
+                {
+                    hintJa = $"『強さ』を下げて確認し直すと和らぎます（{WeakerPercent}% くらい）。";
+                    hintEn = $"Lowering \"Strength\" (to about {WeakerPercent}%) and checking again eases this.";
+                }
+                else if (detailedView)
+                {
+                    // もう 50% 以下で試したあと: 「50% くらい」を勧めても変わらないので、さらに下げることを勧める
+                    hintJa = "『強さ』をさらに下げて確認し直すと和らぎます。";
+                    hintEn = "Lowering \"Strength\" further and checking again eases this.";
+                }
+                else if (IsAboveWeakerStrength)
+                {
+                    hintJa = $"確認で『{tryWeaker}』を選ぶと和らぎます。";
+                    hintEn = $"Choosing \"{tryWeaker}\" in the confirmation eases this.";
+                }
+                else
+                {
+                    hintJa = "くわしく表示の『強さ』で、さらに下げられます。";
+                    hintEn = "You can lower \"Strength\" further in the detailed view.";
+                }
+                text += L10n.Tr("\n体から離れた布（スカートなど）が、脚などに貼り付いて伸びます。" + hintJa,
+                    "\nCloth away from the body (such as a skirt) sticks to the legs, etc. and stretches. " + hintEn);
             }
             return text;
         }

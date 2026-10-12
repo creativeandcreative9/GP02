@@ -301,8 +301,8 @@ namespace GP02.EditorTools
                         using (new EditorGUI.DisabledScope(!_controller.CanPreviewWeightFix || _controller.IsBusy))
                         {
                             if (GUILayout.Button(new GUIContent(L10n.Tr("ウェイトを体に寄せる", "Fit Weights to Body"),
-                                L10n.Tr("ウェイトが原因の所の服に、体のウェイトを写します。先に候補でもう一度ポーズを試して、前後の件数と伸びを見せてから、適用するかを聞きます。Ctrl+Z の 1 回で戻せます",
-                                    "Copies the body's weights to the outfit where the weights cause poke-through. It first tries the poses again with the candidate and shows the counts and stretch before and after, then asks whether to apply. One Ctrl+Z undoes it")),
+                                L10n.Tr("ウェイトが原因の所の服に、体のウェイトを写します。先に候補でもう一度ポーズを試して、前後の件数と伸びを見せてから、適用するかを聞きます（スカートなど体から離れた布が伸びすぎるときは、強さを弱めて試し直せます）。Ctrl+Z の 1 回で戻せます",
+                                    "Copies the body's weights to the outfit where the weights cause poke-through. It first tries the poses again with the candidate and shows the counts and stretch before and after, then asks whether to apply (if cloth away from the body, such as a skirt, stretches too much, you can try again with a weaker strength). One Ctrl+Z undoes it")),
                                 GUILayout.Width(170f)))
                             {
                                 PreviewWeightFixFromWindow(true);

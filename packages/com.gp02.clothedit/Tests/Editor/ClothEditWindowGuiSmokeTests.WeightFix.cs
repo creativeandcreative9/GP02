@@ -117,5 +117,88 @@ namespace GP02.Tests
                 if (AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
             }
         }
+
+        // スカートに強さ 100% で当てると、体から離れた布が脚に貼り付いて伸びる。かんたん表示の窓に出る、伸びすぎる候補（確認の「弱めて（50%）試す」を勧める一言）と、
+        // くわしく表示でのその候補（強さを下げる一言）、強さ 50% で試し直した候補（説明の1行目に強さ）、50% で適用したあとの結果の欄を描く。
+        // 確認のダイアログは自動テストでは出せないので、候補は直接作る（ダイアログの文と流れは EditMode の WeightFixWeakerTests で確かめる）
+        [UnityTest]
+        public IEnumerator Window_ShowsTheStretchingSkirtCandidate_TheWeakerOne_AndTheResultAfterApplying()
+        {
+            const string folder = "Assets/GP02_GuiWeakerTemp";
+            var window = EditorWindow.GetWindow<ClothEditWindow>();
+            window.position = new Rect(10, 10, 420, 1000);
+            ClothEditSettings savedSettings = ClothEditSettings.Load();
+            GameObject root = Track(TestAvatarMenu.CreateInScene(null));
+            SkinnedMeshRenderer skirt = null;
+            foreach (SkinnedMeshRenderer renderer in root.GetComponentsInChildren<SkinnedMeshRenderer>())
+            {
+                Track(renderer.sharedMesh);
+                foreach (Material material in renderer.sharedMaterials) Track(material);
+                if (renderer.name == TestAvatarMenu.SkirtName) skirt = renderer;
+            }
+            Track(root.GetComponent<Animator>().avatar);
+            Assert.That(skirt, Is.Not.Null);
+            try
+            {
+                SetField(window, "_target", skirt);
+                typeof(ClothEditWindow).GetMethod("StartEdit", Private).Invoke(window, null);
+                var controller = GetField<ClothEditController>(window, "_controller");
+                Assert.That(controller.IsEditing, Is.True, controller.LastError);
+                controller.SaveFolder = folder + "/Meshes";
+                controller.DataFolder = folder + "/Data";
+                SetField(window, "_showShortcuts", false);
+                foreach (string fold in new[] { "_foldTarget", "_foldTool", "_foldBrush", "_foldSymmetry", "_foldDisplay", "_foldSave", "_foldGuide", "_foldDiagnostics", "_foldSelection" })
+                {
+                    SetField(window, fold, false);
+                }
+                SetField(window, "_foldPoseCheck", true);
+                controller.Settings.ShowStretchHeatmap = false;
+                controller.Settings.ShowPoseCheckDepth = false;
+                controller.Settings.WeightFixStrength = 1f;
+                controller.Settings.FixLargePoses = true;   // スカートが脚に貼り付いて伸びるのは、しゃがむ・座る（大きく動くポーズ）
+                controller.ApplySettings();
+                Assert.That(controller.RunPoseCheck(), Is.Not.Null, controller.LastPoseCheckError);
+                Assert.That(controller.CanPreviewWeightFix, Is.True);
+
+                // 強さ 100% の候補: 体から離れた布が伸びすぎる。説明の最後に「確認で『弱めて（50%）試す』を選ぶと和らぎます」
+                WeightFixPreview full = controller.PreviewWeightFix();
+                Assert.That(full, Is.Not.Null, controller.LastWeightFixError);
+                Assert.That(full.StretchesTooMuch, Is.True);
+                yield return Pump(10);
+                Shot(window, "weightfit_skirt_candidate_100");
+
+                // くわしく表示: 同じ候補。強さのスライダーがあるので、一言は「『強さ』を下げて確認し直すと…」になる
+                ClothEditView.Mode = ClothEditViewMode.Detailed;
+                window.position = new Rect(10, 10, 460, 1000);
+                yield return Pump(10);
+                Shot(window, "weightfit_skirt_candidate_100_detailed");
+                ClothEditView.Mode = ClothEditViewMode.Simple;
+                window.position = new Rect(10, 10, 420, 1000);
+
+                // 弱めて（50%）試した候補: 設定の強さは 100% のまま。説明の1行目に「強さ 50%」
+                WeightFixPreview weaker = controller.PreviewWeightFix(WeightFixPreview.WeakerStrength);
+                Assert.That(weaker, Is.Not.Null, controller.LastWeightFixError);
+                Assert.That(weaker.Strength, Is.EqualTo(WeightFixPreview.WeakerStrength).Within(1e-6f));
+                Assert.That(controller.Settings.WeightFixStrength, Is.EqualTo(1f));
+                Debug.Log($"[GP02] スカート（窓の画像）強さ 100%: {full.Describe(false).Replace('\n', '/')} | 強さ 50%: {weaker.Describe(false).Replace('\n', '/')}");
+                yield return Pump(10);
+                Shot(window, "weightfit_skirt_candidate_50");
+
+                // 50% の候補を適用: 窓の上の結果の欄に「ウェイトを体に寄せました（強さ 50%。Ctrl+Z の 1 回で戻せます）。」
+                typeof(ClothEditWindow).GetMethod("ApplyWeightFixFromWindow", Private).Invoke(window, null);
+                Assert.That(controller.LastWeightFix, Is.Not.Null, controller.LastWeightFixError);
+                Assert.That(controller.LastWeightFix.Preview.Strength, Is.EqualTo(WeightFixPreview.WeakerStrength).Within(1e-6f));
+                Assert.That(controller.Settings.WeightFixStrength, Is.EqualTo(1f));
+                yield return Pump(10);
+                Shot(window, "weightfit_skirt_after_apply_50");
+            }
+            finally
+            {
+                savedSettings.Save();
+                window.Close();
+                Undo.ClearAll();
+                if (AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
+            }
+        }
     }
 }

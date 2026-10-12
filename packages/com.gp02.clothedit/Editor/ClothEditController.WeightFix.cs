@@ -128,7 +128,14 @@ namespace GP02.EditorTools
         /// 対象は、今の結果でウェイトが原因と分かった所（<see cref="PoseCheckSummary.PlanWeightFix"/>）。体どうしの重なりは対象にしない。
         /// 強さ・半径は設定（<see cref="ClothEditSettings.WeightFixStrength"/>・<see cref="ClothEditSettings.WeightFixRadius"/>）。できなければ null（理由は <see cref="LastWeightFixError"/>）。
         /// </summary>
-        public WeightFixPreview PreviewWeightFix()
+        public WeightFixPreview PreviewWeightFix() => PreviewWeightFix(null);
+
+        /// <summary>
+        /// <see cref="PreviewWeightFix()"/> と同じだが、strengthOverride を渡すと、この候補を作るときだけ設定の強さの代わりにその強さ（0〜1）を使う
+        /// （確認の「弱めて試す」。<see cref="WeightFixPreview.WeakerStrength"/>）。設定の <see cref="ClothEditSettings.WeightFixStrength"/> は変えない
+        /// （タイツなど、次の衣装では設定の強さのままにするため）。候補の <see cref="WeightFixPreview.Strength"/> には、実際に使った強さが入る。
+        /// </summary>
+        public WeightFixPreview PreviewWeightFix(float? strengthOverride)
         {
             LastWeightFixError = "";
             if (_session != null) ApplyPoseFixScope();
@@ -147,7 +154,7 @@ namespace GP02.EditorTools
             try
             {
                 if (ShowProgress) EditorUtility.DisplayProgressBar("GP02", L10n.Tr("体のウェイトを写しています…", "Copying the body's weights..."), 0.1f);
-                preview = BuildWeightCandidates(before, out string error);
+                preview = BuildWeightCandidates(before, strengthOverride, out string error);
                 if (preview == null)
                 {
                     LastWeightFixError = error;
@@ -183,8 +190,8 @@ namespace GP02.EditorTools
             return preview;
         }
 
-        // 今の結果から、レンダラーごとの候補のウェイトを作る（Core の WeightTransfer）
-        WeightFixPreview BuildWeightCandidates(PoseCheckResult before, out string error)
+        // 今の結果から、レンダラーごとの候補のウェイトを作る（Core の WeightTransfer）。strengthOverride があれば、設定の強さの代わりに使う
+        WeightFixPreview BuildWeightCandidates(PoseCheckResult before, float? strengthOverride, out string error)
         {
             error = null;
             PoseRig rig = _poseRig;
@@ -195,6 +202,7 @@ namespace GP02.EditorTools
             }
             BoneWeightSets bodyWeights = rig.BuildBodyWeights(before.Body, out Transform[] bodyBones, out int[] bodyParents);
             WeightTransferOptions options = _settings.BuildWeightTransferOptions();
+            if (strengthOverride.HasValue && !float.IsNaN(strengthOverride.Value)) options.Strength = Math.Max(0f, Math.Min(1f, strengthOverride.Value));
             ParticleCloth cloth = _session.Cloth;
             float[] influence = WeightTransfer.Spread(before.RestWelded.Length, cloth.Topology.Triangles, before.RestWelded, before.WeightPlan.WeldedSeed, options.Radius);
             var preview = new WeightFixPreview
@@ -310,7 +318,7 @@ namespace GP02.EditorTools
         }
 
         /// <summary>
-        /// 確認した候補（<see cref="PreviewWeightFix"/>）を適用する。Unity の Undo の1段。
+        /// 確認した候補（<see cref="PreviewWeightFix()"/>）を適用する。Unity の Undo の1段。
         /// (a) 衣装のシェイプキーのデータ（無ければ作る）に、ボーンウェイトの変更として記録する（前の変更と合わせる。同じ頂点は新しいほう）。
         /// (b) 衣装のメッシュのウェイトを変える（GP02 が作ったメッシュなら書き換え、そうでなければ複製をアセットにして差し替える）。
         /// 足すボーンは、レンダラーのボーンの末尾に足す。そのあと編集を作り直し、候補で調べ直した結果を今の結果にする。

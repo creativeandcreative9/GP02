@@ -12,10 +12,13 @@ namespace GP02.EditorTools
     {
         [SerializeField] bool _foldPoseClips;
 
+        // くわしく表示か。強さのスライダーはくわしく表示にしか無いので、候補の説明の「和らげ方」の一言が、これで変わる
+        static bool ShowsWeightFixDetails => Shows(ClothEditUiItem.WeightFixDetails);
+
         void DrawWeightFixSection(PoseCheckResult result, bool stale)
         {
             if (!Shows(ClothEditUiItem.WeightFix)) return;
-            bool detailed = Shows(ClothEditUiItem.WeightFixDetails);
+            bool detailed = ShowsWeightFixDetails;
             int weightRegions = _controller.WeightCausedRegionCount;
             WeightFixPreview preview = _controller.WeightFixPreview;
             WeightFixReport last = _controller.LastWeightFix;
@@ -119,7 +122,7 @@ namespace GP02.EditorTools
                 EditorGUILayout.HelpBox(L10n.Tr("確認のあとに形が変わったので、この候補は適用できません。もう一度確認してください。", "The shape changed after the check, so this candidate cannot be applied. Check again."), MessageType.Warning);
                 return;
             }
-            EditorGUILayout.LabelField(L10n.Tr("ウェイトを体に寄せる候補: ", "Candidate for Fit Weights to Body: ") + preview.Describe(), EditorStyles.wordWrappedMiniLabel);
+            EditorGUILayout.LabelField(L10n.Tr("ウェイトを体に寄せる候補: ", "Candidate for Fit Weights to Body: ") + preview.Describe(detailed), EditorStyles.wordWrappedMiniLabel);
             if (detailed) return;
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -143,14 +146,16 @@ namespace GP02.EditorTools
         {
             if (last == null || last.Preview == null) return;
             WeightFixPreview p = last.Preview;
-            EditorGUILayout.LabelField(L10n.Tr($"前回のウェイトを体に寄せる: 頂点 {last.ChangedVertices}、{p.ScopeLabel}の突き抜け {p.RegionsBefore} → {p.RegionsAfter} か所（{p.PosesBefore} → {p.PosesAfter} ポーズ）" +
+            EditorGUILayout.LabelField(L10n.Tr($"前回のウェイトを体に寄せる: 頂点 {last.ChangedVertices}" + (p.IsBelowFullStrength ? $"、強さ {p.StrengthPercent}%" : "") +
+                    $"、{p.ScopeLabel}の突き抜け {p.RegionsBefore} → {p.RegionsAfter} か所（{p.PosesBefore} → {p.PosesAfter} ポーズ）" +
                     (last.DiscardedUnsaved ? "（保存していない形を戻したので、もう一度チェックしてください）" : ""),
-                $"Last weight fit: {last.ChangedVertices} vertices, poke-through in {p.ScopeLabel} {p.RegionsBefore} → {p.RegionsAfter} place(s) ({p.PosesBefore} → {p.PosesAfter} poses)" +
+                $"Last weight fit: {last.ChangedVertices} vertices" + (p.IsBelowFullStrength ? $", strength {p.StrengthPercent}%" : "") +
+                    $", poke-through in {p.ScopeLabel} {p.RegionsBefore} → {p.RegionsAfter} place(s) ({p.PosesBefore} → {p.PosesAfter} poses)" +
                     (last.DiscardedUnsaved ? " (the unsaved shape was reset, so run the check again)" : "")), EditorStyles.wordWrappedMiniLabel);
         }
 
-        // 候補を作って調べ直す。ask なら、前後を見せて適用するかを聞く（かんたん表示）
-        void PreviewWeightFixFromWindow(bool ask)
+        // 候補を作って調べ直す。ask なら、前後を見せて適用するかを聞く（おすすめの直し方のボタン。くわしく表示の「確認（試す）」は聞かない）
+        internal void PreviewWeightFixFromWindow(bool ask)
         {
             WeightFixPreview preview = _controller.PreviewWeightFix();
             SceneView.RepaintAll();
@@ -159,8 +164,46 @@ namespace GP02.EditorTools
                 EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
                 return;
             }
-            if (!ask) return;
-            string message = preview.Describe() + "\n\n" + L10n.Tr("この候補を適用しますか？（Ctrl+Z の 1 回で戻せます）", "Apply this candidate? (One Ctrl+Z undoes it)");
+            if (ask) OfferWeightFix(preview);
+        }
+
+        // 確認した候補の前後を見せて、適用するかを聞く。体から離れた布が伸びすぎて、まだ強さを弱められるときは、
+        // 「弱めて試す」も選べる（強さはくわしく表示にしか無いので、かんたん表示のまま弱められるように）
+        internal void OfferWeightFix(WeightFixPreview preview)
+        {
+            if (!preview.CanTryWeaker)
+            {
+                AskApplyWeightFix(ClothEditPrompts.WeightFixApplyMessage(preview.Describe(ShowsWeightFixDetails)));
+                return;
+            }
+            switch (ClothEditPrompts.ChooseWeightFix(ClothEditPrompts.WeightFixOfferMessage(preview, ShowsWeightFixDetails)))
+            {
+                case WeightFixChoice.TryWeaker:
+                    TryWeakerWeightFix();
+                    break;
+                case WeightFixChoice.ApplyAsIs:
+                    ApplyWeightFixFromWindow();
+                    break;
+            }
+        }
+
+        // 強さを弱めて候補を作り直し、前後を見せて、適用するかを聞く。設定の強さは変えない（次の衣装では、設定の強さのままにする）。
+        // やめたときは、弱めた候補が窓に残る（「この候補を適用」であとから適用できる）
+        void TryWeakerWeightFix()
+        {
+            WeightFixPreview weaker = _controller.PreviewWeightFix(WeightFixPreview.WeakerStrength);
+            SceneView.RepaintAll();
+            if (weaker == null)
+            {
+                EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
+                return;
+            }
+            AskApplyWeightFix(ClothEditPrompts.WeightFixWeakerResultMessage(weaker, ShowsWeightFixDetails));
+        }
+
+        // 適用するかを聞いて、適用するなら適用する（message は、候補の説明に「この候補を適用しますか？」を添えたもの）
+        void AskApplyWeightFix(string message)
+        {
             if (ClothEditPrompts.Confirm("GP02", message, L10n.Tr("適用", "Apply"), L10n.Tr("やめる", "Cancel"))) ApplyWeightFixFromWindow();
         }
 
@@ -192,10 +235,13 @@ namespace GP02.EditorTools
                 EditorUtility.DisplayDialog("GP02", _controller.LastWeightFixError, "OK");
                 return;
             }
-            // 窓の真ん中の通知は短く、前後の数（候補で試したもの）は、窓の上の結果の欄に残す
+            // 窓の真ん中の通知は短く、前後の数（候補で試したもの）は、窓の上の結果の欄に残す。強さを弱めて適用したときは、その強さも添える
+            WeightFixPreview used = report.Preview;
+            string undoJa = used != null && used.IsBelowFullStrength ? $"（強さ {used.StrengthPercent}%。Ctrl+Z の 1 回で戻せます）" : "（Ctrl+Z の 1 回で戻せます）";
+            string undoEn = used != null && used.IsBelowFullStrength ? $" (strength {used.StrengthPercent}%; one Ctrl+Z undoes it)" : " (one Ctrl+Z undoes it)";
             Report(L10n.Tr("ウェイトを体に寄せました", "Fitted the weights"),
-                L10n.Tr("ウェイトを体に寄せました（Ctrl+Z の 1 回で戻せます）。", "Fitted the weights to the body (one Ctrl+Z undoes it).")
-                + (report.Preview != null ? "\n" + report.Preview.Describe() : ""));
+                L10n.Tr("ウェイトを体に寄せました" + undoJa + "。", "Fitted the weights to the body" + undoEn + ".")
+                + (used != null ? "\n" + used.Describe(ShowsWeightFixDetails) : ""));
         }
 
         void RemoveWeightFixFromWindow()

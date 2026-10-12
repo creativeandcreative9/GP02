@@ -227,7 +227,7 @@ namespace GP02.Tests
 
             // 100% では、体から離れたスカートの布が脚に貼り付いて伸びる（伸びの目安で分かる）。強さを下げると和らぐ
             Assert.That(full.StretchesTooMuch, Is.True, $"伸びの目安: {full.StretchPoseName} {full.StretchBefore} → {full.StretchAfter}");
-            StringAssert.Contains(full.StretchPoseName, full.Describe());
+            StringAssert.Contains(full.StretchPoseName, full.Describe(false));
             c.Settings.WeightFixStrength = 0.5f;
             WeightFixPreview half = c.PreviewWeightFix();
             Assert.That(half, Is.Not.Null, c.LastWeightFixError);
